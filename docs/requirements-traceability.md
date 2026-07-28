@@ -15,7 +15,7 @@ Status values:
 |---|---|---|---|
 | FR-1 | Multi-format intake | `services/ingestion.detect_content_signature` | declared |
 | FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
-| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField`, `schema.ComponentInstance` | enforced |
+| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)), `schema.ComponentInstance` | enforced |
 | FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
 | FR-5 | Conflict surfacing, no auto-resolution | `schema.ConflictQueueEntry`, same guard | enforced |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
@@ -56,7 +56,7 @@ Status values:
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` | declared |
 | FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | `schema.SourceTier`, `schema.SourceRef` | enforced |
 | FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
-| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` | open |
+| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict`; tolerance table in [clarifications D-2](../specs/001-procurement-agent/clarifications.md) | declared |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` | declared |
 
 ### Conflict detection & HITL
@@ -78,7 +78,7 @@ Status values:
 | FR-OUT-02 | Exactly 13 tabs | `schema.WorkbookTab` | enforced |
 | FR-OUT-03 | Per-cell provenance | `services/output.write_workbook` | declared |
 | FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` | enforced |
-| FR-OUT-05 | Certification/standards columns per category | — | open |
+| FR-OUT-05 | Certification/standards columns per category | [contracts/canonical-parameters.md](../specs/001-procurement-agent/contracts/canonical-parameters.md) | declared |
 | FR-OUT-06 | Canonical units, deterministic regeneration | `services/output.write_workbook` | declared |
 
 ---

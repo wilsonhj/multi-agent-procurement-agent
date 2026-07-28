@@ -68,13 +68,85 @@ class Resolution(BaseModel):
     value_after: object | None = None
 
 
+class Condition(BaseModel):
+    """The measurement conditions a value holds under.
+
+    A ninth key beyond the eight the TRS fixes in section 5, and the most
+    consequential addition in the design. Research found that *most false
+    conflicts in this domain are condition errors, not unit errors*.
+
+    The Sungrow SG350HX is the worked case: its EU datasheet, its US datasheet
+    and its CEC listing produce four apparent conflicts (352 vs 320 kVA,
+    1500 vs 1330 V, 98.8 vs 98.5 %, 1 vs 3 % THD) and **zero real ones** - CEC
+    simply anchors on the 40 degC rating and the full-power MPPT window.
+
+    Without this, the conflict engine floods the queue with spurious items and
+    reviewers learn to ignore it, which defeats the tool's premise (FR-HITL-02).
+
+    The TRS's own section 7 requires this: it lists parameters like
+    "rated AC kVA @temp" and "STC/NMOT ratings" that cannot otherwise be
+    represented. See clarifications.md D-1.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    basis: str | None = Field(
+        default=None,
+        description="Measurement basis, e.g. stc, nmot, noct, bnpi, fat, sat, bol, eol",
+    )
+    temperature_c: float | None = Field(
+        default=None, description="Ambient the rating is stated at, e.g. 30 / 40 / 50"
+    )
+    side: str | None = Field(default=None, description="ac or dc - load-bearing for BESS")
+    duration_h: float | None = Field(
+        default=None, description="Rated duration; BESS RTE is duration-dependent"
+    )
+    weighting: str | None = Field(
+        default=None, description="Efficiency weighting, e.g. cec, european, max"
+    )
+    standards_regime: str | None = Field(
+        default=None,
+        description=(
+            "ieee or iec. Determines which multi-cooling rating is canonical, the "
+            "loss reference temperature, and the vector-group phase convention. "
+            "See clarifications.md D-6."
+        ),
+    )
+    reference_temperature_c: float | None = Field(
+        default=None, description="Loss reference temperature: 20 + rise (IEEE) or 75 (IEC)"
+    )
+    note: str | None = Field(default=None, description="Any condition not captured above")
+
+    def comparable_with(self, other: Condition) -> bool:
+        """Whether two values may be compared at all.
+
+        Mismatched conditions are **not a conflict** - they are not a
+        comparison. Any field set on both sides must agree; a field absent on
+        one side is unknown rather than contradictory.
+        """
+        for name in type(self).model_fields:
+            if name == "note":
+                continue
+            mine, theirs = getattr(self, name), getattr(other, name)
+            if mine is not None and theirs is not None and mine != theirs:
+                return False
+        return True
+
+
 class CanonicalField(BaseModel):
-    """One extracted parameter, with provenance and conflict state attached."""
+    """One extracted parameter, with provenance, conditions and conflict state.
+
+    Nine keys: the eight fixed by TRS section 5, plus `condition`. The deviation
+    is recorded in analysis.md A-1.
+    """
 
     value: object | None = None
     unit: str | None = Field(default=None, description="Canonical unit per FR-ING-08")
     verbatim_value: str | None = Field(
         default=None, description="Original text as written, retained per FR-ING-08"
+    )
+    condition: Condition = Field(
+        default_factory=Condition, description="Conditions the value holds under - see D-1"
     )
     source_tier: SourceTier
     source_ref: SourceRef

@@ -28,28 +28,43 @@ class Settings(BaseSettings):
     object_store_url: str | None = None
     web_search_api_key: str | None = None
 
-    # --- Thresholds. Both are undefined in the TRS. ---
-    hitl_confidence_threshold: float = Field(
-        default=0.80,
+    # --- Review routing ---
+    # There is deliberately no `hitl_confidence_threshold` float. A hardcoded
+    # number is not derived from anything, and LLM self-reported confidence
+    # scores 0.692 ROC AUC - worse than raw logprobs and dangerously
+    # plausible-looking. The defensible construction is a precision target with
+    # tau read off a risk-coverage curve on a labelled set, tiered by field
+    # criticality. See clarifications.md D-3.
+    target_precision_auto_accepted: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        description="Target precision on fields accepted without human review",
+    )
+    review_budget_fraction: float = Field(
+        default=0.20,
         ge=0.0,
         le=1.0,
         description=(
-            "FR-ING-10 routes sub-threshold fields to HITL but names no number. "
-            "The TRS baseline is 85-95% extraction accuracy on clean documents."
-        ),
-    )
-    numeric_conflict_tolerance: float = Field(
-        default=0.02,
-        ge=0.0,
-        description=(
-            "FR-WEB-04 raises a conflict when values differ 'beyond tolerance' but "
-            "never defines it. Fractional, so 0.02 means 2 percent."
+            "Expected fraction of field instances routed to review in year one. "
+            "Falling below this means accepting lower precision - that must be an "
+            "explicit decision, not an emergent one."
         ),
     )
 
-    # --- Chunking (FR-RAG-01: ~400-512 tokens, 10-20% overlap) ---
+    # --- Conflict tolerance ---
+    # There is deliberately no global `numeric_conflict_tolerance` float either.
+    # A 2% band on a 650 Wp nameplate is +/-13 W, which merges three adjacent
+    # 5 W SKUs; the same band on a -0.29 %/degC temperature coefficient is below
+    # datasheet precision. Tolerance is per-field with three kinds (exact,
+    # absolute, relative) - see the table in clarifications.md D-2.
+
+    # --- Chunking (FR-RAG-01, revised by plan.md Decision 6) ---
+    # Overlap reduced from the TRS's 10-20%: systematic analysis found no
+    # measurable benefit, and Docling supplies real section boundaries, which is
+    # most of what overlap compensated for.
     chunk_size_tokens: int = 512
-    chunk_overlap_ratio: float = Field(default=0.15, ge=0.0, le=0.5)
+    chunk_overlap_ratio: float = Field(default=0.05, ge=0.0, le=0.10)
 
     # --- Output (FR-OUT-01) ---
     suppliers_as_rows: bool = True

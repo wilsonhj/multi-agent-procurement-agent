@@ -161,26 +161,45 @@ confidential. See `.gitignore`.
 
 ---
 
+## Specification
+
+Full specification, researched decisions and parallel work breakdown live in
+[`specs/001-procurement-agent/`](specs/001-procurement-agent/):
+
+| Document | What it holds |
+|---|---|
+| [spec.md](specs/001-procurement-agent/spec.md) | Requirements and acceptance criteria, technology-agnostic |
+| [clarifications.md](specs/001-procurement-agent/clarifications.md) | Every ambiguity in the source documents, resolved with a researched default |
+| [plan.md](specs/001-procurement-agent/plan.md) | Stack decisions with rationale and confidence |
+| [tasks.md](specs/001-procurement-agent/tasks.md) | Contract freeze, then nine parallel work packages |
+| [analysis.md](specs/001-procurement-agent/analysis.md) | Cross-artifact consistency findings |
+| [contracts/](specs/001-procurement-agent/contracts/) | Frozen shared contracts |
+
 ## Design decisions and where they came from
 
 The Technical Requirements Spec deliberately defers stack selection: *"vector DB, OCR
-engine, LLM, and framework selection are design decisions."* Those choices come from a
-companion technology-landscape review, and the ones adopted here are:
+engine, LLM, and framework selection are design decisions."* The ones adopted here:
 
-- **Python**, because the whole relevant ecosystem is Python — Docling, pvlib, openpyxl,
-  Instructor, LangGraph.
-- **Pydantic** for the canonical schema, so schema-constrained extraction, validation and
-  per-field confidence come from one place.
-- **openpyxl** for the workbook — multi-sheet, formatting, cell comments for provenance.
-- **Protocol interfaces over concrete adapters**, because the spec requires parsers, OCR,
-  embedders, vector store, reranker and LLM to be swappable. Heavy dependencies sit behind
-  optional extras so this is enforced by packaging, not just convention.
-- **A parser router rather than one engine**, because no single parser wins across
-  text PDFs, scans, and spreadsheets.
+- **Python**, because the whole relevant ecosystem is Python — Docling, pvlib, openpyxl.
+- **PostgreSQL as the single datastore**, holding canonical records, chunks, embeddings, the
+  conflict queue and the audit log. An extraction, its provenance and a reviewer's correction
+  commit or roll back together.
+- **No workflow framework.** The audit requirement already forces canonical state into our own
+  tables, and deterministic regeneration makes composition a pure function of that store — so a
+  checkpointer would be a second copy of state we already own.
+- **No ANN index.** Measured: pgvector's filtered search silently returned 5 rows for a top-10
+  request. Exact search runs in ~4 ms at this scale with guaranteed top-k.
+- **Pydantic** for the canonical schema, so extraction, validation and per-field confidence come
+  from one place.
+- **openpyxl, pinned exactly** — the version string is embedded in the output bytes.
+- **Protocol interfaces over concrete adapters**, with heavy dependencies behind optional extras
+  so swappability is enforced by packaging rather than convention.
+- **A parser router rather than one engine**, because no single parser wins across text PDFs,
+  scans and spreadsheets.
 
-Licence posture: Apache-2.0 and MIT components only. Several strong OCR options are
-excluded on licence grounds. Confirm the exact licence of every component at integration
-time.
+Licence posture: Apache-2.0 and MIT only. Marker, Jina v5, ParadeDB, VectorChord-bm25, MinerU,
+Surya and olmOCR were all evaluated and **rejected** on licence grounds — see the licence gate in
+[plan.md](specs/001-procurement-agent/plan.md).
 
 ---
 

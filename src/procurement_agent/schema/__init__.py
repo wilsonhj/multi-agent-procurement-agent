@@ -14,6 +14,7 @@ from .enums import (
 )
 from .field import (
     CanonicalField,
+    Condition,
     ConflictCandidate,
     ConflictQueueEntry,
     Resolution,
@@ -26,6 +27,7 @@ __all__ = [
     "CellFlag",
     "ComponentCategory",
     "ComponentInstance",
+    "Condition",
     "ConflictCandidate",
     "ConflictClass",
     "ConflictQueueEntry",

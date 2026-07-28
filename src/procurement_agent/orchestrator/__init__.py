@@ -2,16 +2,23 @@
 
 Owns agent workflow, state, retries, and the provenance/audit trail.
 
-The TRS specifies no state machine, retry policy or inter-service transport -
-these are open design decisions. The reference memo recommends LangGraph with a
-Postgres checkpointer, and its guidance on interrupts is the load-bearing part:
-interrupt only on high-blast-radius or uncertain nodes (detected conflicts,
-low-confidence extractions), not on every step, or latency becomes unbounded.
+Implemented as a Postgres-backed stage state machine with a
+`SELECT ... FOR UPDATE SKIP LOCKED` worker loop - no workflow framework.
+NFR-02 already forces the audit trail into Postgres and FR-OUT-06 makes
+composition a pure function of the canonical store, so a workflow checkpointer
+would be a second copy of state we already own. See plan.md Decision 1.
+
+**The human gate does not block the pipeline.** Conflict resolution is detached:
+the gate is a policy check at compose time - a query, not an interrupt. "Defer"
+is one of the five mandated resolution actions (FR-HITL-04), and a blocking
+workflow has no coherent semantics for indefinite deferral. See plan.md
+Decision 2.
 
 Pipeline:
 
     ingest -> extract -> index -> enrich_via_web -> detect_conflicts
-        -> [interrupt: human approval] -> compose_workbook
+                                                          |
+                    compose_workbook  <- [compose gate: severity query]
 """
 
 from __future__ import annotations
@@ -20,22 +27,30 @@ from enum import StrEnum
 
 
 class Stage(StrEnum):
-    """Pipeline stages. Only the last two are expected to interrupt."""
+    """Pipeline stages.
+
+    There is deliberately no `await_human_resolution` stage. Resolution happens
+    outside the pipeline, and composition re-runs against whatever is resolved
+    at the time. Nothing is ever parked waiting for a person.
+    """
 
     INGEST = "ingest"
     EXTRACT = "extract"
     INDEX = "index"
     ENRICH_VIA_WEB = "enrich_via_web"
     DETECT_CONFLICTS = "detect_conflicts"
-    AWAIT_HUMAN_RESOLUTION = "await_human_resolution"
     COMPOSE_WORKBOOK = "compose_workbook"
 
 
-#: Stages that may pause for a human. Kept explicit so that adding an interrupt
-#: is a deliberate change rather than an emergent property of node code.
-INTERRUPTING_STAGES: frozenset[Stage] = frozenset(
-    {Stage.DETECT_CONFLICTS, Stage.AWAIT_HUMAN_RESOLUTION}
-)
+def compose_gate_blocks(unresolved_severities: list[int], *, threshold: int) -> bool:
+    """Whether composition should refuse to run.
+
+    The only place a human decision gates the pipeline, and it is a query rather
+    than a pause. Overridable by a recorded, audited decision - composition then
+    emits a completeness manifest naming every unresolved conflict instead
+    (FR-HITL-05).
+    """
+    return any(severity >= threshold for severity in unresolved_severities)
 
 
 def run(*args: object, **kwargs: object) -> None:

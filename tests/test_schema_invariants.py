@@ -24,9 +24,17 @@ def test_source_ref_requires_a_source() -> None:
         SourceRef()
 
 
-def test_canonical_field_has_the_eight_spec_keys() -> None:
-    """TRS section 5 fixes the field object's shape. Drift here breaks the audit trail."""
-    assert set(CanonicalField.model_fields) == {
+def test_canonical_field_has_the_eight_spec_keys_plus_condition() -> None:
+    """TRS section 5 fixes eight keys. We carry nine.
+
+    `condition` is a deliberate deviation, recorded in analysis.md A-1: most
+    false conflicts in this domain are condition mismatches, not unit errors,
+    and the TRS's own section 7 lists parameters ("rated AC kVA @temp",
+    "STC/NMOT ratings") that cannot be represented without it.
+
+    The eight spec keys must all still be present and named exactly as written.
+    """
+    spec_keys = {
         "value",
         "unit",
         "verbatim_value",
@@ -36,6 +44,8 @@ def test_canonical_field_has_the_eight_spec_keys() -> None:
         "conflict_status",
         "resolution",
     }
+    assert spec_keys <= set(CanonicalField.model_fields)
+    assert set(CanonicalField.model_fields) - spec_keys == {"condition"}
 
 
 def test_resolved_field_must_carry_its_resolution() -> None:

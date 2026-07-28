@@ -12,23 +12,33 @@ license = { text = "UNLICENSED" }
 dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
-    "openpyxl>=3.1",
+    # Pinned EXACTLY, not >=. docProps/app.xml literally embeds the string
+    # "Openpyxl 3.1.5", so a patch bump changes the output bytes and breaks
+    # every historical AC-7 hash with zero data change. See plan.md Decision 8c.
+    "openpyxl==3.1.5",
 ]
 
 [project.optional-dependencies]
-# Document parsing / OCR. Apache-2.0 and MIT only - the reference memo flags
-# Surya (GPL-3.0), MinerU (AGPL-3.0) and olmOCR (Rail-M revenue cap) as
-# unusable in a commercial product. Confirm licences again at integration time.
+# Document parsing / OCR. Apache-2.0 and MIT only. Research verified licences at
+# primary sources and rejected: Marker (weights revenue-capped), Surya (GPL-3.0),
+# MinerU (AGPL-3.0), olmOCR (Rail-M revenue cap). See plan.md licence gate.
 parse = [
-    "docling>=2.0",
+    "docling>=2.115",
     "pandas>=2.2",
+    "pymupdf>=1.24",   # per-page text-layer detection for the parser router
 ]
-# Orchestration + schema-constrained extraction.
-agent = [
-    "langgraph>=0.2",
-    "instructor>=1.5",
+# Schema-constrained extraction against a self-hosted vLLM endpoint.
+# NOTE: use json_schema mode, NOT Instructor's default TOOLS mode - tool calls
+# do not emit logprobs, which discards the confidence signal. plan.md Decision 7.
+extract = [
+    "instructor>=1.15",
+    "openai>=1.50",
 ]
-# Free spec validation against the CEC equipment lists (FR-WEB-05 authority tier).
+# CEC equipment-list cross-check (FR-WEB-05 authority tier).
+# WARNING: pvlib's BUNDLED CEC library is frozen at March 2019 and contains ZERO
+# modules >=600 W, while this project's modules are 600-740 W. Never call
+# retrieve_sam() with defaults - pass path= pointing at a pinned copy of the live
+# SAM CSV. See clarifications.md D-8a.
 solar = [
     "pvlib>=0.11",
 ]

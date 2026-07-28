@@ -1,0 +1,113 @@
+# Requirements traceability
+
+Maps every requirement from the FRD and TRS to where it is addressed in the codebase.
+
+Status values:
+- **enforced** — implemented and covered by a test
+- **declared** — the type, signature or contract exists; behaviour is not implemented
+- **open** — no home in the code yet
+
+---
+
+## Functional requirements — FRD
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-1 | Multi-format intake | `services/ingestion.detect_content_signature` | declared |
+| FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
+| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField`, `schema.ComponentInstance` | enforced |
+| FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
+| FR-5 | Conflict surfacing, no auto-resolution | `schema.ConflictQueueEntry`, same guard | enforced |
+| FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
+| FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
+| FR-8 | Decision authority stays human | `orchestrator.INTERRUPTING_STAGES` | declared |
+
+## Functional requirements — TRS
+
+### Ingestion & extraction
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-ING-01 | Accept 10 formats, route by content signature | `services/ingestion.detect_content_signature`, `ports.ParserPort.supports` | declared |
+| FR-ING-02 | Spreadsheets: sheets, headers, merged cells, typing | `ports.ParserPort` | open |
+| FR-ING-03 | Text-layer PDFs: layout-aware, page numbers | `ports.ParsedElement` | declared |
+| FR-ING-04 | Scanned PDFs/images: OCR, bounding boxes | `ports.OCRPort`, `schema.SourceRef.bounding_box` | declared |
+| FR-ING-05 | Word: paragraphs, tables, footnotes | `ports.ParserPort` | open |
+| FR-ING-06 | Classify into eight document types | `schema.DocumentType` | enforced |
+| FR-ING-07 | Schema-constrained extraction with confidence + source pointer | `ports.LLMPort.extract`, `schema.CanonicalField` | declared |
+| FR-ING-08 | Normalize units, retain verbatim | `schema.CanonicalField.verbatim_value`, `services/ingestion.normalize_unit` | declared |
+| FR-ING-09 | Stable IDs, content hash, dedup | `schema.SourceDocument.content_hash` | declared |
+| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.hitl_confidence_threshold` | declared |
+
+### Indexing, retrieval & RAG
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-RAG-01 | Structure-aware chunking, 400–512 tokens, 10–20% overlap | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
+| FR-RAG-02 | ANN index, cosine, full metadata set | `ports.VectorStorePort` | declared |
+| FR-RAG-03 | Hybrid retrieval, rerank, tier stays distinguishable | `ports.RetrievedChunk.source_tier` | declared |
+| FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `ports.LLMPort.extract` returns `None`; `ConflictStatus.INSUFFICIENT_EVIDENCE` | enforced |
+| FR-RAG-05 | Incremental add/update/delete by stable ID | `ports.VectorStorePort.upsert` / `.delete` | declared |
+
+### Web search
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` | declared |
+| FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | `schema.SourceTier`, `schema.SourceRef` | enforced |
+| FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
+| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` | open |
+| FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` | declared |
+
+### Conflict detection & HITL
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-HITL-01 | Five conflict classes | `schema.ConflictClass` | enforced |
+| FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
+| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` | enforced |
+| FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` | enforced |
+| FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
+| FR-HITL-06 | Immutable decision log | `schema.Resolution` (frozen), validator on `CanonicalField` | enforced |
+
+### Output
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| FR-OUT-01 | Tab per category, suppliers rows or columns | `config.suppliers_as_rows` | declared |
+| FR-OUT-02 | Exactly 13 tabs | `schema.WorkbookTab` | enforced |
+| FR-OUT-03 | Per-cell provenance | `services/output.write_workbook` | declared |
+| FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` | enforced |
+| FR-OUT-05 | Certification/standards columns per category | — | open |
+| FR-OUT-06 | Canonical units, deterministic regeneration | `services/output.write_workbook` | declared |
+
+---
+
+## Non-functional requirements
+
+| ID | Requirement | Where | Status |
+|---|---|---|---|
+| NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator | enforced |
+| NFR-02 | Immutable audit log | `schema.Resolution` frozen; store not yet built | declared |
+| NFR-03 | Access control at retrieval time; confidential path self-hosted | `VectorStorePort.search(allowed_document_ids=...)`, `.env.example` | declared |
+| NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols | enforced |
+| NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` | declared |
+| NFR-06 | Hundreds of documents | — | open |
+| NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
+| NFR-08 | Human retains final authority | `orchestrator.INTERRUPTING_STAGES` | declared |
+
+---
+
+## Acceptance criteria
+
+| ID | Criterion | Test | Status |
+|---|---|---|---|
+| AC-1 | Scanned spec sheet extracts fields with provenance, low confidence to HITL | — | open |
+| AC-2 | Web contradiction raises conflict; record value unchanged | `tests/test_source_of_record_rule.py` | enforced |
+| AC-3 | All 13 tabs with conditional formatting | `tests/test_schema_invariants.py`, `tests/test_output_flags.py` | partial |
+| AC-4 | Every cell resolves to a source | `tests/test_schema_invariants.py::test_source_ref_requires_a_source` | enforced |
+| AC-5 | Re-ingest creates no duplicates | — | open |
+| AC-6 | Inverter tab reports TRD against correct IEEE 2800 limit; tab 13 reports BABA/ITC/FEOC | — | open |
+
+AC-3 is partial: tab identity and cell-state logic are tested, workbook generation is not.
+AC-1, AC-5 and AC-6 need the ingestion path and a labelled corpus, which is Stage 1 work.

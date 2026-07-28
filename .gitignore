@@ -1,0 +1,38 @@
+# Source requirements documents are marked "Confidential - internal & supplier
+# use" (FRD) and "Confidential - engineering" (TRS). They must never be
+# committed to this repository.
+docs/source/
+*.docx
+*.doc
+
+# Ingested supplier material and generated workbooks are confidential per NFR-03
+# (contract and pricing documents are access-restricted).
+data/
+corpus/
+out/
+*.xlsx
+!tests/fixtures/**/*.xlsx
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+.AppleDouble
+Icon?

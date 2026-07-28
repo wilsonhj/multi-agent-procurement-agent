@@ -66,6 +66,21 @@ class Settings(BaseSettings):
     chunk_size_tokens: int = 512
     chunk_overlap_ratio: float = Field(default=0.05, ge=0.0, le=0.10)
 
+    # --- Concurrency ---
+    # The ports are synchronous (plan.md Decision 10); concurrency is driven by the
+    # caller via concurrent.futures and bounded here. Size the parse pool off the
+    # MEAN page cost, not the median - the distribution is right-skewed, since an
+    # OCR page costs roughly an order of magnitude more than a text-layer page.
+    max_concurrent_parse: int = Field(
+        default=4, ge=1, description="ProcessPoolExecutor width for parse/OCR"
+    )
+    max_concurrent_llm: int = Field(
+        default=8, ge=1, description="ThreadPoolExecutor width for extraction calls"
+    )
+    web_search_rate_limit_per_minute: int = Field(
+        default=30, ge=1, description="Cap on supplementary web queries (FR-WEB-01)"
+    )
+
     # --- Output (FR-OUT-01) ---
     suppliers_as_rows: bool = True
 

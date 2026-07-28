@@ -37,14 +37,18 @@ means "we looked and found none stated", which is materially different from `Non
 | key | type | canonical unit | notes |
 |---|---|---|---|
 | `nameplate_power` | float | `Wp` | STC nameplate |
-| `power_tolerance_min` | float | `W` | e.g. `0` in a 0/+5 W binning |
-| `power_tolerance_max` | float | `W` | e.g. `+5` |
+| `power_tolerance` | DeclaredBand | — | **Type changed 2026-07-28.** See *Declared bands* below. |
 | `cell_technology` | str | — | enum: `n_topcon`, `perc`, `hjt`, `ibc`, `cdte`, `other` |
 | `module_efficiency` | float | `%` | |
 | `temp_coeff_pmax` | float | `%/degC` | negative; sign convention is load-bearing |
 | `temp_coeff_voc` | float | `%/degC` | negative |
 | `temp_coeff_isc` | float | `%/degC` | positive |
-| `bifaciality_factor` | float | `%` | `None` for monofacial, not `0` |
+| `bifaciality_factor` | float | `%` | `None` for monofacial, not `0`. Use φPmax; per IEC TS 60904-1-2 the applicable φ = min(φIsc, φPmax). Jinko prints three coefficients; grabbing φVoc gives a large error. |
+| `bifaciality_tolerance` | DeclaredBand | — | Canadian Solar prints `Power Bifaciality* 70 %` then `Tolerance: ± 5 %` on the next line |
+
+> **Bifaciality is technology-specific — do not hardcode a plausibility band.** PERC ≈ 70±5%,
+> TOPCon ≈ 80±5%, LONGi back-contact ≈ 75±5%. A validator written against the first two silently
+> rejects every LONGi back-contact module.
 | `stc_rating` | float | `Wp` | |
 | `nmot_rating` | float | `Wp` | |
 | `max_system_voltage` | float | `V` | typically 1500 |
@@ -234,6 +238,51 @@ These populate tabs 12 and 13 and are cross-category. Owned by the compliance te
 > and the FRD does not confirm the funding status. Until confirmed, `baba_status` defaults to
 > `unconfirmed`, never to `not_applicable`. Defaulting to `not_applicable` would silently
 > assert a funding fact nobody has established.
+
+---
+
+## Declared bands
+
+**Contract change, 2026-07-28.** A *declared band* is a tolerance the source itself prints. It is
+a different object from the **conflict tolerance** in [clarifications D-2](../clarifications.md),
+which governs how far two independently extracted values of the same field may diverge before a
+human is asked. Conflating them was the original error here.
+
+Three conventions are in current use, all verified from primary datasheet text:
+
+| Convention | Example | Source |
+|---|---|---|
+| Absolute watts | `Power Tolerance 0 ~ +5` | Trina Vertex N NEG21C.20 |
+| Absolute watts, wider | `Power Tolerance 0 ~ + 10 W` | Canadian Solar HiKu6, BiHiKu6, TOPBiHiKu6 |
+| **Relative percent** | `Power tolerance 0~+3%` | Jinko Tiger Neo 78HL4-BDV |
+
+```
+DeclaredBand: { low: float, high: float, kind: "absolute" | "relative", unit: str | None }
+```
+
+### Why `(min, max)` in watts was wrong
+
+Storing a relative band requires multiplying by Pmax at extraction time, which fails three ways:
+
+1. **It fabricates conflicts across bins the datasheet treats identically.** The Jinko 78HL4-BDV
+   sheet covers 605–625 W with *one* printed tolerance. In watts that becomes 18.15 W at the 605
+   bin and 18.75 W at the 625 bin — a spurious disagreement between two rows whose source text is
+   character-identical.
+2. **It is circular when Pmax is the disputed field**, which is the common case. Resolving whether
+   two Pmax candidates conflict would need a tolerance whose value depends on which Pmax candidate
+   you already chose.
+3. **An honest extractor has no legal cell to write into.** `3` with unit `%` violates the
+   declared canonical unit `W`, and out-of-contract values are validation failures here, not
+   silent pass-throughs.
+
+**Rule: store a relative band as printed. Resolve it against Pmax only at comparison time, never
+at extraction.**
+
+> Note on the earlier rebuttal: D-2 dismissed percentage tolerance on the grounds that Trina's
+> `±3%` is a *measuring* tolerance, not a label band. That is correct **for Trina**, whose sheet
+> prints both lines separately. It does not dispose of Jinko, whose `0~+3%` sits in the
+> electrical-data table as the label tolerance itself. The original rebuttal answered a
+> coincidentally-equal number from a different manufacturer and a different row.
 
 ---
 

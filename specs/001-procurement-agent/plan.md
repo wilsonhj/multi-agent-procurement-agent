@@ -30,7 +30,7 @@ components fail the gate, and they are named here so nobody re-proposes them.
 | Component | Actual licence | Verdict |
 |---|---|---|
 | Marker (marker-pdf) | Code Apache-2.0, **weights RAIL-M, free only under $5M revenue** | Rejected — revenue-capped |
-| Jina embeddings v5 | **CC BY-NC 4.0** | Rejected — non-commercial |
+| Jina embeddings v5 | non-commercial — **licence name unverified**, see below | Rejected |
 | NV-Embed-v2 | CC BY-NC | Rejected — non-commercial |
 | ParadeDB / `pg_search` | **AGPL-3.0** | Rejected — copyleft |
 | VectorChord-bm25 | AGPL-3.0 / ELv2 | Rejected — copyleft |
@@ -41,6 +41,13 @@ components fail the gate, and they are named here so nobody re-proposes them.
 **Consequence to internalise: there is no permissively licensed true-BM25 for PostgreSQL in
 2026.** Both credible extensions are AGPL. This shapes the retrieval design below — and pushes
 it toward a better answer for this corpus, not a worse one.
+
+> ⚠️ **Re-verify licence *names* at the `LICENSE` file before any of these reach procurement
+> paperwork.** Independent review found that the widely repeated "CC BY-NC 4.0" label for Jina
+> embeddings v4 is **wrong** — it is actually the Qwen Research License (Alibaba Cloud, Chinese
+> jurisdiction). Our v5 entry comes from the same class of secondary source and may carry the
+> same error. The **rejection** is unaffected either way; the licence name is what would end up
+> in a contract. This applies to every row above that was not read from a `LICENSE` file.
 
 ---
 
@@ -119,9 +126,10 @@ listing every unresolved conflict with its id, field, severity and status. Compo
 only on unresolved conflicts above a severity threshold, and that gate is overridable by a
 recorded, audited decision.
 
-**Consequence for the scaffolding:** `orchestrator.INTERRUPTING_STAGES` currently contains
-`AWAIT_HUMAN_RESOLUTION`. Under this decision that stage is not part of the pipeline at all.
-Corrected in [analysis.md](analysis.md).
+**Consequence for the scaffolding:** `orchestrator.INTERRUPTING_STAGES` contained
+`AWAIT_HUMAN_RESOLUTION`. Under this decision that stage is not part of the pipeline at all, so
+both were removed and replaced by `compose_gate_blocks()`. Recorded in
+[analysis.md](analysis.md) A-3.
 
 ---
 
@@ -175,7 +183,11 @@ The strongest evidence: **left at defaults, the PG18 planner chose the sequentia
 HNSW index on its own.**
 
 Required regardless: set `hnsw.iterative_scan = relaxed_order` in `postgresql.conf` now, so that
-if anyone adds an ANN index later the default is not silently wrong. And **add a regression test
+if anyone adds an ANN index later the default is not silently wrong. And if one is ever added,
+note that **`ef_construction >= 2 * m` is a hard enforced constraint, not README guidance** —
+pgvector raises an `ERROR` at index build. pgvector's own defaults (`m=16`,
+`ef_construction=64`) satisfy it; a hand-tuned `m=48` with the default `ef_construction` would
+not. And **add a regression test
 asserting `len(results) == k`** on a filtered query — every failure mode above presents as a
 short result set and nothing else catches it.
 
@@ -543,6 +555,49 @@ record is *correct*: if the extraction rolled back, it did not happen, and loggi
 would be a false record. The genuine "we attempted X and it failed" case is a different event
 class, logged from the exception handler in a new transaction. Do **not** use the dblink
 autonomous-transaction trick — it re-introduces exactly the failure it is meant to avoid.
+
+---
+
+## Decision 10 — The six port Protocols are synchronous
+
+**Chosen:** all six stay `def`, not `async def`. **Confidence: medium-high.** Recorded here so it
+stops being re-litigated.
+
+Concurrency in this system is **per-process, not per-coroutine**. Decision 1 makes the runner a
+Postgres job table with a `SELECT … FOR UPDATE SKIP LOCKED` worker loop — that pattern *is* the
+concurrency mechanism, and scaling it means more worker processes, which sidesteps the GIL
+entirely.
+
+Taking the six in turn:
+
+- **ParserPort, OCRPort** are CPU-bound in-process (Docling, TableFormer, tokenisation).
+  Coroutines buy nothing; an async facade that immediately dispatches to a process pool is
+  ceremony, not concurrency.
+- **EmbedderPort, RerankerPort** already take **batches**. One request of 64 texts beats 64
+  concurrent requests of 1 against a batching GPU server — the parallelism lives inside the
+  payload, not at the call boundary.
+- **VectorStorePort** is a local Postgres round-trip under Decision 3a (exact search, no ANN).
+- **LLMPort** is the one genuinely I/O-bound port, and a `ThreadPoolExecutor` gives real overlap
+  because the GIL is released across socket reads.
+
+Sync forecloses nothing: a caller can drive any of these concurrently without touching the
+interface, and because Protocols are **structural**, an `AsyncLLMPort` can be added *alongside*
+later — additive, not a breaking change across six interfaces.
+
+The cost of the alternative is concrete. `async def` would propagate through
+`services/ingestion.ingest`, `indexing.index_document`, `retrieval.retrieve`, the worker loop and
+the CLI; psycopg3's sync and async APIs are separate class hierarchies, so it would pull the whole
+data layer async — including the RLS `SET LOCAL` of Decision 3c and the
+advisory-lock-then-INSERT sequence of Decision 9, which only came out right after measuring 42
+silent chain forks. It would also make every frozen fixture an async fake, undermining the
+decoupling strategy in tasks.md.
+
+Scale check: hundreds of documents, batch/offline, in-flight I/O concurrency in the *tens*.
+Threads and coroutines are indistinguishable there; threads are simpler.
+
+**The real gap this decision exposes** is that there are no concurrency limits anywhere. Added to
+`config.Settings` as `max_concurrent_parse`, `max_concurrent_llm` and `web_search_rate_limit` —
+orthogonal to interface shape, and the thing actually worth specifying.
 
 ---
 

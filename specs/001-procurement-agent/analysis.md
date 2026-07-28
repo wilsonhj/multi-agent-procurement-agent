@@ -240,6 +240,127 @@ pvlib's own name normaliser is currently broken against SAM's curly-brace format
 
 ---
 
+---
+
+# Round 2 — findings from open issues #1–#9 (2026-07-28)
+
+Nine issues were reviewed against these artifacts. Most were already answered by the spec; four
+found real defects, **three of them regressions introduced by round 1**.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-15 | **C** | README still documented the interrupt architecture and a `--extra agent` that no longer exists — while A-2/A-3 above claimed "Fixed" | **Fixed** |
+| A-16 | **H** | `requirements-traceability.md` cited three symbols deleted in round 1, and marked eight rows `enforced` with no test covering the cited artifact | **Fixed** |
+| A-17 | **H** | PV power tolerance modelled as `(min, max)` in watts cannot represent a relative declared band | **Fixed** |
+| A-18 | **M** | `ports/__init__.py` documented an `adapters/` package that does not exist | **Fixed** |
+| A-19 | **M** | No canonical row ordering across component instances; `ComponentInstance` had no ID | **Fixed** |
+| A-20 | **M** | Sync vs async on the six Protocols was never decided | **Fixed** — plan Decision 10 |
+| A-21 | **M** | No concurrency limits anywhere in config | **Fixed** |
+| A-22 | **M** | C8 lacked the append-only claim invariant | **Fixed** |
+
+## A-15 (Critical) — the analysis claimed a fix that had not fully landed
+
+The most serious finding of this round, because it is a defect *in this document*. A-2 and A-3
+were marked **Fixed** on the strength of edits to `pyproject.toml` and `orchestrator/__init__.py`.
+`README.md` was not checked, and still contained:
+
+- `--extra agent` (LangGraph, Instructor) — an extra that no longer exists, so the documented
+  install command would fail
+- "Pipeline stages and interrupt policy" in the layout section
+- a pipeline diagram showing `[interrupt: human approval]`
+
+**Lesson worth recording:** "Fixed" was asserted from the edits made rather than from a search for
+the symbol across the repository. A grep for the removed names would have caught all three.
+
+## A-16 (High) — traceability overstated test coverage
+
+Eleven rows corrected. Three cited deleted symbols — a round-1 regression: symbols were removed
+without updating the document that referenced them. Eight claimed `enforced` while no test touched
+the cited artifact; **no test imports `procurement_agent.ports` at all**, yet NFR-04 was marked
+`enforced` with `ports/` as its entire citation.
+
+A `partial` status was added, because several rows were genuinely half-covered and forcing them to
+`enforced` or `declared` lost information.
+
+## A-17 (High) — declared bands are not conflict tolerances
+
+Verified from primary datasheet text that three power-tolerance conventions are in current use:
+`0~+5 W` (Trina), `0~+10 W` (Canadian Solar, three sheets), and `0~+3%` (Jinko).
+
+D-2's existing rebuttal — that Trina's `±3%` is a *measuring* tolerance rather than a label band —
+is correct for Trina but **does not dispose of Jinko**, whose `0~+3%` sits in the electrical-data
+table as the label tolerance itself. The rebuttal answered a coincidentally-equal number from a
+different manufacturer and a different row.
+
+Storing a relative band in watts is circular precisely where it matters: Pmax is the field most
+likely to be disputed, and resolving a Pmax conflict would need a tolerance whose value depends on
+which Pmax candidate was already chosen. Contract changed to a `DeclaredBand` with an explicit
+`kind`.
+
+## A-19 (Medium) — ordering, and why the obvious key is wrong
+
+AC-7 needs a total order over component instances; "sorted-key JSON" orders keys *within* objects
+only. The natural key `(category, manufacturer, model, field)` is **not unique** — 36 duplicated
+`(Manufacturer, Model Number)` pairs and 157 model numbers appearing under more than one
+manufacturer. A `surrogate_id` tie-break is required, placed **last** so row order stays readable.
+
+## Relationship to PR #11
+
+A second PR (`docs/agent-topology.md`, `docs/defaults.md`) was opened independently, 9 seconds
+after this one, from the same parent commit. Neither references the other. It **merges cleanly at
+the git level** — verified in an isolated clone, no conflict markers — but **merging both unedited
+produces a self-contradicting repository.**
+
+**It does not contradict our reading of the source documents.** It quotes our
+`services/__init__.py` conclusion — that the TRS names services, not agents, with no roster or
+message protocol — and calls it accurate. It then asks a different question: given that, *should*
+there be an agent topology? Its answer is notably anti-inflationary: a genuine team of
+differentiated agents earns its keep in exactly two places (the parser router, and the
+compliance/tax tabs, which have disjoint authorities and no shared state). Everywhere else,
+*"'agent' would be a persona wrapped around a function call."*
+
+**Where it conflicts, and who is better evidenced:**
+
+| Topic | PR #11 | This PR | Assessment |
+|---|---|---|---|
+| Orchestrator | LangGraph + Postgres checkpointer | Postgres state machine | **Ours.** PR #11 states LangGraph as a premise inherited from the scaffolding and never argues for it — its own confidence note covers the throughput figures and a config-key fact, not the choice. It offers no counter to Decision 1's two load-bearing arguments. |
+| Vector index | HNSW with tuned parameters | No ANN index | **Ours.** Measured on a live container with the query plan reproduced. PR #11 never considers filtered-search recall or the RLS interaction. |
+| Chunk overlap | 15% "(unchanged)" | 0–10% | **Ours**, though ours is self-marked medium confidence. Mechanically, 0.15 now raises a Pydantic validation error — merging both ships a doc unimplementable against code in the same commit. |
+| Traceability statuses | Downgrades five rows, adds `partial` | Left them `enforced` | **Theirs, conceded without argument.** Verified: no test touches the cited symbols. Adopted as A-16. |
+| Identity resolution | No non-exact merge at all | Scored auto-merge at ≥0.90 | **Split.** Ours is measurement-backed and requires electrical corroboration, so it is not fuzzy string matching — but their conservatism argument ("a wrong merge either fabricates a conflict or hides one, and neither is visible afterwards") is real and our D-4 does not rebut it. |
+
+**Adopted from PR #11 this round:** the propose/commit invariant (C8), `declared_tolerance`
+(A-17), the canonical sort key (A-19), the traceability corrections (A-16), the
+`ports/__init__.py` docstring fix (A-18), union-not-vote (E.3a), OIDC subject claim (D-12a),
+technology-specific bifaciality bands, and the `ef_construction >= 2*m` hard-error note.
+
+**Also adopted: a licence-verification warning.** PR #11 demonstrated that the widely repeated
+"CC BY-NC 4.0" label for Jina v4 is wrong — it is the Qwen Research License. Our v5 entry comes
+from the same class of secondary source. The rejection is unaffected; the licence *name* is what
+would reach procurement paperwork.
+
+**Recommended sequence:** merge this PR first (it changes code, config and contracts), rebase
+PR #11's docs onto it, keep `agent-topology.md` with three retargeting edits, and do **not** land
+`defaults.md` as a peer of `clarifications.md` — two authoritative defaults documents is the
+failure mode. Fold its non-overlapping parts in instead.
+
+## Issues that needed no change
+
+- **#1** (per-field tolerance) — already D-2, which argues from a downloaded CEC export rather
+  than search snippets. Its proposed 0.5% relative on nameplate is *weaker* than D-2's ±1 W.
+- **#3** (fuse deterministic signals) — already plan Decision 7, reached independently from the
+  same evidence, with identical AUC figures. One real gap closed: a Tier A never-auto-accept class.
+- **#4** (LangGraph `max_concurrency`) — moot under Decision 1, but the technical claim was
+  verified and is worth knowing: it is a top-level `RunnableConfig` key, and nesting it under
+  `configurable` disables the cap silently because `ensure_config()` sweeps unrecognised top-level
+  keys *into* `configurable`. The hazard is langchain-core-wide, not LangGraph-specific.
+- **#8** (propose/commit split) — core claim correct, prescribed remedy was LangGraph-shaped.
+  Recorded as the C8 append-only invariant instead.
+- **#9** (identity resolution) — already D-4/D-4a, which are strictly stronger. Its blocking claim
+  was wrong: AC-7 is scoped to an *unchanged store*, and compose never re-runs the matcher.
+
+---
+
 ## Consistency checks that passed
 
 - All 26 FR IDs in spec.md match the TRS analysis; none invented, none dropped.

@@ -57,7 +57,24 @@ rounding_floor = ½ × 10^(−min(decimals_a, decimals_b))
 |---|---|---|
 | **EXACT** | Catalog/label fields — nameplate power, max system voltage, voltage class | A difference *is* a different product. Nobody measured it; it was chosen. |
 | **ABSOLUTE** | Small-magnitude quantities — temperature coefficients, efficiencies in percentage points | Relative bands are meaningless at these magnitudes. |
-| **RELATIVE** | Large-magnitude measured quantities — losses, energy, power | Measurement uncertainty scales with the value. |
+| **RELATIVE** | Large-magnitude measured quantities — energy, power | Measurement uncertainty scales with the value. |
+| **ONE_SIDED** | Transformer losses, no-load current | Both IEC and IEEE state these as upper limits only. A symmetric band is wrong in both regimes. |
+
+`ONE_SIDED` changes the comparison, not just the number:
+
+```
+symmetric kinds:  conflict ⟺ |a − b| > max(field_tolerance, rounding_floor)
+ONE_SIDED:        conflict ⟺ (b − a) > tolerance          # a = declared, b = measured
+```
+
+IEC 60076-1 Table 1 carries the note that where a tolerance in one direction is omitted, that
+direction is unrestricted. Writing these as `±` — as an earlier draft of the table below did —
+contradicts both the standard and the prose two paragraphs down.
+
+**Declared bands are a separate object.** Where a source prints its own tolerance
+(`Power Tolerance 0 ~ +10 W`), that band is data about the product and supersedes any config
+default for that field. See
+[contracts/canonical-parameters.md § Declared bands](contracts/canonical-parameters.md).
 
 ### Why nameplate power is EXACT, not ±3% [V]
 
@@ -86,11 +103,11 @@ module, not label tolerance. Importing it into label comparison is a category er
 | BESS energy | ±0.5% within same (side, life-point), else **no comparison** | rel | BOL vs EOL differ ~26% | High |
 | BESS RTE | ±0.2 pp same boundary; **no comparison across boundaries** | abs | Boundary shift is worth 2–7 pp | High |
 | Transformer MVA | exact, **per cooling class** | — | See D-6 | High |
+| PV declared power tolerance | compare as declared bands, never as watts | — | Three conventions in use: `0~+5 W`, `0~+10 W`, `0~+3%`. See contract § Declared bands | High [V] |
 | Transformer %Z | ±7.5% if Z≥10%, ±10% if Z<10% (IEC) | rel | IEC 60076-1 Table 1 item 3a, verbatim | High [V] |
-| Transformer total losses | ±10% (IEC) / **+6% (IEEE)** | rel | Standards differ materially — see D-6 | High [V] / Med [S] |
-
-**Loss tolerances are one-sided (upper only) in both IEC and IEEE.** A symmetric band is wrong
-for losses in both regimes.
+| Transformer total losses | **+10% (IEC)** / **+6% (IEEE)** | **one-sided** | IEC Table 1 item 1a reads `+10 %`, not `±10 %` | High [V] / Med [S] |
+| Transformer component losses | **+15% (IEC)**, conditional on total not being exceeded | **one-sided** | IEC Table 1 item 1b. `no_load_loss` and `load_loss` are separate contract fields and need their own row | High [V] |
+| Transformer no-load current | **+30% (IEC)** | **one-sided** | IEC Table 1 item 5 | High [V] |
 
 ### Free cross-validation rules — cheaper and sharper than tolerance bands [V]
 
@@ -120,8 +137,17 @@ construction:
   automation on the rest.
 - **Budget 15–25% of field instances to review in year one.** Falling below that means accepting
   <99% precision — that must be an explicit signed-off decision, not an emergent one.
-- **Tier τ by field criticality.** Price, quantity, dates, and Pmax/Voc/Isc get a stricter τ
-  (target 99.5%); descriptive fields get a looser one.
+- **Tier τ by field criticality**, in three tiers:
+
+| Tier | Fields | Policy |
+|---|---|---|
+| **A — never auto-accepted** | Pricing; warranty terms; domestic-content, BABA and FEOC status; certification presence *or absence* | **No confidence score can auto-accept these.** A sufficiently confident wrong extraction here misstates a contractual or tax position, and the cost is not symmetric with the review time saved. |
+| **B — strict** | Pmax, Voc, Isc, quantities, dates | Target 99.5% precision |
+| **C — standard** | Descriptive and secondary fields | Target 99% precision |
+
+Tier A is a policy gate, not a threshold. The spec already represents *absence* correctly —
+empty list versus `None`, and `baba_status` defaulting to `unconfirmed` — but representation
+alone does not stop a confident wrong value from being accepted without a human ever seeing it.
 
 **Hard gates that bypass the score entirely and always route to review:**
 value not found verbatim or near-verbatim in the parsed source · the two parsers disagree on the
@@ -220,6 +246,26 @@ significant; `*` is a legitimate model character (wafer size), not a footnote ma
 **Never auto-merge on manufacturer + model alone without electrical corroboration.** Identical
 model strings under two entity names are usually the same product, but `ASB-M10-144-550` under
 the two Adani entities has PTC 509.9 vs 518.2 — genuinely different.
+
+### Stage 5 — Canonical ordering (required by AC-7)
+
+Identity resolution must also yield a **total order** over component instances, or the workbook
+cannot be byte-reproducible. "Sorted-key JSON" orders keys *within* an object and says nothing
+about row order *across* instances.
+
+```
+(component_category, manufacturer_key, model_key, nameplate, surrogate_id, field_name)
+surrogate_id = hash(normalised_manufacturer, normalised_model, nameplate)
+```
+
+`surrogate_id` is a **tie-break, not the primary key** — leading with a hash would make the
+workbook's row order meaningless to a reader. It is required because
+`(category, supplier, model)` is provably not unique on real data: 36 duplicated
+`(Manufacturer, Model Number)` pairs and 157 model numbers appearing under more than one
+manufacturer. A key without it sorts unstably exactly where the data is most ambiguous.
+
+`nameplate` precedes it because one datasheet routinely covers several SKUs, so bin is part of
+identity rather than an attribute of it.
 
 ### D-4a — Inverters and BESS follow different rules from modules ⚠️ [V]
 
@@ -557,7 +603,7 @@ quality dominates dataset size for the confidence model.
 
 | # | Question | Default | Confidence |
 |---|---|---|---|
-| D-12a | Identity/auth model for `resolved_by` | Application-level user identity; a bare string until an IdP is chosen. Audit log records the string verbatim. | Medium |
+| D-12a | Identity/auth model for `resolved_by` | Store the **OIDC subject claim**, not an email. Emails change; the audit log is immutable, so an email recorded today may not identify anyone in five years — and NFR-02 forbids rewriting it to fix that. Display names resolve at read time. | Medium |
 | D-12b | Gate granularity | **Per-document-per-field.** Per-batch would give one review session but loses the ability to ship a partial workbook. | Medium |
 | D-12c | Conflict expiry | **Conflicts never expire.** Expiry would silently discard a known data-quality problem. They age, and age is a reported metric. | High |
 | D-12d | `request_more_web_search` looping | Reject at `reopen_count >= 3` and force a terminal decision. It is the only action that can cycle. | High |

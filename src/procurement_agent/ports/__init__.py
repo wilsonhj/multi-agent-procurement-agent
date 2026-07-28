@@ -6,8 +6,19 @@
 Six interfaces, one per named swap point. They are structural Protocols rather
 than base classes so that adapters can wrap third-party clients without
 inheriting from anything here, and so no concrete dependency leaks into the core
-package. Concrete adapters live under adapters/ and are pulled in by the
-optional extras declared in pyproject.toml.
+package. No concrete adapter exists yet; when one does it will depend on an
+optional extra declared in pyproject.toml, never on the core.
+
+**These Protocols are synchronous, deliberately.** Concurrency in this system is
+per-process, not per-coroutine: the runner is a Postgres job table with a
+`SELECT ... FOR UPDATE SKIP LOCKED` worker loop (plan.md Decision 1), so scaling
+means more worker processes. Parse and OCR are CPU-bound in-process; embedding
+and reranking already take batches, so their parallelism is inside the payload
+rather than at the call boundary; and the vector store is a local Postgres
+round-trip under Decision 3a. A caller that needs overlap can wrap any of these
+in a ThreadPoolExecutor or ProcessPoolExecutor without touching the interface,
+and an async variant can be added alongside later - Protocols are structural, so
+that is additive rather than a breaking change.
 
 The reference memo's parser-router finding applies directly: no single engine
 wins across document types, so ParserPort is expected to have several

@@ -3,9 +3,16 @@
 Maps every requirement from the FRD and TRS to where it is addressed in the codebase.
 
 Status values:
-- **enforced** — implemented and covered by a test
+- **enforced** — implemented **and covered by a test**
+- **partial** — some of the cited artifact is tested, some is not
 - **declared** — the type, signature or contract exists; behaviour is not implemented
 - **open** — no home in the code yet
+
+> **Audit, 2026-07-28.** Eleven rows were corrected after review. Three cited symbols that had
+> been deleted (`orchestrator.INTERRUPTING_STAGES`, `config.hitl_confidence_threshold`); eight
+> claimed **enforced** with no test covering the cited artifact — including NFR-04, whose entire
+> citation is a module no test imports. `enforced` in this table means a test exists, not that
+> the author believed the code was right.
 
 ---
 
@@ -15,12 +22,12 @@ Status values:
 |---|---|---|---|
 | FR-1 | Multi-format intake | `services/ingestion.detect_content_signature` | declared |
 | FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
-| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)), `schema.ComponentInstance` | enforced |
+| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)) enforced; `schema.ComponentInstance` ordering enforced, `unresolved_conflicts()` untested | partial |
 | FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
-| FR-5 | Conflict surfacing, no auto-resolution | `schema.ConflictQueueEntry`, same guard | enforced |
+| FR-5 | Conflict surfacing, no auto-resolution | guard enforced; `schema.ConflictQueueEntry` never constructed in a test | partial |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
 | FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
-| FR-8 | Decision authority stays human | `orchestrator.INTERRUPTING_STAGES` | declared |
+| FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` | declared |
 
 ## Functional requirements — TRS
 
@@ -33,17 +40,17 @@ Status values:
 | FR-ING-03 | Text-layer PDFs: layout-aware, page numbers | `ports.ParsedElement` | declared |
 | FR-ING-04 | Scanned PDFs/images: OCR, bounding boxes | `ports.OCRPort`, `schema.SourceRef.bounding_box` | declared |
 | FR-ING-05 | Word: paragraphs, tables, footnotes | `ports.ParserPort` | open |
-| FR-ING-06 | Classify into eight document types | `schema.DocumentType` | enforced |
+| FR-ING-06 | Classify into eight document types | `schema.DocumentType`; `classify_document` raises NotImplementedError | declared |
 | FR-ING-07 | Schema-constrained extraction with confidence + source pointer | `ports.LLMPort.extract`, `schema.CanonicalField` | declared |
 | FR-ING-08 | Normalize units, retain verbatim | `schema.CanonicalField.verbatim_value`, `services/ingestion.normalize_unit` | declared |
 | FR-ING-09 | Stable IDs, content hash, dedup | `schema.SourceDocument.content_hash` | declared |
-| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.hitl_confidence_threshold` | declared |
+| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.target_precision_auto_accepted`; tiering in [D-3](../specs/001-procurement-agent/clarifications.md) | declared |
 
 ### Indexing, retrieval & RAG
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| FR-RAG-01 | Structure-aware chunking, 400–512 tokens, 10–20% overlap | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
+| FR-RAG-01 | Structure-aware chunking, 512 tokens, 0–10% overlap (revised from the TRS by plan Decision 6) | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
 | FR-RAG-02 | ANN index, cosine, full metadata set | `ports.VectorStorePort` | declared |
 | FR-RAG-03 | Hybrid retrieval, rerank, tier stays distinguishable | `ports.RetrievedChunk.source_tier` | declared |
 | FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `ports.LLMPort.extract` returns `None`; `ConflictStatus.INSUFFICIENT_EVIDENCE` | enforced |
@@ -63,12 +70,12 @@ Status values:
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| FR-HITL-01 | Five conflict classes | `schema.ConflictClass` | enforced |
+| FR-HITL-01 | Five conflict classes | `schema.ConflictClass` — no test asserts the count | declared |
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
-| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` | enforced |
+| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` — never constructed in a test | declared |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` | enforced |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
-| FR-HITL-06 | Immutable decision log | `schema.Resolution` (frozen), validator on `CanonicalField` | enforced |
+| FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |
 
 ### Output
 
@@ -90,11 +97,11 @@ Status values:
 | NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator | enforced |
 | NFR-02 | Immutable audit log | `schema.Resolution` frozen; store not yet built | declared |
 | NFR-03 | Access control at retrieval time; confidential path self-hosted | `VectorStorePort.search(allowed_document_ids=...)`, `.env.example` | declared |
-| NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols | enforced |
+| NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols; **no test imports `ports` at all** | declared |
 | NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` | declared |
 | NFR-06 | Hundreds of documents | — | open |
 | NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
-| NFR-08 | Human retains final authority | `orchestrator.INTERRUPTING_STAGES` | declared |
+| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` | declared |
 
 ---
 

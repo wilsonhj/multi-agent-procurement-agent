@@ -26,7 +26,24 @@ an unfrozen contract.
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
 | **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ |
 | **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — `VectorStorePort` exists, ACL model undecided |
-| **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key | A, B, D, E, I | ☐ |
+| **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | ☐ |
+
+> **C8 invariant — workers propose, they do not commit.** Each extraction writes an **immutable
+> claim row** keyed by `(document_id, field, extractor_version)`; the canonical value is a
+> **projection over claims**, never an in-place update. Only the reducer takes a store write
+> handle, and it calls `assert_no_autonomous_overwrite` internally.
+>
+> This is a *structural* property; the guard alone gives only a *value* property. It is a pure
+> predicate over two fields — it takes no store handle, performs no write, and **cannot enforce
+> that it is called**. It also deliberately permits record-over-record (inter-document conflict is
+> the queue's job), which under concurrent writers is a lost update it passes silently. And it has
+> no notion of ordering: two workers finishing in different orders yield different
+> last-writer-wins outcomes, making the store itself non-deterministic — which defeats FR-OUT-06
+> even though composition is a pure function of that store.
+>
+> With append-only claims there is no overwrite to guard. The unreachability test ("the write API
+> is not reachable from worker context") becomes writable once C1 and C8 land, and should gate
+> them.
 
 **C1, C2, C3 and C7 are the expensive ones to change.** Spend the week; it buys weeks back.
 
@@ -147,6 +164,10 @@ All nine run concurrently once Phase 0 lands.
 - **E.2** Condition-matching gate — **mismatched conditions are not a conflict, they are not a
   comparison** (D-1). This gate runs before any tolerance check.
 - **E.3** The five conflict classes (FR-HITL-01).
+- **E.3a** ⚠️ **If any ensemble is ever used here, aggregate by UNION, never by vote.** Stage 3's
+  exit threshold is *100% of injected conflicts surfaced*. A 2-of-3 vote that suppresses a real
+  conflict is a spec violation, not a false positive saved. Written down now because the verifier
+  pattern is a natural thing to reach for later.
 - **E.4** Identity resolution per D-4 — four stages, `(manufacturer, token)`-keyed suffix rules,
   electrical corroboration. → ⚠️ verify with the **Trina split-entity case**: bins 635–725 W under
   `Trina Solar Co.,Ltd`, bins 730/735/740 under `Trina Solar`. Looking up

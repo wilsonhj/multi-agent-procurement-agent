@@ -56,14 +56,18 @@ tested directly in `tests/test_source_of_record_rule.py`.
 
 ```
 ingest → extract → index → enrich_via_web → detect_conflicts
-                                                  ↓
-                                     [interrupt: human approval]
-                                                  ↓
-                                          compose_workbook
+                                                  │
+                                                  ▼
+                              conflict queue ──► human resolution
+                                                  │
+                        compose_workbook ◄── [compose gate: severity query]
 ```
 
-Interrupts fire only on high-blast-radius or uncertain nodes — detected conflicts and
-low-confidence extractions — not on every step, or latency becomes unbounded.
+**The human gate does not block the pipeline.** Resolution is detached: the gate is a policy
+check at compose time — a query, not a pause. One unresolved conflict on document 7 must not
+stall documents 8–400, and "defer" is a mandated resolution action that a blocking workflow
+cannot express. Composition runs against whatever is resolved now and emits a completeness
+manifest naming everything still open.
 
 ## Services
 
@@ -134,8 +138,9 @@ Copy `.env.example` to `.env` before wiring any endpoints. For contract and pric
 documents the LLM and embedding endpoints must be self-hosted or enterprise, with no
 third-party training on contract data.
 
-Optional extras keep heavy dependencies out of the core: `--extra parse` (Docling,
-pandas), `--extra agent` (LangGraph, Instructor), `--extra solar` (pvlib).
+Optional extras keep heavy dependencies out of the core: `--extra parse` (Docling, pandas,
+PyMuPDF), `--extra extract` (Instructor, OpenAI client for a self-hosted vLLM endpoint),
+`--extra solar` (pvlib).
 
 ---
 
@@ -147,7 +152,7 @@ src/procurement_agent/
 ├── ports/           The six swappable interfaces: parser, OCR, embedder,
 │                    vector store, reranker, LLM
 ├── services/        The seven services above, one package each
-└── orchestrator/    Pipeline stages and interrupt policy
+└── orchestrator/    Pipeline stages and the compose gate
 
 docs/
 ├── requirements-traceability.md   Every FR/NFR/AC mapped to where it lives

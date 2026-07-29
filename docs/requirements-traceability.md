@@ -16,6 +16,10 @@ Status values:
 >
 > The counts in an earlier version of this note ("eleven" and "eight") were both wrong; they are
 > recomputed from the diff above.
+>
+> A closed vocabulary a reader can trust matters more here than a flattering count:
+> `enforced` promises that a regression test protects the requirement, and if that is
+> not true the guarantee can be lost in a refactor with nothing going red.
 
 ---
 

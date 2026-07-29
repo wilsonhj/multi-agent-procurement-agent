@@ -15,6 +15,7 @@ from .enums import (
     Severity,
     SourceTier,
     StandardsRegime,
+    ToleranceKind,
     WorkbookTab,
 )
 from .field import (
@@ -23,6 +24,7 @@ from .field import (
     ConditionDimensions,
     ConflictCandidate,
     ConflictQueueEntry,
+    DeclaredBand,
     Resolution,
     SourceRef,
 )
@@ -39,6 +41,7 @@ __all__ = [
     "ConflictClass",
     "ConflictQueueEntry",
     "ConflictStatus",
+    "DeclaredBand",
     "DocumentType",
     "EfficiencyWeighting",
     "MeasurementBasis",
@@ -50,5 +53,6 @@ __all__ = [
     "SourceRef",
     "SourceTier",
     "StandardsRegime",
+    "ToleranceKind",
     "WorkbookTab",
 ]

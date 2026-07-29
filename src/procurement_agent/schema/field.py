@@ -35,6 +35,7 @@ from .enums import (
     Severity,
     SourceTier,
     StandardsRegime,
+    ToleranceKind,
 )
 
 
@@ -84,6 +85,109 @@ class Resolution(BaseModel):
     rationale: str
     value_before: object | None = None
     value_after: object | None = None
+
+
+class DeclaredBand(BaseModel):
+    """A tolerance the source itself prints, stored as written.
+
+    Shape fixed by the frozen contract's *Declared bands* section:
+    `{ low, high, kind, unit }`. A declared band is **not** the conflict tolerance
+    of clarifications.md D-2, which governs how far two independently extracted
+    values may diverge before a human is asked; conflating the two was the
+    original error. This one says how tightly the supplier guarantees a single
+    number.
+
+    Note on placement: issue #2 proposed a `declared_tolerance` key on
+    `CanonicalField`. The contract instead types `power_tolerance` and
+    `bifaciality_tolerance` *as* `DeclaredBand`, so a band is a field value like
+    any other and carries its own provenance, conditions and conflict state for
+    free. The contract outranks the issue (open-decisions rule 1), and a second
+    home for the same object would be a second thing to keep in sync.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    low: float = Field(description="Lower offset from nominal. `0` for a one-sided `0 ~ +5 W`.")
+    high: float = Field(description="Upper offset from nominal.")
+    kind: ToleranceKind
+    unit: str | None = Field(
+        default=None,
+        description=(
+            "The unit `low`/`high` are expressed in. Required when kind is "
+            "absolute and absent when it is relative, where percentage points of "
+            "the nominal are implied - which is what makes the contract's "
+            "`str | None` two states rather than an optional extra."
+        ),
+    )
+
+    @field_validator("low", "high")
+    @classmethod
+    def _reject_non_finite(cls, value: float) -> float:
+        """Same reasoning as `ConditionDimensions`: a NaN bound compares false
+        against everything, so a band containing one would silently declare every
+        value in agreement. `-0.0` is folded for the same repr-stability reason."""
+        if not math.isfinite(value):
+            raise ValueError("a declared band must have finite bounds (no NaN or infinity)")
+        return value + 0.0
+
+    @field_validator("unit", mode="before")
+    @classmethod
+    def _normalise_unit(cls, value: str | None) -> str | None:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> DeclaredBand:
+        if self.low > self.high:
+            raise ValueError(f"declared band is inverted: low={self.low} > high={self.high}")
+        if self.kind is ToleranceKind.ABSOLUTE and self.unit is None:
+            raise ValueError(
+                "an absolute declared band needs a unit; `0 ~ +5` alone is not a quantity"
+            )
+        if self.kind is ToleranceKind.RELATIVE and self.unit not in (None, "%"):
+            raise ValueError(f"a relative declared band is in percentage points, not {self.unit!r}")
+        return self
+
+    def resolve(self, nominal: float) -> tuple[float, float]:
+        """The guaranteed range around `nominal`, in the parameter's own unit.
+
+        This is the only place a relative band is multiplied out, per the
+        contract: doing it at extraction fabricates a disagreement between the
+        605 W and 625 W rows of a Jinko sheet that print one identical tolerance,
+        and it is circular when the disputed field *is* the nominal.
+
+        Returned lowest-first. A relative band on a negative nominal - a Pmax
+        temperature coefficient of `-0.29 %/degC` is the real case - maps `low` to
+        the *upper* bound, so returning `(low_offset, high_offset)` unswapped
+        would hand the caller an inverted interval that intersects nothing.
+        """
+        if self.kind is ToleranceKind.RELATIVE:
+            bounds = (nominal + nominal * self.low / 100.0, nominal + nominal * self.high / 100.0)
+        else:
+            bounds = (nominal + self.low, nominal + self.high)
+        return (min(bounds), max(bounds))
+
+    def agrees(self, nominal: float, other: DeclaredBand | None, other_nominal: float) -> bool:
+        """Whether two nominals can denote the same physical part.
+
+        True when their guaranteed ranges intersect. Closed intervals on purpose:
+        a 650 W module declared `0 ~ +5 W` guarantees `[650, 655]` and a 655 W one
+        guarantees `[655, 660]`, and a part measuring exactly 655 W satisfies both
+        labels, so touching is agreement rather than the narrowest possible
+        conflict.
+
+        `other=None` means the other source printed no band, not that it has none:
+        its nominal is treated as the exact point `[v, v]`. That is deliberately
+        the strict reading - it can raise a conflict a shared band would have
+        absorbed, which is one extra queue item, where the permissive reading
+        silently merges two different SKUs.
+        """
+        low, high = self.resolve(nominal)
+        other_low, other_high = (
+            other.resolve(other_nominal) if other is not None else (other_nominal, other_nominal)
+        )
+        return low <= other_high and other_low <= high
 
 
 class ConditionDimensions(BaseModel):

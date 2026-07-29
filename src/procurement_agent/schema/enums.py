@@ -122,6 +122,26 @@ class MeasurementBasis(StrEnum):
     SOH_80 = "soh_80"
 
 
+class ToleranceKind(StrEnum):
+    """How a printed tolerance band is expressed (contract, "Declared bands").
+
+    Both are in current use across the five largest module suppliers, and they
+    are not interchangeable: Jinko's `0~+3%` on a 620 W module is `0~+18.6 W`,
+    nearly four bin steps, where Trina's `0~+5W` is 0.8%. Code assuming either
+    convention is wrong for at least two of the five. See issue #2.
+    """
+
+    ABSOLUTE = "absolute"
+    """Offsets in the parameter's own unit, e.g. `0 ~ +5 W`."""
+
+    RELATIVE = "relative"
+    """Offsets in percentage points of the nominal, e.g. `0~+3%`. Resolved
+    against the nominal at comparison time, never at extraction - the contract's
+    rule, because one printed tolerance covers a whole 605-625 W family and
+    multiplying early fabricates a disagreement between rows whose source text is
+    character-identical."""
+
+
 class PowerSide(StrEnum):
     """Which side of the PCS a BESS rating is taken on. Straddling it is ~28%."""
 

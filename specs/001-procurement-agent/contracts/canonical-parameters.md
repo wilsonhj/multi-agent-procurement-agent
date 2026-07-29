@@ -295,16 +295,16 @@ Which condition fields are required, by parameter family:
 
 | Family | Required condition fields | Why |
 |---|---|---|
-| PV power, efficiency, all electrical | `basis` ∈ {`stc`, `nmot`, `noct`, `bnpi`} | Trina prints STC 695 W and NOCT 531 W side by side. A naive table grab returns 531. The BNPI/bifacial-gain table can read 30% higher again. |
+| PV power, efficiency, all electrical | `basis` ∈ {`stc`, `nmot`, `noct`, `bnpi`, `bstc`, `ptc`} | Trina prints STC 695 W and NOCT 531 W side by side. A naive table grab returns 531. The BNPI/bifacial-gain table can read 30% higher again. `ptc` is the CEC list's own power column and D-8 makes that list the authority for PV — without it a 509.9 W PTC figure has no honest encoding and compares against a 550 W STC one. `bstc` is bifacial STC per IEC TS 60904-1-2, the companion to `bnpi`. |
 | PV temperature coefficients | none — but see below | `%/degC` ≡ `%/K`. **Never route through a temperature converter**; the +273.15 offset silently destroys the value. |
 | Inverter rated power | `temperature_c` | `352 kVA @30°C / 320 @40°C / 295 @50°C` are all "rated". CEC anchors on 40 °C. |
 | Inverter efficiency | `weighting` ∈ {`max`, `cec`, `european`} | 99.02% max, 98.5% CEC and 98.8% European are one product. |
 | Inverter MPPT window | `basis` ∈ {`full_range`, `full_power`} | `500–1500 V` and `860–1330 V` are different fields, not a discrepancy. |
-| BESS energy | `side` ∈ {`ac`, `dc`}, `basis` ∈ {`nameplate`, `bol`, `fat`, `sat_1mo`, `sat_3mo`, `eol`} | BOL vs EOL differ ~26% on real projects. AC vs DC straddles the PCS. |
-| BESS RTE | `side`, `duration_h`, `rte_boundary` | Four distinct boundaries all called "round-trip efficiency", worth 2–7 pp. RTE is duration-dependent even at one boundary. |
+| BESS energy | `side` ∈ {`ac`, `dc`}, `basis` ∈ {`nameplate`, `bol`, `fat`, `sat_1mo`, `sat_3mo`, `sat`, `eol`} | BOL vs EOL differ ~26% on real projects. AC vs DC straddles the PCS. `sat` means site acceptance with the epoch not stated; it is never aliased onto either dated member, because `basis` is a grouping dimension and aliasing would merge one-month with three-month measurements. |
+| BESS RTE | `side`, `duration_h`, `rte_boundary` ∈ {`dc_dc_terminals`, `dc_round_trip`, `ac_ac_lv_incl_thermal`, `ac_ac_mv_incl_aux`} | Four distinct boundaries all called "round-trip efficiency", worth 2–7 pp. RTE is duration-dependent even at one boundary. Closed rather than free text: five spellings of one boundary formed five groups that never met, so two extractions of the *same* boundary stopped comparing — worse than the `note` routing it replaced. "No boundary stated" is absent, not a fifth member. |
 | BESS cycle life | `basis` ∈ {`soh_60`, `soh_70`, `soh_80`} | The EOL state-of-health threshold the cycle count is quoted to. Frequently omitted entirely, which makes the number uncomparable. |
-| Transformer MVA | `standards_regime`, plus cooling class per rating | IEEE lists base-first, IEC top-first. "Take the first number" is right for one and wrong for the other. |
-| Transformer %Z | `standards_regime`, `base_mva`, `tap_position` | %Z scales linearly with the MVA base — the same unit differs 1.25–1.67× between regimes. Nominal-tap and +5%-tap impedance are likewise not the same measurement. |
+| Transformer MVA | `standards_regime` ∈ {`ieee`, `iec`}, plus cooling class per rating | IEEE lists base-first, IEC top-first. "Take the first number" is right for one and wrong for the other. `ansi` and `ansi/ieee` fold to `ieee`; `gb`, `is` and `csa` are deliberately unmapped. |
+| Transformer %Z | `standards_regime`, `base_mva`, `tap_position_pct` | %Z scales linearly with the MVA base — the same unit differs 1.25–1.67× between regimes. Nominal-tap and +5%-tap impedance are likewise not the same measurement. The tap is a percentage deviation from the principal tap (`0.0` nominal, `5.0` the +5% tap) rather than a name, because `nominal` / `Nominal Tap` / `principal tap` are one measurement and as free text they were three groups. |
 | Transformer losses | `reference_temperature_c` | IEEE load loss at `20 + rise` (75/85/95 °C); IEC at 75 °C regardless. No-load loss is **not** temperature-corrected. |
 
 **Absent is unknown, not contradictory.** A condition field set on one side and absent on the
@@ -319,10 +319,20 @@ and manufactured conflicts worth 2–7 pp, 1.25–1.67× and a full tap step res
 its own field on `ConditionDimensions`. **A dimension that changes what a number means belongs on
 `ConditionDimensions`; only an annotation belongs in `note`.** Issue #16.
 
-**The vocabularies above are closed.** `basis`, `side`, `weighting` and `standards_regime` are
-enums (`schema/enums.py`), not free strings, so a token outside the set is a validation failure
-rather than a silent pass-through. Case and surrounding whitespace are normalised before
-coercion, so a datasheet printing `STC` and one printing `stc` land in the same group. The BESS
+**The vocabularies above are closed.** `basis`, `side`, `weighting`, `standards_regime` and
+`rte_boundary` are enums (`schema/enums.py`), not free strings, so a token outside *the union* is
+a validation failure rather than a silent pass-through. The **per-family** sets in the table are
+documentation, not enforcement: `basis` is one field across all eight categories, so nothing stops
+a PV module carrying `basis = eol`. Splitting it per family would give `Condition` a different
+shape per category, which the comparison logic cannot carry — this is a known limit, not an
+oversight. Case and surrounding whitespace are normalised before
+coercion, so a datasheet printing `STC` and one printing `stc` land in the same group, along
+with the zero-width and byte-order marks PDF and XLSX extraction leaves behind. A short alias map
+folds exact synonyms real sources print — `ansi`, `ansi/ieee` → `ieee` (this repo's own text
+writes "ANSI/IEEE (C57.12.00 5.4)"), `euro`, `eu` → `european` — because closing a vocabulary
+turns an unlisted spelling into a dropped document. `gb`, `is` and `csa` are deliberately *not*
+mapped: they are standards derived from a regime rather than names for one, and asserting which
+would be a technical claim nobody here has verified. The BESS
 cycle-life row is the one interpretation rather than a reading: this table wrote that family as a
 percentage where every other `basis` value is a token, so it is encoded as `soh_60` / `soh_70` /
 `soh_80` to keep `basis` one type. See open-decisions.md.

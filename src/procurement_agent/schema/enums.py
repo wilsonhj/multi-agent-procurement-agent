@@ -91,6 +91,19 @@ class MeasurementBasis(StrEnum):
     NMOT = "nmot"
     NOCT = "noct"
     BNPI = "bnpi"
+    BSTC = "bstc"
+    """Bifacial STC per IEC TS 60904-1-2, which the contract cites for
+    bifaciality alongside BNPI. Omitting it left one of the two bifacial ratings
+    unrepresentable."""
+
+    PTC = "ptc"
+    """PVUSA Test Conditions - the CEC list's own power column, and D-8 makes
+    that list the authority for PV. Not an optional extra: clarifications.md's
+    cross-validation table gates `PTC / STC` to 87-96% and tasks.md B.5 makes it
+    a hard gate, so a corpus built from the CEC list carries a PTC power for
+    every module. Its absence had no honest encoding - leaving `basis` unset
+    made a 509.9 W PTC figure comparable with a 550 W STC one, a ~10% false
+    conflict on every row."""
 
     # Inverter MPPT window - `500-1500 V` and `860-1330 V` are different fields,
     # not a discrepancy.
@@ -204,6 +217,35 @@ class StandardsRegime(StrEnum):
 
     IEEE = "ieee"
     IEC = "iec"
+
+
+class RteBoundary(StrEnum):
+    """Where a BESS round-trip efficiency is measured (clarifications.md).
+
+    Closed, because leaving it an open string reproduced one level down the
+    silent suppression #16 set out to fix: five spellings of the Tesla Megablock
+    boundary formed five groups, so two extractions of the *same* boundary
+    stopped comparing at all. That is strictly worse than the `note` routing it
+    replaced, which at least compared them.
+
+    "No boundary stated" is `None`, not a member - absent is unknown, not a
+    fifth boundary.
+    """
+
+    DC_DC_TERMINALS = "dc_dc_terminals"
+    """DC-DC at container terminals. CATL EnerC+ quotes 95% here."""
+
+    DC_ROUND_TRIP = "dc_round_trip"
+    """DC round trip. Powin quotes 93/94/95% at 2h/3h/4h."""
+
+    AC_AC_LV_INCL_THERMAL = "ac_ac_lv_incl_thermal"
+    """AC-AC at 480 V including thermal. Tesla MP2XL: 91.7% at 2h, 93.7% at 4h."""
+
+    AC_AC_MV_INCL_AUX = "ac_ac_mv_incl_aux"
+    """AC-AC at medium voltage including auxiliaries. Tesla Megablock: 91%.
+
+    Bridging from DC-DC costs ~2-4 pp (PCS) + 1-2 pp (aux) + ~1 pp (MV
+    transformer), which is why "CATL 95% beats Tesla 93.7%" is meaningless."""
 
 
 class Severity(IntEnum):

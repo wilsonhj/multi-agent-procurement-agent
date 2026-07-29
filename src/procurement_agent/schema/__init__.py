@@ -12,6 +12,7 @@ from .enums import (
     MeasurementBasis,
     PowerSide,
     ResolutionAction,
+    RteBoundary,
     Severity,
     SourceTier,
     StandardsRegime,
@@ -28,6 +29,7 @@ from .field import (
     DeclaredBand,
     Resolution,
     SourceRef,
+    VocabularyError,
 )
 
 __all__ = [
@@ -49,6 +51,7 @@ __all__ = [
     "PowerSide",
     "Resolution",
     "ResolutionAction",
+    "RteBoundary",
     "Severity",
     "SourceDocument",
     "SourceRef",
@@ -56,5 +59,6 @@ __all__ = [
     "StandardsRegime",
     "ToleranceKind",
     "ToleranceRule",
+    "VocabularyError",
     "WorkbookTab",
 ]

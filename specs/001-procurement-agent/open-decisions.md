@@ -214,9 +214,27 @@ the source of the `sat` mismatch. Tracked as #16.
 alongside `sat_1mo`/`sat_3mo` as a third member meaning "epoch not stated", never
 aliased — which closing the vocabulary made load-bearing, since its absence would
 otherwise reject any datasheet printing an undated "SAT". The `basis` description
-now points at the Conditions table instead of restating it, and
-`test_the_contract_conditions_table_names_only_real_fields` checks the table
-against the model so the drift cannot silently return.
+now points at the Conditions table instead of restating it, and the contract's
+Conditions table is now checked against the model in both directions, so a member
+that exists in one and not the other fails the suite. (`sat` shipped for one
+commit in exactly that state — in the enum, absent from the contract, while this
+paragraph claimed both had been done. The reverse check exists because of it.)
+
+**Unresolved consequence, worth a human's eye.** `sat` denotes a *partially*
+unknown epoch, but it is encoded as a known value, and `comparable_with` treats
+two stated-and-different dimensions as a contradiction. So:
+
+    basis unset  vs  sat_1mo   ->  comparable
+    basis = sat  vs  sat_1mo   ->  not comparable
+
+An extractor that faithfully records what the datasheet said therefore gets
+*fewer* comparisons than one that records nothing — the opposite of the incentive
+the schema should create, and against the table's own "absent is unknown, not
+contradictory" rule. The alternatives are both worse in a different direction:
+aliasing `sat` onto a dated member is the silent merge decision 6 rejects, and
+rejecting undated SAT drops the document. A third option — a `basis_precision`
+marker letting a value declare itself partially stated — would fix the incentive
+and is a larger change than #16's scope.
 
 ---
 

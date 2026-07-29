@@ -14,7 +14,9 @@ determinism requirement rests on this type being stable.
 from __future__ import annotations
 
 import math
+import unicodedata
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import (
     BaseModel,
@@ -32,6 +34,7 @@ from .enums import (
     MeasurementBasis,
     PowerSide,
     ResolutionAction,
+    RteBoundary,
     Severity,
     SourceTier,
     StandardsRegime,
@@ -230,23 +233,25 @@ class ConditionDimensions(BaseModel):
     reference_temperature_c: float | None = Field(
         default=None, description="Loss reference temperature: 20 + rise (IEEE) or 75 (IEC)"
     )
-    rte_boundary: str | None = Field(
+    rte_boundary: RteBoundary | None = Field(
         default=None,
         description=(
             "Where a BESS round-trip efficiency is measured. A dimension, not a "
             "note: four distinct boundaries are all called 'round-trip efficiency' "
-            "and they are worth 2-7 percentage points. The contract's Conditions "
-            "table routes this through `note`, which comparison ignores, so two "
-            "different boundaries compared as like-for-like. Amending that table "
-            "is part of adopting this field."
+            "and they are worth 2-7 percentage points. Closed rather than free "
+            "text, because five spellings of one boundary form five groups and "
+            "stop comparing - silent suppression one level below the `note` "
+            "routing this replaced."
         ),
     )
-    tap_position: str | None = Field(
+    tap_position_pct: float | None = Field(
         default=None,
         description=(
-            "Transformer tap a %Z or loss figure is stated at. Same reason as "
-            "rte_boundary: the contract puts it in `note`, and nominal-tap versus "
-            "+5%-tap impedance are not the same measurement."
+            "Transformer tap a %Z or loss figure is stated at, as a percentage "
+            "deviation from the principal tap: `0.0` is nominal, `5.0` is the +5% "
+            "tap. A number rather than a name for the same reason `rte_boundary` "
+            "is an enum - 'nominal', 'principal tap' and 'Nominal Tap' are one "
+            "measurement, and as free text they were three groups that never met."
         ),
     )
     base_mva: float | None = Field(
@@ -259,7 +264,13 @@ class ConditionDimensions(BaseModel):
         ),
     )
 
-    @field_validator("temperature_c", "duration_h", "reference_temperature_c", "base_mva")
+    @field_validator(
+        "temperature_c",
+        "duration_h",
+        "reference_temperature_c",
+        "base_mva",
+        "tap_position_pct",
+    )
     @classmethod
     def _reject_non_finite(cls, value: float | None) -> float | None:
         """NaN would break the equivalence relation `grouping_key` depends on.
@@ -279,32 +290,81 @@ class ConditionDimensions(BaseModel):
         return value + 0.0
 
     @field_validator(
-        "basis",
-        "side",
-        "weighting",
-        "standards_regime",
-        "rte_boundary",
-        "tap_position",
-        mode="before",
+        "basis", "side", "weighting", "standards_regime", "rte_boundary", mode="before"
     )
     @classmethod
-    def _normalise_vocabulary(cls, value: str | None) -> str | None:
-        """Fold case and strip padding so `STC` and `stc` share a group.
+    def _normalise_vocabulary(cls, value: object) -> object:
+        """Fold a printed spelling to its member, then let pydantic coerce.
 
-        Runs `mode="before"`, so `"STC"` folds to `"stc"` and *then* coerces to
-        `MeasurementBasis.STC` rather than failing validation. Now that the
-        vocabularies are closed, an unrecognised token raises instead of silently
-        forming its own group - which is the failure direction that cannot be
-        reviewed, because nothing surfaces a comparison that never happened.
+        `mode="before"`, so `"  STC "` becomes `"stc"` and *then* coerces to
+        `MeasurementBasis.STC` rather than failing validation. With the
+        vocabularies closed an unrecognised token now raises instead of silently
+        forming its own group - the failure direction that cannot be reviewed,
+        because nothing surfaces a comparison that never happened.
         """
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return value
-        normalised = value.strip().casefold()
-        # An extractor emitting "" rather than None would otherwise read as a
-        # stated dimension and strand the value in its own group.
-        return normalised or None
+        return _normalise_token(value)
+
+
+#: Printed spellings that denote a vocabulary member rather than a new value.
+#:
+#: Not convenience. Closing the vocabularies turned every unlisted spelling into
+#: a hard validation failure, and these are the forms real sources print: this
+#: repo's own text writes "ANSI/IEEE (C57.12.00 5.4)" and "ANSI submittals
+#: declare `Dyn1`", while Fronius- and SMA-family sheets print "Euro efficiency".
+#: Rejecting them would drop the document, which is a worse outcome than folding
+#: a synonym whose meaning nothing disputes.
+#:
+#: Deliberately only exact synonyms. `gb` (GB 1094), `is` (IS 2026) and `csa` are
+#: *derived* from one regime rather than names for it, and asserting which would
+#: be a technical claim about a standard nobody here has read - see
+#: open-decisions.md.
+VOCABULARY_ALIASES: dict[str, str] = {
+    "ansi": "ieee",
+    "ansi/ieee": "ieee",
+    "ieee/ansi": "ieee",
+    "euro": "european",
+    "eu": "european",
+}
+
+#: Characters PDF and XLSX extraction inserts that carry no meaning. `str.strip`
+#: removes NBSP but none of these, so `﻿stc` was a hard validation failure
+#: on a document whose only sin was a byte-order mark.
+_INVISIBLE = dict.fromkeys(map(ord, "​‌‍﻿­⁠"))
+
+
+class VocabularyError(ValueError):
+    """A condition dimension arrived as something other than text or a member."""
+
+
+def _normalise_token(value: object) -> object:
+    """Fold a printed token to its canonical member name.
+
+    NFKC first, then case, then the invisible characters extraction leaves
+    behind. A `StrEnum` member passes through untouched: folding it would work
+    only by accident today, because all four vocabularies happen to be
+    lowercase, and would silently break the first mixed-case member anyone adds.
+    """
+    if value is None or isinstance(value, StrEnum):
+        return value
+    if isinstance(value, bytes | bytearray):
+        # pydantic decodes bytes for a str field, so `b"stc"` validated while
+        # `b"STC"` raised - the same input, case-dependent, on the one path this
+        # validator exists to make case-insensitive.
+        raise VocabularyError(
+            "condition vocabularies take text, not bytes; decode at the "
+            "extraction boundary where the encoding is known"
+        )
+    if not isinstance(value, str):
+        return value
+    folded = unicodedata.normalize("NFKC", value).translate(_INVISIBLE).strip().casefold()
+    # `dc-dc-terminals` and `dc_dc_terminals` are one token. No member contains a
+    # hyphen, so this cannot collide two distinct members.
+    folded = folded.replace("-", "_")
+    # An extractor emitting "" rather than None would otherwise read as a stated
+    # dimension and strand the value in its own group.
+    if not folded:
+        return None
+    return VOCABULARY_ALIASES.get(folded, folded)
 
 
 class Condition(ConditionDimensions):

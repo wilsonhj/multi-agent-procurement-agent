@@ -16,6 +16,8 @@ from procurement_agent.schema import (
     ConflictCandidate,
     ConflictClass,
     ConflictQueueEntry,
+    Resolution,
+    ResolutionAction,
     Severity,
     SourceRef,
     SourceTier,
@@ -120,3 +122,25 @@ def test_severity_is_required_on_a_queue_entry() -> None:
     payload.pop("severity")
     with pytest.raises(ValidationError):
         ConflictQueueEntry(**payload)
+
+
+def test_a_resolved_critical_conflict_does_not_block() -> None:
+    """The parameter was named `unresolved` and the filter only checked severity,
+    so a CRITICAL conflict a human had already decided went on refusing to
+    compose - with no way to clear it."""
+    entry = _entry(Severity.CRITICAL).model_copy(
+        update={
+            "resolution": Resolution(
+                action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+                resolved_by="procurement.lead",
+                resolved_at=datetime(2026, 1, 2, tzinfo=UTC),
+                rationale="Contract supersedes the CEC listing.",
+            )
+        }
+    )
+    assert blocking_conflicts([entry], threshold=Severity.MEDIUM) == []
+    assert not compose_gate_blocks([entry], threshold=Severity.MEDIUM)
+
+
+def test_an_unresolved_critical_conflict_still_blocks() -> None:
+    assert compose_gate_blocks([_entry(Severity.CRITICAL)], threshold=Severity.MEDIUM)

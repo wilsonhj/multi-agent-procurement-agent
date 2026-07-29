@@ -192,15 +192,14 @@ class Condition(ConditionDimensions):
     def is_unstated(self) -> bool:
         """Whether no comparable dimension is known at all.
 
-        These do not form a meaningful group of their own - see
-        `services.conflict_hitl.comparison_groups`, which folds them into every
-        stated group rather than stranding them.
+        Detection does not partition, so nothing needs rescuing: see
+        `services.conflict_hitl.comparison_pairs`, which compares an unstated
+        condition against every condition it does not contradict.
         """
         return all(value is None for value in self.grouping_key())
 
     def grouping_key(self) -> tuple[object, ...]:
-        """The partition key for candidate values. **Use this to group, not
-        `comparable_with`.**
+        """A canonical key for *displaying* candidates grouped by condition.
 
         Equality over this tuple is an equivalence relation - reflexive because
         non-finite floats are rejected at construction, and transitive because it
@@ -209,9 +208,9 @@ class Condition(ConditionDimensions):
         must be a pure function of the store.
 
         Grouping by this key alone is *comparison-losing*, though: a value whose
-        conditions are unstated would strand in its own group and be compared
-        against nothing. `comparison_groups` is the function that closes that gap;
-        this key is only the partition it starts from.
+        conditions are merely less specific strands in its own group and is
+        compared against nothing. That is why detection uses
+        `services.conflict_hitl.comparison_pairs` and this key is for display.
 
         `note` and `derived` are excluded: free text is provenance for a human,
         and how a dimension came to be filled does not change what it says.
@@ -229,8 +228,10 @@ class Condition(ConditionDimensions):
         with an unstated condition but not with each other, so first-fit bucketing
         over the same three values yields different groups depending on the order
         they arrive - and therefore a different conflict queue from the same store.
-        Group with `grouping_key()`; use this only as a pairwise gate once grouping
-        has already fixed the partition. See issue #12.
+        This is the detection predicate - `services.conflict_hitl.comparison_pairs`
+        applies it to every unordered pair. Do not use it to bucket candidates;
+        first-fit bucketing over a non-transitive relation gives a different
+        conflict queue per document order. See issue #12.
         """
         for name in ConditionDimensions.model_fields:
             mine, theirs = getattr(self, name), getattr(other, name)

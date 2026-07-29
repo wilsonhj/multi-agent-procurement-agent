@@ -64,12 +64,17 @@ def blocking_conflicts(
     generator the second call would return `[]` - reporting zero blockers into
     the very manifest the refusal exists to populate.
     """
-    return [entry for entry in unresolved if entry.severity > threshold]
+    return [
+        entry
+        for entry in unresolved
+        # `resolution is None` is the actual unresolved test. The parameter name
+        # said "unresolved" and the filter only checked severity, so a CRITICAL
+        # conflict a human had already resolved went on blocking composition.
+        if entry.resolution is None and entry.severity > threshold
+    ]
 
 
-def compose_gate_blocks(
-    unresolved: Sequence[ConflictQueueEntry], *, threshold: Severity
-) -> bool:
+def compose_gate_blocks(unresolved: Sequence[ConflictQueueEntry], *, threshold: Severity) -> bool:
     """Whether composition should refuse to run.
 
     The only place a human decision gates the pipeline, and it is a query rather

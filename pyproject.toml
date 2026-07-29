@@ -22,10 +22,14 @@ dependencies = [
 # Document parsing / OCR. Apache-2.0 and MIT only. Research verified licences at
 # primary sources and rejected: Marker (weights revenue-capped), Surya (GPL-3.0),
 # MinerU (AGPL-3.0), olmOCR (Rail-M revenue cap). See plan.md licence gate.
+#
+# PyMuPDF was declared here for per-page text-layer detection and removed: it is
+# "GNU AFFERO GPL 3.0 or Artifex Commercial", so it failed the same gate three
+# lines above it. Docling reports per-page text coverage, and pypdfium2
+# (BSD-3/Apache-2.0) is the fallback if a dedicated probe is needed.
 parse = [
     "docling>=2.115",
     "pandas>=2.2",
-    "pymupdf>=1.24",   # per-page text-layer detection for the parser router
 ]
 # Schema-constrained extraction against a self-hosted vLLM endpoint.
 # NOTE: use json_schema mode, NOT Instructor's default TOOLS mode - tool calls

@@ -108,7 +108,14 @@ class EmbedderPort(Protocol):
 
 @runtime_checkable
 class VectorStorePort(Protocol):
-    """ANN index over chunks (HNSW/IVF, cosine per FR-RAG-02)."""
+    """Vector store over chunks.
+
+    FR-RAG-02 asks for an ANN index (HNSW/IVF, cosine); **plan Decision 3a
+    reverses that** - exact search, because pgvector was measured silently
+    under-returning on a filtered top-k, and an HNSW index cost more than the
+    table. The Protocol is agnostic; do not build an ANN index on the strength
+    of the requirement text alone.
+    """
 
     def upsert(
         self, chunk_ids: list[str], vectors: list[list[float]], metadata: list[dict[str, Any]]
@@ -139,7 +146,12 @@ class VectorStorePort(Protocol):
 
 @runtime_checkable
 class RerankerPort(Protocol):
-    """Reranking over hybrid vector + BM25 candidates (FR-RAG-03)."""
+    """Reranking over hybrid retrieval candidates.
+
+    FR-RAG-03 says vector + BM25; **plan Decision 3b reverses the BM25 half** -
+    there is no permissively licensed true-BM25 for PostgreSQL, so lexical
+    matching comes from the embedding model's sparse output instead.
+    """
 
     def rerank(
         self, query: str, chunks: list[RetrievedChunk], *, limit: int

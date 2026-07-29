@@ -246,9 +246,42 @@ def test_the_one_sided_test_is_not_orientation_dependent() -> None:
     )
 
 
-def test_two_same_tier_candidates_degrade_to_the_symmetric_test() -> None:
-    """Nothing establishes which is the guarantee, and guessing a direction would
-    let a real overage pass as 'under guarantee'."""
+def test_the_one_sided_allowance_does_not_apply_between_two_declarations() -> None:
+    """IEC's +15% is how far a *measured* loss may exceed a *guaranteed* one. It
+    says nothing about two documents disagreeing on what was guaranteed.
+
+    Two datasheets stating 100 kW and 109 kW of no-load loss are two
+    declarations, and 9% is exactly the disagreement a reviewer needs to see.
+    Applying the measurement allowance symmetrically absorbed it silently — the
+    band came out at 16.35 and the conflict never reached the queue."""
+    component = tolerance_for("transformer_no_load_loss_w")
+    assert component.rule is ToleranceRule.ONE_SIDED
+    sheet_a = _c(100.0, unit="kW", verbatim="100 kW")
+    sheet_b = _c(109.0, unit="kW", doc="doc-b", verbatim="109 kW")
+    verdict = values_conflict(sheet_a, sheet_b, tolerance=component)
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+
+    # Still no conflict where the measurement genuinely is within the allowance.
+    report = _c(109.0, unit="kW", tier=SourceTier.WEB_SUPPLEMENT, doc="doc-b", verbatim="109 kW")
+    assert not values_conflict(sheet_a, report, tolerance=component).conflicts
+
+
+def test_two_declarations_are_compared_at_printed_precision() -> None:
+    """Falling back to the rounding floor, not to zero: two sheets printing `100`
+    and `100.4` differ by less than either could express."""
+    component = tolerance_for("transformer_no_load_loss_w")
+    coarse = _c(100.0, unit="kW", verbatim="100")
+    fine = _c(100.4, unit="kW", doc="doc-b", verbatim="100.4")
+    assert not values_conflict(coarse, fine, tolerance=component).conflicts
+    assert values_conflict(
+        _c(100.0, unit="kW", verbatim="100.0"),
+        _c(100.4, unit="kW", doc="doc-b", verbatim="100.4"),
+        tolerance=component,
+    ).conflicts
+
+
+def test_a_same_tier_gap_beyond_precision_is_still_a_conflict() -> None:
     a = _c(5000.0, tier=SourceTier.SYSTEM_OF_RECORD)
     b = _c(3000.0, tier=SourceTier.SYSTEM_OF_RECORD, doc="doc-b")
     assert values_conflict(a, b, tolerance=TOTAL_LOSS).conflicts

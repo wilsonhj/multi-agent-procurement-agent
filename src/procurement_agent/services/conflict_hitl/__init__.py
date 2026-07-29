@@ -483,25 +483,31 @@ def _compare_one_sided(
 
     Both IEC and IEEE state loss and no-load-current limits in one direction
     only, and IEC 60076-1 Table 1 notes that an omitted direction is
-    unrestricted: being *under* guarantee is never a nonconformity, so a web
-    value below a contract value is not a disagreement.
+    unrestricted: being *under* guarantee is never a nonconformity, so a test
+    report below a contract value is not a disagreement.
 
     Which side is the declared one comes from the source tier - a contract or
-    spec sheet is the guarantee, web data is the report against it. When both
-    sides carry the same tier there is nothing to establish direction, and the
-    test degrades to the symmetric one rather than guessing: assuming a direction
-    would let a real overage pass as "under guarantee".
+    spec sheet is the guarantee, web data is the report against it.
+
+    **The allowance does not apply declared-against-declared.** IEC's +15% is how
+    far a *measured* loss may exceed a *guaranteed* one; it says nothing about two
+    documents disagreeing on what was guaranteed. Two datasheets stating 100 kW
+    and 109 kW of no-load loss are two declarations, and a 9% gap between them is
+    an inter-document conflict a reviewer has to see - applying the measurement
+    allowance symmetrically silently absorbed it. So when neither side is
+    identifiable as the measurement, the comparison falls back to printed
+    precision, which is what docs/defaults.md said the rule should be all along.
     """
     if a.source_tier is b.source_tier:
         difference = abs(number_a - number_b)
-        band = max(tolerance.magnitude or 0.0, 0.0) * max(abs(number_a), abs(number_b))
-        band = max(band, floor)
-        conflicts = difference > band
+        conflicts = difference > floor
         return ConflictVerdict(
             conflicts=conflicts,
             conflict_class=conflict_class if conflicts else None,
-            reason=f"one-sided field but both candidates are {a.source_tier.value}, so "
-            f"neither is the declared value; compared symmetrically against {band:g}",
+            reason=f"both candidates are {a.source_tier.value}, so neither is the "
+            f"measurement; the one-sided allowance does not apply between two "
+            f"declarations and |{number_a} - {number_b}| = {difference:g} is compared "
+            f"at printed precision {floor:g}",
         )
     declared, measured = (
         (number_a, number_b)

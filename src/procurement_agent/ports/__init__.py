@@ -7,7 +7,8 @@ Six interfaces, one per named swap point. They are structural Protocols rather
 than base classes so that adapters can wrap third-party clients without
 inheriting from anything here, and so no concrete dependency leaks into the core
 package. No concrete adapter exists yet; when one does it will depend on an
-optional extra declared in pyproject.toml, never on the core.
+optional extra declared in pyproject.toml, never on the core - the extras
+there currently declare dependency groups only.
 
 **These Protocols are synchronous, deliberately.** Concurrency in this system is
 per-process, not per-coroutine: the runner is a Postgres job table with a

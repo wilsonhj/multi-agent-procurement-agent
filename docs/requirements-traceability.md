@@ -8,11 +8,14 @@ Status values:
 - **declared** — the type, signature or contract exists; behaviour is not implemented
 - **open** — no home in the code yet
 
-> **Audit, 2026-07-28.** Eleven rows were corrected after review. Three cited symbols that had
-> been deleted (`orchestrator.INTERRUPTING_STAGES`, `config.hitl_confidence_threshold`); eight
-> claimed **enforced** with no test covering the cited artifact — including NFR-04, whose entire
-> citation is a module no test imports. `enforced` in this table means a test exists, not that
-> the author believed the code was right.
+> **Audit, 2026-07-28.** Fourteen rows changed status after review, **ten** of them demoted from
+> **enforced** with no test covering the cited artifact — including NFR-04, whose entire citation
+> is a module no test imports. Three cited symbols had been deleted outright
+> (`orchestrator.INTERRUPTING_STAGES`, `config.hitl_confidence_threshold`). `enforced` in this
+> table means a test exists, not that the author believed the code was right.
+>
+> The counts in an earlier version of this note ("eleven" and "eight") were both wrong; they are
+> recomputed from the diff above.
 
 ---
 
@@ -74,7 +77,7 @@ Status values:
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
 | FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`); no production path builds one | partial |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
-| FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
+| FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |
 | FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |
 
 ### Output
@@ -84,7 +87,7 @@ Status values:
 | FR-OUT-01 | Tab per category, suppliers rows or columns | `config.suppliers_as_rows` | declared |
 | FR-OUT-02 | Exactly 13 tabs | `schema.WorkbookTab` | enforced |
 | FR-OUT-03 | Per-cell provenance | `services/output.write_workbook` | declared |
-| FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` | enforced |
+| FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` enforced; no test exercises the formatting itself, and the writer that would apply it is unimplemented | partial |
 | FR-OUT-05 | Certification/standards columns per category | [contracts/canonical-parameters.md](../specs/001-procurement-agent/contracts/canonical-parameters.md) | declared |
 | FR-OUT-06 | Canonical units, deterministic regeneration | `services/output.write_workbook` | declared |
 
@@ -110,7 +113,7 @@ Status values:
 | ID | Criterion | Test | Status |
 |---|---|---|---|
 | AC-1 | Scanned spec sheet extracts fields with provenance, low confidence to HITL | — | open |
-| AC-2 | Web contradiction raises conflict; record value unchanged | `tests/test_source_of_record_rule.py` | enforced |
+| AC-2 | Web contradiction raises conflict; record value unchanged | `tests/test_source_of_record_rule.py` calls `assert_no_autonomous_overwrite` directly; no test drives a web contradiction through detection to a queue entry | partial |
 | AC-3 | All 13 tabs with conditional formatting | `tests/test_schema_invariants.py`, `tests/test_output_flags.py` | partial |
 | AC-4 | Every cell resolves to a source | `tests/test_schema_invariants.py::test_source_ref_requires_a_source` | enforced |
 | AC-5 | Re-ingest creates no duplicates | — | open |

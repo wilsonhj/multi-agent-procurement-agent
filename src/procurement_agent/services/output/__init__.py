@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -75,17 +76,26 @@ def normalize_archive(path: Path) -> Path:
 
     ordered = sorted(members, key=lambda name: (name != CONTENT_TYPES, name))
 
-    staging = path.with_name(f"{path.name}.{os.getpid()}.normalizing")
+    # `mkstemp`, not pid: two callers in one process share a pid, and the loser
+    # of the race raised FileNotFoundError out of a call that had succeeded.
+    handle, staging_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f"{path.name}.", suffix=".normalizing"
+    )
+    os.close(handle)
+    staging = Path(staging_name)
     try:
         with zipfile.ZipFile(staging, "w", zipfile.ZIP_DEFLATED) as target:
             for name in ordered:
                 payload = members[name]
-                if name == "docProps/app.xml":
+                # OPC part names are case-insensitive; openpyxl always writes
+                # this casing, but a foreign workbook need not.
+                lowered = name.casefold()
+                if lowered == "docprops/app.xml":
                     payload = _APPLICATION_RE.sub(
                         f"<Application>{DETERMINISTIC_APPLICATION}</Application>".encode(), payload
                     )
                     payload = _APP_VERSION_RE.sub(b"<AppVersion>1.0</AppVersion>", payload)
-                elif name == "docProps/core.xml":
+                elif lowered == "docprops/core.xml":
                     payload = _DCTERMS_RE.sub(rb"\g<1>" + _CORE_XML_EPOCH + rb"\g<2>", payload)
 
                 info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_TIMESTAMP)

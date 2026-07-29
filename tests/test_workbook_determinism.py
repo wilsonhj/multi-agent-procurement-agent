@@ -12,6 +12,8 @@ itself, not on a hash comparison that luck can satisfy.
 """
 
 import hashlib
+import re
+import threading
 import time
 import zipfile
 import zlib
@@ -81,8 +83,11 @@ def test_core_xml_timestamps_are_frozen(tmp_path: Path) -> None:
         core = archive.read("docProps/core.xml").decode()
     assert "1980-01-01T12:00:00Z" in core
     assert core.count("1980-01-01T12:00:00Z") >= 1
-    for year in ("2024", "2025", "2026", "2027"):
-        assert year not in core
+    # Not a list of years: `for year in ("2024".."2027")` stops discriminating in
+    # 2028 and would then pass on a normaliser that had stopped freezing dcterms.
+    stamped = re.findall(r"<dcterms:(?:created|modified)[^>]*>([^<]*)<", core)
+    assert stamped, "no dcterms elements found; the assertion below would be vacuous"
+    assert all(value.startswith("1980-01-01") for value in stamped), stamped
 
 
 def test_content_types_is_first_and_the_rest_sorted(tmp_path: Path) -> None:
@@ -209,3 +214,47 @@ def test_the_compression_level_is_pinned_not_inherited(
     assert deflated(6) != deflated(9), "fixture too small to distinguish levels"
     assert at_default == deflated(6)
     assert at_nine == deflated(9), "the pinned level is not reaching the ZipInfo"
+
+
+def test_two_callers_in_one_process_do_not_collide(tmp_path: Path) -> None:
+    """The staging name was `f"{name}.{os.getpid()}.normalizing"`, which is shared
+    by two callers in one process: the loser of the race raised FileNotFoundError
+    out of a call that had in fact succeeded. The bytes were never at risk — both
+    writers emit the same archive, which is the point of the function — but a
+    spurious exception out of a successful normalisation is its own defect."""
+    book = _write(tmp_path / "book.xlsx")
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            normalize_archive(book)
+        except BaseException as exc:  # noqa: BLE001 - the assertion is that there are none
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors
+    assert [p.name for p in tmp_path.iterdir()] == ["book.xlsx"]
+
+
+def test_a_foreign_workbook_with_different_part_casing_is_still_normalised(
+    tmp_path: Path,
+) -> None:
+    """OPC part names are case-insensitive. openpyxl always writes
+    `docProps/app.xml`, so an equality test passes today and starts leaking the
+    library version the first time a foreign `.xlsx` is normalised."""
+    source = _write(tmp_path / "book.xlsx")
+    foreign = tmp_path / "foreign.xlsx"
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(foreign, "w") as target:
+        for info in original.infolist():
+            name = info.filename
+            if name == "docProps/app.xml":
+                name = "docprops/App.XML"
+            target.writestr(name, original.read(info.filename))
+    with zipfile.ZipFile(normalize_archive(foreign)) as archive:
+        app = archive.read("docprops/App.XML").decode()
+    assert "Openpyxl" not in app
+    assert DETERMINISTIC_APPLICATION in app

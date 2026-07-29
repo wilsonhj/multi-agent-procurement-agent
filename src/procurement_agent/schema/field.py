@@ -14,6 +14,7 @@ determinism requirement rests on this type being stable.
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
 from datetime import datetime
 from enum import StrEnum
@@ -169,6 +170,14 @@ class DeclaredBand(BaseModel):
             bounds = (nominal + nominal * self.low / 100.0, nominal + nominal * self.high / 100.0)
         else:
             bounds = (nominal + self.low, nominal + self.high)
+        if not all(math.isfinite(bound) for bound in bounds):
+            # `_reject_non_finite` guards the stored bounds because a non-finite
+            # band "agrees" with everything; the arithmetic here can manufacture
+            # one from finite inputs at absurd magnitudes, which would reach the
+            # same place by another route.
+            raise ValueError(
+                f"resolving this band against {nominal!r} overflows to a non-finite range"
+            )
         return (min(bounds), max(bounds))
 
     def agrees(self, nominal: float, other: DeclaredBand | None, other_nominal: float) -> bool:
@@ -357,9 +366,17 @@ def _normalise_token(value: object) -> object:
     if not isinstance(value, str):
         return value
     folded = unicodedata.normalize("NFKC", value).translate(_INVISIBLE).strip().casefold()
-    # `dc-dc-terminals` and `dc_dc_terminals` are one token. No member contains a
-    # hyphen, so this cannot collide two distinct members.
-    folded = folded.replace("-", "_")
+    # `dc-dc-terminals`, `DC DC terminals` and `dc_dc_terminals` are one token.
+    # No member contains a hyphen or a space, so this cannot collide two distinct
+    # members. Folding hyphens but not spaces split the difference in the
+    # direction that drops documents: no datasheet prints `full_power`, they
+    # print "Full power", and closing the vocabularies made that a hard failure.
+    # Whitespace is collapsed first so `ANSI / IEEE` reaches its alias.
+    # A slash separates alternatives rather than words, so whitespace around it
+    # collapses away first: `ANSI / IEEE` has to reach the `ansi/ieee` alias,
+    # not become `ansi_/_ieee`.
+    folded = re.sub(r"\s*/\s*", "/", folded)
+    folded = "_".join(folded.replace("-", " ").replace("_", " ").split())
     # An extractor emitting "" rather than None would otherwise read as a stated
     # dimension and strand the value in its own group.
     if not folded:

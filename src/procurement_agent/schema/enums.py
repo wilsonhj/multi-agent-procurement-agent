@@ -195,6 +195,29 @@ class ToleranceRule(StrEnum):
     inverter kVA against kW. Not a wide tolerance: not a comparison."""
 
 
+class ToleranceCondition(StrEnum):
+    """Discriminators for the D-2 rows that state two bands, not one.
+
+    Four rows of D-2's table are conditional. Transcribing only the first branch
+    is silent: the comparison applies a band that is right half the time and
+    nothing marks which half. Each member here is evaluated against the two
+    candidates being compared, so the alternate branch is selected from the data
+    rather than assumed.
+    """
+
+    IMPEDANCE_BELOW_10_PCT = "impedance_below_10_pct"
+    """IEC 60076-1 Table 1 item 3a: +/-7.5% if Z>=10%, +/-10% if Z<10%."""
+
+    REGIME_IEEE = "regime_ieee"
+    """Transformer total losses: +10% under IEC, +6% under IEEE. Read from
+    `Condition.standards_regime`, which D-6 already makes load-bearing."""
+
+    AGAINST_CEC_LIST = "against_cec_list"
+    """CEC weighted efficiency: 0.1 pp datasheet-to-datasheet, 0.25 pp against
+    the CEC list, whose headline column is quantized to 0.5 pp - only 21 distinct
+    values across 2,104 rows. Read from `SourceRef.source_authority`."""
+
+
 class PowerSide(StrEnum):
     """Which side of the PCS a BESS rating is taken on. Straddling it is ~28%."""
 

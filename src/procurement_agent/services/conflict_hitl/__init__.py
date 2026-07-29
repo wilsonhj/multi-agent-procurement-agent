@@ -27,6 +27,8 @@ from ...schema import (
     ConflictClass,
     DeclaredBand,
     SourceTier,
+    StandardsRegime,
+    ToleranceCondition,
     ToleranceRule,
 )
 from .tolerance import FieldTolerance
@@ -269,19 +271,36 @@ def _decimals(candidate: ConflictCandidate) -> int:
     every integer-printed value would claim one decimal it never had, and a sheet
     printing `22` would be held to a precision it cannot express.
 
-    An `int` value therefore reports zero places directly rather than through
-    `float`, which is the whole `650` vs `650.0` case D-2 names.
+    **The verbatim number has to be the value.** Reading the first numeric token
+    unconditionally meant a leading qualifier decided the precision of the whole
+    comparison - `"@ 25 degC: 22.35 %"` reported zero places, widening the floor
+    to 0.5 and absorbing a 0.45 pp disagreement that is 4.5x the D-2 band. A
+    thousands separator did it too, since the regex stops at the comma. Fewer
+    decimals means a *wider* floor, so this direction hides conflicts, and it
+    turns on the extractor's formatting rather than on the data. Every candidate
+    number in the text is tried, and one that does not equal `value` is not the
+    value.
+
+    An `int` and a `Decimal` report their own precision rather than going through
+    `float`: `Decimal("650")` is the natural representation of exactly the
+    catalog values D-2 calls EXACT, and `repr(float(...))` would give it a
+    decimal place it never had - the `650` vs `650.0` case D-2 names.
     """
-    if candidate.verbatim_value is not None:
-        found = re.search(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", candidate.verbatim_value)
-        if found is not None:
-            return _places(found.group())
+    number = _as_number(candidate.value)
+    if candidate.verbatim_value is not None and number is not None:
+        for found in re.finditer(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", candidate.verbatim_value):
+            try:
+                if float(found.group()) == number:
+                    return _places(found.group())
+            except ValueError:  # pragma: no cover - the regex only matches numerals
+                continue
     value = candidate.value
     if isinstance(value, bool):
         return 0
     if isinstance(value, int):
         return 0
-    number = _as_number(value)
+    if isinstance(value, Decimal):
+        return _places(str(value))
     return 0 if number is None else _places(repr(number))
 
 
@@ -452,7 +471,7 @@ def _compare_numbers(
     if tolerance.rule is ToleranceRule.ONE_SIDED:
         return _compare_one_sided(a, b, number_a, number_b, tolerance, conflict_class, floor)
 
-    magnitude = tolerance.magnitude or 0.0
+    magnitude = _effective_magnitude(tolerance, a, b, number_a, number_b)
     if tolerance.rule is ToleranceRule.RELATIVE:
         # Referred to the larger magnitude, so the test does not depend on which
         # candidate is named first. Against the smaller it is asymmetric, and an
@@ -468,6 +487,46 @@ def _compare_numbers(
         reason=f"|{number_a} - {number_b}| = {difference:g} vs band {band:g} "
         f"(max of {tolerance.rule.value} {magnitude:g} and rounding floor {floor:g})",
     )
+
+
+def _effective_magnitude(
+    tolerance: FieldTolerance,
+    a: ConflictCandidate,
+    b: ConflictCandidate,
+    number_a: float,
+    number_b: float,
+) -> float:
+    """The band D-2 gives *for this pair*, not just for this field.
+
+    Four D-2 rows state two bands rather than one, and encoding only the first is
+    silent: the comparison then applies a band that is right half the time with
+    nothing marking which half. IEC's impedance tolerance widens from 7.5% to 10%
+    below Z=10%, and a transformer's total-loss allowance is 6% under IEEE where
+    it is 10% under IEC - a wrong branch is a real conflict suppressed or a false
+    one raised, either way invisibly.
+
+    Each discriminator is read from data the candidates already carry, so nothing
+    has to be threaded in: the compared magnitude, `Condition.standards_regime`
+    (which D-6 already makes load-bearing), and `SourceRef.source_authority`.
+    """
+    magnitude = tolerance.magnitude or 0.0
+    if tolerance.alternate_when is None or tolerance.alternate_magnitude is None:
+        return magnitude
+
+    if tolerance.alternate_when is ToleranceCondition.IMPEDANCE_BELOW_10_PCT:
+        selected = max(abs(number_a), abs(number_b)) < 10.0
+    elif tolerance.alternate_when is ToleranceCondition.REGIME_IEEE:
+        selected = StandardsRegime.IEEE in {
+            a.condition.standards_regime,
+            b.condition.standards_regime,
+        }
+    else:  # AGAINST_CEC_LIST
+        selected = any(
+            candidate.source_ref.source_authority is not None
+            and "cec" in candidate.source_ref.source_authority.casefold()
+            for candidate in (a, b)
+        )
+    return tolerance.alternate_magnitude if selected else magnitude
 
 
 def _compare_one_sided(
@@ -514,7 +573,7 @@ def _compare_one_sided(
         if a.source_tier is SourceTier.SYSTEM_OF_RECORD
         else (number_b, number_a)
     )
-    band = max((tolerance.magnitude or 0.0) * abs(declared), floor)
+    band = max(_effective_magnitude(tolerance, a, b, number_a, number_b) * abs(declared), floor)
     excess = measured - declared
     conflicts = excess > band
     return ConflictVerdict(

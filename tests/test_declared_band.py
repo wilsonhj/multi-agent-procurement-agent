@@ -6,6 +6,8 @@ wrong for at least two of the five largest suppliers, so the band is stored as
 written and resolved against a nominal only at comparison time.
 """
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -164,3 +166,21 @@ def test_two_bands_order_canonically_as_candidates() -> None:
     backward = comparison_pairs([b, a])
     assert len(forward) == 1
     assert [(x.value, y.value) for x, y in forward] == [(x.value, y.value) for x, y in backward]
+
+
+def test_resolving_a_band_cannot_manufacture_an_infinite_range() -> None:
+    """`_reject_non_finite` guards the stored bounds because a non-finite band
+    agrees with everything. The arithmetic in `resolve` reaches the same place by
+    another route: a ±3% band on a 1e308 nominal overflows to (-inf, inf), and
+    `agrees` then returns True against any value at all."""
+    band = DeclaredBand(low=-3.0, high=3.0, kind=ToleranceKind.RELATIVE)
+    with pytest.raises(ValueError):
+        band.resolve(1e308)
+    wide = DeclaredBand(low=-1e308, high=1e308, kind=ToleranceKind.ABSOLUTE, unit="W")
+    with pytest.raises(ValueError):
+        wide.resolve(1e308)
+    # 1e300 does *not* overflow that band — checked, so the case above is the
+    # boundary rather than a guess at one.
+    assert all(map(math.isfinite, wide.resolve(1e300)))
+    # Ordinary magnitudes are untouched.
+    assert band.resolve(650.0) == pytest.approx((630.5, 669.5))

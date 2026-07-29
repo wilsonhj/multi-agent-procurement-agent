@@ -226,6 +226,24 @@ def test_printed_synonyms_fold_to_their_member() -> None:
         assert Condition(weighting=printed).weighting is EfficiencyWeighting.EUROPEAN  # type: ignore[arg-type]
 
 
+def test_the_printed_spacing_of_a_member_is_not_a_validation_failure() -> None:
+    """No datasheet prints `full_power`; they print "Full power". Folding hyphens
+    but not spaces split the difference in the direction that drops documents —
+    the whole argument for the alias map is that rejecting a real spelling is
+    worse than folding a synonym.
+
+    A slash separates alternatives rather than words, so whitespace around it
+    collapses away first, or `ANSI / IEEE` becomes `ansi_/_ieee` and misses its
+    alias."""
+    assert Condition(basis="Full Power").basis is MeasurementBasis.FULL_POWER  # type: ignore[arg-type]
+    assert (
+        Condition(rte_boundary="DC DC terminals").rte_boundary  # type: ignore[arg-type]
+        is RteBoundary.DC_DC_TERMINALS
+    )
+    for printed in ("ANSI / IEEE", "ANSI\xa0/\xa0IEEE", "ANSI/IEEE", "ansi  /  ieee"):
+        assert Condition(standards_regime=printed).standards_regime is StandardsRegime.IEEE  # type: ignore[arg-type]
+
+
 def test_regimes_derived_from_a_standard_are_not_silently_mapped() -> None:
     """`gb`, `is` and `csa` name standards derived from a regime, not the regime.
     Guessing which would be a technical claim nobody here has verified, and a

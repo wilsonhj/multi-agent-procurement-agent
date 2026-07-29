@@ -17,7 +17,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .enums import ConflictClass, ConflictStatus, ResolutionAction, SourceTier
+from .enums import ConflictClass, ConflictStatus, ResolutionAction, Severity, SourceTier
 
 
 class SourceRef(BaseModel):
@@ -68,24 +68,12 @@ class Resolution(BaseModel):
     value_after: object | None = None
 
 
-class Condition(BaseModel):
-    """The measurement conditions a value holds under.
+class ConditionDimensions(BaseModel):
+    """The machine-comparable dimensions of a measurement condition.
 
-    A ninth key beyond the eight the TRS fixes in section 5, and the most
-    consequential addition in the design. Research found that *most false
-    conflicts in this domain are condition errors, not unit errors*.
-
-    The Sungrow SG350HX is the worked case: its EU datasheet, its US datasheet
-    and its CEC listing produce four apparent conflicts (352 vs 320 kVA,
-    1500 vs 1330 V, 98.8 vs 98.5 %, 1 vs 3 % THD) and **zero real ones** - CEC
-    simply anchors on the 40 degC rating and the full-power MPPT window.
-
-    Without this, the conflict engine floods the queue with spurious items and
-    reviewers learn to ignore it, which defeats the tool's premise (FR-HITL-02).
-
-    The TRS's own section 7 requires this: it lists parameters like
-    "rated AC kVA @temp" and "STC/NMOT ratings" that cannot otherwise be
-    represented. See clarifications.md D-1.
+    Membership of this model *is* the definition of what gates comparison, so a
+    new dimension participates automatically and a new human-readable annotation
+    automatically does not. See clarifications.md D-1.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -115,18 +103,48 @@ class Condition(BaseModel):
     reference_temperature_c: float | None = Field(
         default=None, description="Loss reference temperature: 20 + rise (IEEE) or 75 (IEC)"
     )
+
+
+class Condition(ConditionDimensions):
+    """The measurement conditions a value holds under.
+
+    A ninth key beyond the eight TRS section 5 fixes. Two values are comparable
+    only when their conditions match; a mismatch is not a conflict, it is not a
+    comparison. Rationale and the Sungrow SG350HX worked case: clarifications.md
+    D-1. Which dimensions each parameter family requires: the Conditions table in
+    contracts/canonical-parameters.md.
+    """
+
     note: str | None = Field(default=None, description="Any condition not captured above")
 
-    def comparable_with(self, other: Condition) -> bool:
-        """Whether two values may be compared at all.
+    def grouping_key(self) -> tuple[object, ...]:
+        """The partition key for candidate values. **Use this to group, not
+        `comparable_with`.**
 
-        Mismatched conditions are **not a conflict** - they are not a
-        comparison. Any field set on both sides must agree; a field absent on
-        one side is unknown rather than contradictory.
+        Equality over this tuple is an equivalence relation, so partitioning by it
+        is transitive and independent of the order candidates arrive in - which
+        FR-OUT-06 requires, since composition must be a pure function of the store.
+
+        `note` is excluded: free text is provenance for a human, not a
+        machine-comparable dimension.
         """
-        for name in type(self).model_fields:
-            if name == "note":
-                continue
+        return tuple(getattr(self, name) for name in ConditionDimensions.model_fields)
+
+    def comparable_with(self, other: Condition) -> bool:
+        """Whether these two specific values may be compared.
+
+        Any dimension set on both sides must agree; a dimension absent on one side
+        is unknown rather than contradictory.
+
+        **This relation is deliberately not transitive, so it must never be used to
+        partition a candidate set.** `@30 degC` and `@40 degC` are both comparable
+        with an unstated condition but not with each other, so first-fit bucketing
+        over the same three values yields different groups depending on the order
+        they arrive - and therefore a different conflict queue from the same store.
+        Group with `grouping_key()`; use this only as a pairwise gate once grouping
+        has already fixed the partition. See issue #12.
+        """
+        for name in ConditionDimensions.model_fields:
             mine, theirs = getattr(self, name), getattr(other, name)
             if mine is not None and theirs is not None and mine != theirs:
                 return False
@@ -198,6 +216,13 @@ class ConflictQueueEntry(BaseModel):
     model: str
     component_category: str
     conflict_class: ConflictClass
+    severity: Severity = Field(
+        default=Severity.MEDIUM,
+        description=(
+            "Drives the compose gate (issue #14). Assigned from the field's "
+            "criticality tier, not from the size of the divergence - see D-3."
+        ),
+    )
     candidates: list[ConflictCandidate]
     explanation: str = Field(description="Generated rationale shown to the reviewer")
     detected_at: datetime

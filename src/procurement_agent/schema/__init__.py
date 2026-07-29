@@ -9,12 +9,14 @@ from .enums import (
     ConflictStatus,
     DocumentType,
     ResolutionAction,
+    Severity,
     SourceTier,
     WorkbookTab,
 )
 from .field import (
     CanonicalField,
     Condition,
+    ConditionDimensions,
     ConflictCandidate,
     ConflictQueueEntry,
     Resolution,
@@ -28,6 +30,7 @@ __all__ = [
     "ComponentCategory",
     "ComponentInstance",
     "Condition",
+    "ConditionDimensions",
     "ConflictCandidate",
     "ConflictClass",
     "ConflictQueueEntry",
@@ -37,6 +40,7 @@ __all__ = [
     "ResolutionAction",
     "SourceDocument",
     "SourceRef",
+    "Severity",
     "SourceTier",
     "WorkbookTab",
 ]

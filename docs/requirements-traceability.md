@@ -27,7 +27,7 @@ Status values:
 | FR-5 | Conflict surfacing, no auto-resolution | guard enforced; `schema.ConflictQueueEntry` never constructed in a test | partial |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
 | FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
-| FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` | declared |
+| FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
 
 ## Functional requirements — TRS
 
@@ -53,7 +53,7 @@ Status values:
 | FR-RAG-01 | Structure-aware chunking, 512 tokens, 0–10% overlap (revised from the TRS by plan Decision 6) | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
 | FR-RAG-02 | ANN index, cosine, full metadata set | `ports.VectorStorePort` | declared |
 | FR-RAG-03 | Hybrid retrieval, rerank, tier stays distinguishable | `ports.RetrievedChunk.source_tier` | declared |
-| FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `ports.LLMPort.extract` returns `None`; `ConflictStatus.INSUFFICIENT_EVIDENCE` | enforced |
+| FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `INSUFFICIENT_EVIDENCE` enforced; `ports.LLMPort.extract` returning `None` untested (no test imports `ports`) | partial |
 | FR-RAG-05 | Incremental add/update/delete by stable ID | `ports.VectorStorePort.upsert` / `.delete` | declared |
 
 ### Web search
@@ -61,7 +61,7 @@ Status values:
 | ID | Requirement | Where | Status |
 |---|---|---|---|
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` | declared |
-| FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | `schema.SourceTier`, `schema.SourceRef` | enforced |
+| FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | tier tagging enforced; `SourceRef.retrieved_at` optional and never asserted, query logging has no code | partial |
 | FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
 | FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict`; tolerance table in [clarifications D-2](../specs/001-procurement-agent/clarifications.md) | declared |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` | declared |
@@ -73,7 +73,7 @@ Status values:
 | FR-HITL-01 | Five conflict classes | `schema.ConflictClass` — no test asserts the count | declared |
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
 | FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` — never constructed in a test | declared |
-| FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` | enforced |
+| FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
 | FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |
 
@@ -101,7 +101,7 @@ Status values:
 | NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` | declared |
 | NFR-06 | Hundreds of documents | — | open |
 | NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
-| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` | declared |
+| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
 
 ---
 

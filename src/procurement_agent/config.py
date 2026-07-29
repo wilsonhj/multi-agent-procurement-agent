@@ -12,6 +12,8 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .schema import Severity
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PROCUREMENT_", env_file=".env", extra="ignore")
@@ -79,6 +81,15 @@ class Settings(BaseSettings):
     )
     web_search_rate_limit_per_minute: int = Field(
         default=30, ge=1, description="Cap on supplementary web queries (FR-WEB-01)"
+    )
+
+    # --- Compose gate (issue #14) ---
+    # Composition refuses to run while an unresolved conflict sits STRICTLY ABOVE
+    # this level. MEDIUM means decision-driving specs may still be open, but a
+    # pricing, warranty or certification conflict stops the workbook.
+    compose_gate_threshold: Severity = Field(
+        default=Severity.MEDIUM,
+        description="Unresolved conflicts above this severity block composition",
     )
 
     # --- Output (FR-OUT-01) ---

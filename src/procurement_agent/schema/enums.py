@@ -5,7 +5,7 @@ list, it is reproduced verbatim rather than left open, because the Excel output
 (FR-OUT-02) and the conflict queue (FR-HITL-01/04) both depend on the exact set.
 """
 
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 
 class SourceTier(StrEnum):
@@ -75,6 +75,36 @@ class ConflictStatus(StrEnum):
     OPEN = "open"
     RESOLVED = "resolved"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+class Severity(IntEnum):
+    """How much a single unresolved conflict should hold up the workbook.
+
+    An `IntEnum` with **higher = worse**, stated explicitly because the compose
+    gate compares against a threshold and a bare `int` cannot carry the direction
+    of the scale - a P1/P2/P3 reading would invert it. See issue #14.
+
+    Severity is a property of the *field*, not of the size of the disagreement:
+    a 1% divergence on domestic-content status matters more than a 5% divergence
+    on module weight. The assignment rule lives with the tolerance table
+    (clarifications.md D-2/D-3); this enum only fixes the vocabulary and ordering.
+    """
+
+    INFORMATIONAL = 0
+    """Descriptive fields. Surfaced in the workbook, never blocks composition."""
+
+    LOW = 1
+    """Comparison-relevant but not decision-driving: dimensions, weight, comms."""
+
+    MEDIUM = 2
+    """Decision-driving specs: nameplate power, efficiency, capacity, cycle life."""
+
+    HIGH = 3
+    """Money or eligibility: pricing, $/W, warranty terms, domestic content."""
+
+    CRITICAL = 4
+    """Presence or absence of a certification. Never inferable from a gap -
+    'not extracted' is not 'not certified' (the CUAD absence-is-the-finding rule)."""
 
 
 class ResolutionAction(StrEnum):

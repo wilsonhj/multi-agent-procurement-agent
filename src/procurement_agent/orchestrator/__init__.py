@@ -23,7 +23,10 @@ Pipeline:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import StrEnum
+
+from ..schema import ConflictQueueEntry, Severity
 
 
 class Stage(StrEnum):
@@ -42,15 +45,35 @@ class Stage(StrEnum):
     COMPOSE_WORKBOOK = "compose_workbook"
 
 
-def compose_gate_blocks(unresolved_severities: list[int], *, threshold: int) -> bool:
+def blocking_conflicts(
+    unresolved: Iterable[ConflictQueueEntry], *, threshold: Severity
+) -> list[ConflictQueueEntry]:
+    """The unresolved conflicts severe enough to hold up composition.
+
+    Returns the entries themselves, not a bare verdict, so a caller that refuses
+    to compose can name *which* conflicts refused it - which is what the
+    FR-HITL-05 completeness manifest has to print, and what an audited override
+    has to record.
+
+    Strictly **above** the threshold, matching plan.md Decision 2 and tasks.md I.3
+    ("unresolved conflicts above a severity threshold"). The previous `>=` blocked
+    at the threshold itself; see issue #14.
+    """
+    return [entry for entry in unresolved if entry.severity > threshold]
+
+
+def compose_gate_blocks(
+    unresolved: Iterable[ConflictQueueEntry], *, threshold: Severity
+) -> bool:
     """Whether composition should refuse to run.
 
     The only place a human decision gates the pipeline, and it is a query rather
     than a pause. Overridable by a recorded, audited decision - composition then
     emits a completeness manifest naming every unresolved conflict instead
-    (FR-HITL-05).
+    (FR-HITL-05), which is why `blocking_conflicts` is the primitive and this is
+    the convenience wrapper.
     """
-    return any(severity >= threshold for severity in unresolved_severities)
+    return bool(blocking_conflicts(unresolved, threshold=threshold))
 
 
 def run(*args: object, **kwargs: object) -> None:

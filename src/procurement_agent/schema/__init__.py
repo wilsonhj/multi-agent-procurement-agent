@@ -16,6 +16,7 @@ from .enums import (
     SourceTier,
     StandardsRegime,
     ToleranceKind,
+    ToleranceRule,
     WorkbookTab,
 )
 from .field import (
@@ -54,5 +55,6 @@ __all__ = [
     "SourceTier",
     "StandardsRegime",
     "ToleranceKind",
+    "ToleranceRule",
     "WorkbookTab",
 ]

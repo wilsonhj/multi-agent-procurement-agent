@@ -24,7 +24,7 @@ Status values:
 | FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
 | FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)) enforced; `schema.ComponentInstance` ordering enforced, `unresolved_conflicts()` untested | partial |
 | FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
-| FR-5 | Conflict surfacing, no auto-resolution | guard and `comparison_pairs` enforced; nothing constructs a `ConflictQueueEntry` in production - `values_conflict` still raises | partial |
+| FR-5 | Conflict surfacing, no auto-resolution | guard, `comparison_pairs` and `values_conflict` enforced; nothing constructs a `ConflictQueueEntry` in production yet | partial |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
 | FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
 | FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
@@ -63,7 +63,7 @@ Status values:
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` | declared |
 | FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | tier tagging enforced; `SourceRef.retrieved_at` optional and never asserted, query logging has no code | partial |
 | FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
-| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict`; tolerance table in [clarifications D-2](../specs/001-procurement-agent/clarifications.md) | declared |
+| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` implemented against `conflict_hitl/tolerance.FIELD_TOLERANCES`, the [D-2](../specs/001-procurement-agent/clarifications.md) table transcribed | enforced |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` | declared |
 
 ### Conflict detection & HITL

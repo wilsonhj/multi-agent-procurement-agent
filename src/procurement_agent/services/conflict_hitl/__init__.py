@@ -13,9 +13,24 @@ AC-2 tests it directly.
 from __future__ import annotations
 
 import itertools
+import math
+import re
+import unicodedata
 from collections.abc import Sequence
+from decimal import Decimal, InvalidOperation
 
-from ...schema import CanonicalField, ConflictCandidate, SourceTier
+from pydantic import BaseModel, ConfigDict, Field
+
+from ...schema import (
+    CanonicalField,
+    ConflictCandidate,
+    ConflictClass,
+    DeclaredBand,
+    SourceTier,
+    ToleranceRule,
+)
+from .tolerance import FieldTolerance
+from .tolerance import tolerance_for as tolerance_for  # re-exported: the table's entry point
 
 
 def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
@@ -172,22 +187,333 @@ def assert_no_autonomous_overwrite(
         )
 
 
-def values_conflict(
-    a: ConflictCandidate, b: ConflictCandidate, *, numeric_tolerance: float
-) -> bool:
-    """Decide whether two candidate values for the same field actually disagree.
+class IncomparableCandidatesError(ValueError):
+    """Raised when `values_conflict` is asked to compare a pair that is not a
+    comparison at all - mismatched conditions, or a field D-2 marks never-compare.
 
-    FR-WEB-04 says a conflict is raised when values differ "beyond tolerance",
-    but the TRS never defines tolerance, and the right rule is a procurement
-    judgement rather than a technical default. See docs/open-questions.md.
-
-    TODO(human): implement the comparison. Points worth deciding:
-      - Numeric values: relative or absolute tolerance? A 2% relative band
-        behaves very differently on 0.35 %/degC than on 650 Wp.
-      - Values in different units: normalize first, or treat a unit mismatch as
-        a UNIT_NORMALIZATION conflict in its own right?
-      - Strings: exact match, case-folded, or fuzzy? Certification lists like
-        "IEC 61215:2021" vs "IEC 61215" are the common real case.
-      - A missing value on one side: not a conflict, or an open item?
+    A programming error, not a data condition: candidates reach the comparison
+    through `comparison_pairs`, which already applies the condition gate. Raising
+    rather than returning "no conflict" on purpose - the two are indistinguishable
+    to a caller, and "we did not compare these" silently rendered as "these agree"
+    is the invisible false negative this module exists to prevent.
     """
-    raise NotImplementedError("see TODO(human) above")
+
+
+class ConflictVerdict(BaseModel):
+    """The outcome of comparing two candidates for one field."""
+
+    model_config = ConfigDict(frozen=True)
+
+    conflicts: bool
+    conflict_class: ConflictClass | None = Field(
+        default=None, description="Which of the five FR-HITL-01 classes; None when no conflict"
+    )
+    reason: str = Field(description="Why, in the terms FR-HITL-03 requires the queue to explain")
+
+
+_EDITION = re.compile(r"\s*:\s*(\d{4})\s*$")
+
+
+def _normalise_text(value: str) -> str:
+    """Fold to a comparable form: NFKC, case, and internal whitespace.
+
+    No fuzzy matching, deliberately. A fuzzy match that silently equates two
+    certifications is unrecoverable; a false conflict is one extra queue item.
+    """
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _split_edition(value: str) -> tuple[str, str | None]:
+    """`IEC 61215:2021` -> `("iec 61215", "2021")`.
+
+    The year is stripped so an edition difference is not read as a different
+    standard, and *retained* so it becomes a TEMPORAL conflict rather than
+    disappearing. Dropping it would silently equate a 2016 certification with a
+    2021 one, which is a compliance claim nobody made.
+    """
+    text = _normalise_text(value)
+    match = _EDITION.search(text)
+    if match is None:
+        return text, None
+    return _EDITION.sub("", text), match.group(1)
+
+
+def _as_number(value: object) -> float | None:
+    """A numeric reading of a candidate value, or None if it is not a number.
+
+    `bool` is excluded even though it is an `int`: `True` comparing equal to a
+    1.0 nameplate is nonsense that no tolerance would catch.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float | Decimal):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _places(text: str) -> int:
+    try:
+        exponent = Decimal(text).as_tuple().exponent
+    except InvalidOperation:
+        return 0
+    return max(0, -exponent) if isinstance(exponent, int) else 0
+
+
+def _decimals(candidate: ConflictCandidate) -> int:
+    """Printed decimal places — D-2's `decimals_a` / `decimals_b`.
+
+    `verbatim_value` is the source text, so where it carries a number it is the
+    authority and the parsed value is only a fallback. Taking the *maximum* over
+    both instead looks conservative and is not: `float(22)` reprs as `22.0`, so
+    every integer-printed value would claim one decimal it never had, and a sheet
+    printing `22` would be held to a precision it cannot express.
+
+    An `int` value therefore reports zero places directly rather than through
+    `float`, which is the whole `650` vs `650.0` case D-2 names.
+    """
+    if candidate.verbatim_value is not None:
+        found = re.search(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", candidate.verbatim_value)
+        if found is not None:
+            return _places(found.group())
+    value = candidate.value
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return 0
+    number = _as_number(value)
+    return 0 if number is None else _places(repr(number))
+
+
+def _rounding_floor(a: ConflictCandidate, b: ConflictCandidate) -> float:
+    """D-2: `1/2 x 10^(-min(decimals_a, decimals_b))`.
+
+    Two values are never in conflict by less than the precision the coarser
+    source printed. Without it `650` and `650.4` would disagree under a 0.1 pp
+    band that the coarser sheet could not have expressed.
+    """
+    return 0.5 * 10.0 ** (-min(_decimals(a), _decimals(b)))
+
+
+def _classify(a: ConflictCandidate, b: ConflictCandidate) -> ConflictClass:
+    """Which of the five FR-HITL-01 classes a disagreement belongs to.
+
+    Derived from the candidates rather than passed in, so the class cannot drift
+    from the evidence it describes.
+    """
+    if a.source_tier is not b.source_tier:
+        return ConflictClass.RECORD_VS_WEB
+    a_doc = a.source_ref.document_id or a.source_ref.url
+    b_doc = b.source_ref.document_id or b.source_ref.url
+    if a_doc == b_doc:
+        return ConflictClass.INTRA_DOCUMENT
+    return ConflictClass.INTER_DOCUMENT
+
+
+def values_conflict(
+    a: ConflictCandidate,
+    b: ConflictCandidate,
+    *,
+    tolerance: FieldTolerance,
+    band_a: DeclaredBand | None = None,
+    band_b: DeclaredBand | None = None,
+) -> ConflictVerdict:
+    """Whether two candidate values for one field actually disagree (FR-WEB-04).
+
+    The TRS says "beyond tolerance" and never defines tolerance; clarifications
+    D-2 does, per field and in four kinds, and `tolerance` is a row of that table
+    (`tolerance_for(field_name)`). There is no global default parameter here on
+    purpose - a single float was the defect D-2 exists to remove, and leaving one
+    in the signature would let it come back as a call-site default.
+
+    `band_a`/`band_b` carry the *declared* bands for a DECLARED_BAND field. They
+    are parameters rather than attributes of the candidate because the band lives
+    on a different canonical field (`power_tolerance`) than the value it
+    qualifies (`nameplate_power_w`); only a caller holding the whole component
+    can pair them.
+
+    Answers the four questions the stub left open:
+
+    - **Relative or absolute?** Both, per field, plus one-sided and two rules
+      that are not thresholds at all. See `ToleranceRule`.
+    - **Different units?** Never resolved by tolerance. A unit mismatch is a
+      `UNIT_NORMALIZATION` conflict in its own right - normalising here would
+      hide an extraction defect behind a successful comparison.
+    - **Strings?** Normalise, then exact-match, with the edition year split off
+      and kept so `IEC 61215:2021` vs `IEC 61215:2016` is TEMPORAL rather than a
+      string mismatch, and `IEC 61215:2021` vs `IEC 61215` is not a conflict.
+      No fuzzy matching.
+    - **Missing on one side?** Not a conflict - a gap. It flags MISSING_DATA and
+      triggers the FR-WEB-01 search; `RECORD_VS_WEB` needs both sides to hold a
+      value.
+    """
+    if tolerance.rule is ToleranceRule.NEVER_COMPARE:
+        raise IncomparableCandidatesError(
+            "this field names two different physical quantities; comparing them is "
+            "not a wide tolerance, it is not a comparison (D-2)"
+        )
+    if not a.condition.comparable_with(b.condition):
+        raise IncomparableCandidatesError(
+            f"conditions do not match ({a.condition.grouping_key()} vs "
+            f"{b.condition.grouping_key()}); a mismatch is not a conflict, it is "
+            "not a comparison (D-1). Use comparison_pairs to select candidates."
+        )
+
+    if a.value is None or b.value is None:
+        return ConflictVerdict(
+            conflicts=False,
+            reason="one side has no value; a gap flags MISSING_DATA and triggers the "
+            "FR-WEB-01 search rather than raising a conflict",
+        )
+
+    if (
+        a.unit is not None
+        and b.unit is not None
+        and _normalise_text(a.unit) != _normalise_text(b.unit)
+    ):
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=ConflictClass.UNIT_NORMALIZATION,
+            reason=f"units differ ({a.unit!r} vs {b.unit!r}); a unit mismatch is never "
+            "resolved by tolerance (FR-ING-08)",
+        )
+
+    number_a, number_b = _as_number(a.value), _as_number(b.value)
+    if number_a is None or number_b is None:
+        if isinstance(a.value, str) and isinstance(b.value, str):
+            return _compare_text(a, b)
+        if number_a is None and number_b is None and a.value == b.value:
+            return ConflictVerdict(conflicts=False, reason="values are equal")
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=_classify(a, b),
+            reason=f"values are not comparable as numbers or text ({a.value!r} vs {b.value!r})",
+        )
+
+    return _compare_numbers(a, b, number_a, number_b, tolerance, band_a, band_b)
+
+
+def _compare_text(a: ConflictCandidate, b: ConflictCandidate) -> ConflictVerdict:
+    assert isinstance(a.value, str) and isinstance(b.value, str)
+    base_a, year_a = _split_edition(a.value)
+    base_b, year_b = _split_edition(b.value)
+    if base_a != base_b:
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=_classify(a, b),
+            reason=f"text differs after normalisation ({base_a!r} vs {base_b!r}); "
+            "no fuzzy matching - a silently equated certification is unrecoverable",
+        )
+    if year_a is not None and year_b is not None and year_a != year_b:
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=ConflictClass.TEMPORAL,
+            reason=f"same standard, different edition ({year_a} vs {year_b}); an edition "
+            "difference is a temporal conflict, not a string mismatch",
+        )
+    return ConflictVerdict(conflicts=False, reason="text matches after normalisation")
+
+
+def _compare_numbers(
+    a: ConflictCandidate,
+    b: ConflictCandidate,
+    number_a: float,
+    number_b: float,
+    tolerance: FieldTolerance,
+    band_a: DeclaredBand | None,
+    band_b: DeclaredBand | None,
+) -> ConflictVerdict:
+    conflict_class = _classify(a, b)
+    floor = _rounding_floor(a, b)
+
+    if tolerance.rule is ToleranceRule.DECLARED_BAND:
+        if band_a is None and band_b is None:
+            return ConflictVerdict(
+                conflicts=abs(number_a - number_b) > floor,
+                conflict_class=conflict_class if abs(number_a - number_b) > floor else None,
+                reason="declared-band field with no band on either side; compared at "
+                "printed precision only",
+            )
+        reference = band_a if band_a is not None else band_b
+        assert reference is not None
+        agrees = (
+            band_a.agrees(number_a, band_b, number_b)
+            if band_a is not None
+            else reference.agrees(number_b, band_a, number_a)
+        )
+        return ConflictVerdict(
+            conflicts=not agrees,
+            conflict_class=None if agrees else conflict_class,
+            reason="guaranteed ranges "
+            + ("intersect" if agrees else "are disjoint")
+            + "; a printed band supersedes the config default for this field",
+        )
+
+    if tolerance.rule is ToleranceRule.ONE_SIDED:
+        return _compare_one_sided(a, b, number_a, number_b, tolerance, conflict_class, floor)
+
+    magnitude = tolerance.magnitude or 0.0
+    if tolerance.rule is ToleranceRule.RELATIVE:
+        # Referred to the larger magnitude, so the test does not depend on which
+        # candidate is named first. Against the smaller it is asymmetric, and an
+        # asymmetric predicate would make the queue depend on argument order -
+        # the same defect `_ordering_key` exists to keep out.
+        magnitude *= max(abs(number_a), abs(number_b))
+    band = max(magnitude, floor)
+    difference = abs(number_a - number_b)
+    conflicts = difference > band
+    return ConflictVerdict(
+        conflicts=conflicts,
+        conflict_class=conflict_class if conflicts else None,
+        reason=f"|{number_a} - {number_b}| = {difference:g} vs band {band:g} "
+        f"(max of {tolerance.rule.value} {magnitude:g} and rounding floor {floor:g})",
+    )
+
+
+def _compare_one_sided(
+    a: ConflictCandidate,
+    b: ConflictCandidate,
+    number_a: float,
+    number_b: float,
+    tolerance: FieldTolerance,
+    conflict_class: ConflictClass,
+    floor: float,
+) -> ConflictVerdict:
+    """`conflict <=> (measured - declared) > tolerance` (D-2).
+
+    Both IEC and IEEE state loss and no-load-current limits in one direction
+    only, and IEC 60076-1 Table 1 notes that an omitted direction is
+    unrestricted: being *under* guarantee is never a nonconformity, so a web
+    value below a contract value is not a disagreement.
+
+    Which side is the declared one comes from the source tier - a contract or
+    spec sheet is the guarantee, web data is the report against it. When both
+    sides carry the same tier there is nothing to establish direction, and the
+    test degrades to the symmetric one rather than guessing: assuming a direction
+    would let a real overage pass as "under guarantee".
+    """
+    if a.source_tier is b.source_tier:
+        difference = abs(number_a - number_b)
+        band = max(tolerance.magnitude or 0.0, 0.0) * max(abs(number_a), abs(number_b))
+        band = max(band, floor)
+        conflicts = difference > band
+        return ConflictVerdict(
+            conflicts=conflicts,
+            conflict_class=conflict_class if conflicts else None,
+            reason=f"one-sided field but both candidates are {a.source_tier.value}, so "
+            f"neither is the declared value; compared symmetrically against {band:g}",
+        )
+    declared, measured = (
+        (number_a, number_b)
+        if a.source_tier is SourceTier.SYSTEM_OF_RECORD
+        else (number_b, number_a)
+    )
+    band = max((tolerance.magnitude or 0.0) * abs(declared), floor)
+    excess = measured - declared
+    conflicts = excess > band
+    return ConflictVerdict(
+        conflicts=conflicts,
+        conflict_class=conflict_class if conflicts else None,
+        reason=f"declared {declared:g}, measured {measured:g}, excess {excess:g} vs "
+        f"one-sided limit {band:g}; under guarantee is never a nonconformity",
+    )

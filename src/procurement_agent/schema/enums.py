@@ -142,6 +142,46 @@ class ToleranceKind(StrEnum):
     character-identical."""
 
 
+class ToleranceRule(StrEnum):
+    """How far two extracted values of one field may diverge (clarifications D-2).
+
+    Distinct from `ToleranceKind`, which describes a band the *source prints*.
+    This one is a policy about extraction disagreement; that one is data about
+    the product. Conflating them was the original error - see the contract's
+    "Declared bands" section.
+
+    D-2's heading says "three kinds" but its table carries four, and two further
+    rows are neither a number nor a band. All six are represented here rather
+    than folded, because each changes the comparison rather than its threshold.
+    """
+
+    EXACT = "exact"
+    """Catalog and label fields. A difference *is* a different product - nobody
+    measured it, it was chosen. 99.1% of 21,989 CEC PV rows have a nameplate that
+    is an exact multiple of 5 W."""
+
+    ABSOLUTE = "absolute"
+    """Small-magnitude quantities: temperature coefficients, efficiencies in
+    percentage points. A relative band is meaningless at these magnitudes."""
+
+    RELATIVE = "relative"
+    """Large-magnitude measured quantities where uncertainty scales with value."""
+
+    ONE_SIDED = "one_sided"
+    """Transformer losses and no-load current. Both IEC and IEEE state these as
+    upper limits only, and IEC 60076-1 Table 1 notes that an omitted direction is
+    unrestricted - so being under guarantee is never a nonconformity. A symmetric
+    band is wrong in both regimes."""
+
+    DECLARED_BAND = "declared_band"
+    """Compare guaranteed ranges, not numbers. The source prints its own
+    tolerance and it supersedes any config default for that field."""
+
+    NEVER_COMPARE = "never_compare"
+    """Different physical quantities that share a field name in careless sources -
+    inverter kVA against kW. Not a wide tolerance: not a comparison."""
+
+
 class PowerSide(StrEnum):
     """Which side of the PCS a BESS rating is taken on. Straddling it is ~28%."""
 

@@ -16,7 +16,14 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from .enums import ConflictClass, ConflictStatus, ResolutionAction, Severity, SourceTier
 
@@ -129,9 +136,13 @@ class ConditionDimensions(BaseModel):
         round-trip. That is precisely the FR-OUT-06 purity `grouping_key` exists to
         guarantee, so a non-finite condition is rejected at the boundary instead.
         """
-        if value is not None and not math.isfinite(value):
+        if value is None:
+            return None
+        if not math.isfinite(value):
             raise ValueError("condition dimensions must be finite (no NaN or infinity)")
-        return value
+        # -0.0 == 0.0 and hashes alike, so they are one dict key - but they have
+        # different reprs, which flipped the order of a repr-sorted partition.
+        return value + 0.0
 
     @field_validator("basis", "side", "weighting", "standards_regime")
     @classmethod
@@ -142,7 +153,12 @@ class ConditionDimensions(BaseModel):
         false conflict - it silently forms its own group and suppresses the
         comparison, which is the failure direction that cannot be reviewed.
         """
-        return value.strip().casefold() if value is not None else None
+        if value is None:
+            return None
+        normalised = value.strip().casefold()
+        # An extractor emitting "" rather than None would otherwise read as a
+        # stated dimension and strand the value in its own group.
+        return normalised or None
 
 
 class Condition(ConditionDimensions):
@@ -165,6 +181,13 @@ class Condition(ConditionDimensions):
             "value group together while the provenance stays honest for a reviewer."
         ),
     )
+
+    @field_serializer("derived")
+    def _sort_derived(self, value: frozenset[str]) -> list[str]:
+        """Sorted on the way out: a frozenset serialises in hash order, which is
+        randomised per process, so the same record would produce different JSON
+        bytes every run - defeating the FR-OUT-06 purity this model exists for."""
+        return sorted(value)
 
     def is_unstated(self) -> bool:
         """Whether no comparable dimension is known at all.

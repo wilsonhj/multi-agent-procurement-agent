@@ -12,51 +12,83 @@ AC-2 tests it directly.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 
 from ...schema import CanonicalField, ConflictCandidate, SourceTier
 
 
+def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
+    """A total order over candidates that depends only on their content.
+
+    Needed because FR-OUT-06 makes composition a pure function of the store: any
+    list the queue payload is built from has to be arranged by what a candidate
+    *is*, never by when it arrived.
+    """
+    return (
+        repr(candidate.condition.grouping_key()),
+        repr(candidate.value),
+        candidate.unit or "",
+        candidate.source_tier.value,
+        repr(candidate.source_ref.model_dump()),
+    )
+
+
+def comparison_pairs(
+    candidates: Sequence[ConflictCandidate],
+) -> list[tuple[ConflictCandidate, ConflictCandidate]]:
+    """Every pair of candidates that may be compared like for like.
+
+    **Pairs, not groups.** Comparability is genuinely not transitive - `@30 degC`
+    and `@40 degC` are each comparable with an unstated condition but not with
+    each other - and that is a fact about the domain, not a defect to design
+    around. A partition has to be transitive, so any attempt to express this as
+    groups must either bucket by arrival order (nondeterministic) or partition on
+    exact condition equality (which strands values whose conditions are merely
+    *less* specific, and silently drops the comparison). Pairs carry the relation
+    exactly as it is.
+
+    Both failures were shipped here before, so they are worth naming. First-fit
+    bucketing over `comparable_with` gave a different conflict queue depending on
+    document order. Exact-key grouping then made it worse: a supply agreement
+    stating `650 W` with no test condition stranded alone while the datasheet and
+    CEC listing, both marked STC, compared only with each other - so the
+    system-of-record value FR-HITL-02 exists to protect reached no queue entry and
+    the compose gate never fired. A visible false positive had become an invisible
+    false negative, and a reviewer cannot dismiss what they never see.
+
+    Deterministic because the result is a function of the candidate *set*: every
+    unordered pair is generated once, each pair is internally ordered by
+    `_ordering_key`, and the list is sorted by the same key. No pair is emitted
+    twice, so a disagreement between two unstated values is raised once no matter
+    how many stated conditions sit alongside it.
+
+    `Condition.grouping_key()` remains the right tool for *displaying* candidates
+    grouped by condition; it is not the right tool for deciding what to compare.
+    """
+    ordered = sorted(candidates, key=_ordering_key)
+    return [
+        (left, right)
+        for left, right in itertools.combinations(ordered, 2)
+        if left.condition.comparable_with(right.condition)
+    ]
+
+
 def comparison_groups(candidates: Sequence[ConflictCandidate]) -> list[list[ConflictCandidate]]:
-    """Partition candidates into sets that may be compared like for like.
+    """Candidates partitioned by exact condition, for display only.
 
-    Two rules, and the second is what makes this correct rather than merely
-    deterministic.
-
-    **Partition by `Condition.grouping_key()`, never by `comparable_with`.** That
-    predicate is not transitive - `@30 degC` and `@40 degC` are each comparable
-    with an unstated condition but not with each other - so first-fit bucketing
-    over it yields different groups depending on arrival order, and therefore a
-    different conflict queue from an unchanged store. FR-OUT-06 forbids that.
-
-    **Fold wholly-unstated candidates into every stated group.** Grouping on the
-    key alone is strictly comparison-losing: a supply agreement stating `650 W`
-    with no test condition would strand in its own group while the datasheet and
-    the CEC listing, both marked STC, compare only with each other. The
-    system-of-record value - the one FR-HITL-02 exists to protect - would be
-    compared against nothing, no queue entry would be raised, and the compose gate
-    would never fire. That trades a *visible* false positive for an *invisible*
-    false negative, which is the worse failure for a tool whose premise is that a
-    human decides.
-
-    Folding stays order-independent because the unstated group is identified
-    canonically - by its all-`None` key - rather than by which candidate happened
-    to arrive first. Groups are returned in sorted key order for the same reason.
-
-    A candidate may therefore appear in more than one group: that is deliberate,
-    since an unqualified value is a legitimate counterpart to several stated ones.
+    Deterministic - the partition is by `grouping_key()` equality and both the
+    groups and their members are canonically sorted. Use `comparison_pairs` to
+    decide what to compare: this partition strands a candidate whose condition is
+    merely less specific than its neighbours', which is a presentation choice, not
+    a comparison rule.
     """
     grouped: dict[tuple[object, ...], list[ConflictCandidate]] = {}
     for candidate in candidates:
         grouped.setdefault(candidate.condition.grouping_key(), []).append(candidate)
-
-    unstated_key = tuple(None for _ in range(len(next(iter(grouped), ()))))
-    unstated = grouped.pop(unstated_key, []) if grouped else []
-
-    if not grouped:
-        return [unstated] if unstated else []
-
-    return [grouped[key] + unstated for key in sorted(grouped, key=repr)]
+    return [
+        sorted(grouped[key], key=_ordering_key) for key in sorted(grouped, key=lambda k: repr(k))
+    ]
 
 
 class AutonomousOverwriteError(RuntimeError):

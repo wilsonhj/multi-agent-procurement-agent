@@ -16,7 +16,14 @@ from .schema import Severity
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PROCUREMENT_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="PROCUREMENT_",
+        env_file=".env",
+        extra="ignore",
+        # The compose-gate threshold is a safety interlock, and a bound checked
+        # only at construction is bypassed by plain attribute assignment.
+        validate_assignment=True,
+    )
 
     # --- Endpoints (swappable per NFR-04, self-hosted for confidential data per NFR-03) ---
     llm_endpoint: str | None = None

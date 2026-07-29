@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -99,9 +98,14 @@ def normalize_archive(path: Path) -> Path:
                 info.create_system = _CREATE_SYSTEM_UNIX
                 info.external_attr = _EXTERNAL_ATTR
                 target.writestr(info, payload)
-        shutil.move(staging, path)
-    finally:
+        # os.replace, not shutil.move: same directory, so this is an atomic
+        # rename. shutil.move falls back to copy-then-unlink across filesystems,
+        # and a copy that dies partway leaves the destination truncated - at
+        # which point unlinking the staging file destroys the only intact copy.
+        os.replace(staging, path)
+    except BaseException:
         staging.unlink(missing_ok=True)
+        raise
     return path
 
 

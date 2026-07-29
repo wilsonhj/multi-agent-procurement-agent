@@ -76,8 +76,8 @@ Seven services coordinated by an orchestrator:
 | Service | Responsibility |
 |---|---|
 | **Ingestion & Extraction** | File-type detection by content signature → parsers → OCR fallback → layout-aware text/tables → schema-constrained field extraction |
-| **Indexing** | Structure-aware chunking, embeddings, ANN index (HNSW/IVF, cosine) + BM25, metadata store |
-| **Retrieval** | Hybrid vector + BM25 with reranking and metadata filtering by category, supplier, doc type and source tier |
+| **Indexing** | Structure-aware chunking, embeddings, exact vector search + lexical matching from the embedding model's sparse output, metadata store. FR-RAG-02 asks for an ANN index and FR-RAG-03 for BM25; plan Decisions 3a and 3b reverse both — see below |
+| **Retrieval** | Hybrid dense + sparse retrieval with reranking and metadata filtering by category, supplier, doc type and source tier |
 | **Web Search** | Gap-triggered query generation, supplement-only tagging, source-authority capture |
 | **Conflict & HITL** | Field-level reconciliation across five conflict classes, conflict queue, decision logging |
 | **Comparison / Output** | Canonical store → 13-tab workbook with per-cell provenance and conditional formatting |

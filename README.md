@@ -156,7 +156,9 @@ src/procurement_agent/
 
 docs/
 ├── requirements-traceability.md   Every FR/NFR/AC mapped to where it lives
-└── open-questions.md              Decisions the specs leave open
+├── agent-topology.md              Where the pipeline may fan out, and where it must not
+├── defaults.md                    Starting values for the open questions, with confidence
+└── open-questions.md              Superseded; see specs/001-procurement-agent/
 
 tests/              Acceptance criteria that the scaffolding can already enforce
 ```

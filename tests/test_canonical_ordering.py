@@ -18,14 +18,20 @@ def _instance(**kwargs: object) -> ComponentInstance:
 
 
 def test_ordering_is_stable_across_runs() -> None:
+    """Pinned to a literal, not to a second evaluation of the same expression.
+
+    `first == second` where both sides compute `i.ordering_key()` is
+    `assert f(x) == f(x)`: it holds for any deterministic function, including a
+    constant, so it passed with `ordering_key` replaced by a fixed tuple."""
     items = [
         _instance(nameplate=720.0),
         _instance(nameplate=695.0),
         _instance(nameplate=705.0),
     ]
-    first = [i.ordering_key() for i in sorted(items, key=ComponentInstance.ordering_key)]
-    second = [i.ordering_key() for i in sorted(items, key=ComponentInstance.ordering_key)]
-    assert first == second
+    keys = [i.ordering_key() for i in sorted(items, key=ComponentInstance.ordering_key)]
+    assert len(set(keys)) == 3, "a constant key would collapse three instances to one"
+    assert keys == sorted(keys)
+    assert [k[3] for k in keys] == [695.0, 705.0, 720.0]
 
 
 def test_bins_sort_by_nameplate() -> None:

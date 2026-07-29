@@ -101,6 +101,13 @@ def test_note_is_ignored_for_comparability() -> None:
 
 
 def test_comparability_is_symmetric() -> None:
+    """Both directions *and* both outcomes.
+
+    Symmetry alone is satisfied by a predicate that always returns False, which
+    is how `comparable_with -> False` passed this test: the pair below disagrees,
+    so a second pair that must agree is what makes the assertion bite."""
     a = Condition(basis=MeasurementBasis.STC, temperature_c=25.0)
     b = Condition(basis=MeasurementBasis.NOCT, temperature_c=25.0)
-    assert a.comparable_with(b) == b.comparable_with(a)
+    assert a.comparable_with(b) == b.comparable_with(a) is False
+    c = Condition(temperature_c=25.0)
+    assert a.comparable_with(c) == c.comparable_with(a) is True

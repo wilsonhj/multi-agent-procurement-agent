@@ -94,11 +94,29 @@ def test_blocking_conflicts_names_the_blockers() -> None:
     assert [entry.entry_id for entry in blockers] == ["cert-missing", "pricing"]
 
 
+def test_blockers_keep_input_order_rather_than_being_re_sorted() -> None:
+    """The ids above happen to be alphabetical, so sorting the result was
+    indistinguishable from preserving order. FR-HITL-05's manifest names the
+    blockers in the order the queue holds them; re-sorting silently reorders a
+    reviewer's worklist."""
+    entries = [_entry(Severity.HIGH, "zebra"), _entry(Severity.HIGH, "alpha")]
+    blockers = blocking_conflicts(entries, threshold=Severity.MEDIUM)
+    assert [entry.entry_id for entry in blockers] == ["zebra", "alpha"]
+
+
 def test_gate_agrees_with_its_primitive() -> None:
-    entries = [_entry(Severity.HIGH)]
-    assert compose_gate_blocks(entries, threshold=Severity.MEDIUM) is bool(
-        blocking_conflicts(entries, threshold=Severity.MEDIUM)
-    )
+    """Both outcomes, and both pinned to a literal.
+
+    `compose_gate_blocks(...) is bool(blocking_conflicts(...))` restates the
+    gate's own one-line definition, so it passed with `blocking_conflicts`
+    replaced by `list(unresolved)` — the gate wide open."""
+    blocking = [_entry(Severity.HIGH)]
+    assert compose_gate_blocks(blocking, threshold=Severity.MEDIUM) is True
+    assert len(blocking_conflicts(blocking, threshold=Severity.MEDIUM)) == 1
+
+    passing = [_entry(Severity.LOW), _entry(Severity.MEDIUM, "at-threshold")]
+    assert compose_gate_blocks(passing, threshold=Severity.MEDIUM) is False
+    assert blocking_conflicts(passing, threshold=Severity.MEDIUM) == []
 
 
 def test_threshold_has_a_configured_default(monkeypatch: pytest.MonkeyPatch) -> None:

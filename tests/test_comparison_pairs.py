@@ -14,6 +14,7 @@ from procurement_agent.schema import (
     Condition,
     ConflictCandidate,
     MeasurementBasis,
+    PowerSide,
     SourceRef,
     SourceTier,
 )
@@ -105,11 +106,29 @@ def test_an_empty_string_condition_does_not_masquerade_as_stated() -> None:
 
 def test_signed_zero_does_not_reorder_groups() -> None:
     """-0.0 and 0.0 are one dict key but have different reprs, which flipped the
-    order of a repr-sorted partition."""
+    order of a repr-sorted partition.
+
+    A **third** group is essential and the earlier version of this test lacked
+    it. `-0.0 == 0.0` and their hashes match, so the two candidates land in one
+    group under either implementation and both assertions passed with the
+    normalisation removed. The reordering only manifests once there is another
+    group for the signed key to sort against."""
     a = _candidate(1.0, Condition(temperature_c=-0.0))
     b = _candidate(2.0, Condition(temperature_c=0.0))
+    # The third group has to have a repr that falls *between* `-0.0` and `0.0`,
+    # or the flip is invisible: `(None, -0.0, ...)` and `(None, 0.0, ...)` differ
+    # at one character, and no float repr sorts between `-` and `0`. Reaching in
+    # on a later dimension does - `(None, 0.0, <PowerSide.DC...)` sorts after the
+    # signed key and before the unsigned one.
+    other = _candidate(3.0, Condition(temperature_c=0.0, side=PowerSide.DC))
     assert a.condition.grouping_key() == b.condition.grouping_key()
     assert comparison_groups([a, b]) == comparison_groups([b, a])
+    assert comparison_groups([a, b, other]) == comparison_groups([b, a, other])
+    assert _values_of(comparison_groups([a, b, other])) == [[3.0], [1.0, 2.0]]
+
+
+def _values_of(groups: list[list[ConflictCandidate]]) -> list[list[float]]:
+    return [[float(c.value) for c in group] for group in groups]  # type: ignore[arg-type]
 
 
 def test_derived_serialises_deterministically() -> None:
@@ -131,9 +150,24 @@ def test_fewer_than_two_candidates_is_not_a_comparison(
 
 
 def test_groups_are_display_only_and_still_deterministic() -> None:
-    groups = comparison_groups([CEC, AGREEMENT, DATASHEET])
-    assert groups == comparison_groups([DATASHEET, CEC, AGREEMENT])
-    assert sum(len(group) for group in groups) == 3
+    """Asserted as a literal partition, not as a total.
+
+    `sum(len(group)) == 3` is satisfied by one group of three, so it passed with
+    the grouping key replaced by a constant — every candidate in one bucket,
+    which is exactly the false-conflict shape `Condition` exists to prevent."""
+    assert _values_of(comparison_groups([CEC, AGREEMENT, DATASHEET])) == [[645.0, 700.0], [650.0]]
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations([0, 1, 2])))
+def test_every_permutation_gives_the_same_display_partition(order: tuple[int, ...]) -> None:
+    """All six, not the two an earlier version hand-picked — and both of those
+    happened to start with a `basis=stc` candidate, so dict insertion order was
+    identical in each and dropping the outer sort survived."""
+    candidates = [CEC, AGREEMENT, DATASHEET]
+    assert _values_of(comparison_groups([candidates[i] for i in order])) == [
+        [645.0, 700.0],
+        [650.0],
+    ]
 
 
 def test_output_is_a_golden_ordered_list() -> None:
@@ -152,6 +186,54 @@ def test_output_is_a_golden_ordered_list() -> None:
         (645.0, 650.0),
         (700.0, 650.0),
     ]
+
+
+#: One mutation per element of `_ordering_key`: two candidates that differ in
+#: exactly that element and nothing else. Anything the key omits leaves them
+#: tied, and `sorted` being stable then leaks arrival order into the pair's
+#: orientation — which is the whole failure `_ordering_key` exists to prevent.
+_DISTINGUISHING: list[tuple[str, dict[str, object]]] = [
+    ("condition", {"condition": Condition(basis=MeasurementBasis.STC)}),
+    ("value", {"value": 651.0}),
+    ("unit", {"unit": "Wp"}),
+    ("source_tier", {"source_tier": SourceTier.WEB_SUPPLEMENT}),
+    ("source_ref", {"source_ref": SourceRef(document_id="doc-other")}),
+    ("verbatim_value", {"verbatim_value": "650Wp"}),
+    ("confidence", {"confidence": 0.8}),
+    ("note", {"condition": Condition(note="page 3")}),
+    ("derived", {"condition": Condition(derived=frozenset({"basis"}))}),
+]
+
+
+@pytest.mark.parametrize("element,change", _DISTINGUISHING, ids=[n for n, _ in _DISTINGUISHING])
+def test_every_ordering_element_is_load_bearing(element: str, change: dict[str, object]) -> None:
+    """Each element of `_ordering_key` in turn, because dropping any one of seven
+    of them left the whole suite green.
+
+    The base candidate deliberately does *not* derive its `document_id` from its
+    value: the older fixture built `SourceRef(document_id=f"doc-{value}")`, so
+    `source_ref` was a proxy for `value` and dropping either from the key was
+    masked by the other.
+    """
+    base = ConflictCandidate(
+        value=650.0,
+        unit="W",
+        verbatim_value="650 W",
+        condition=Condition(),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-fixed"),
+        confidence=0.9,
+    )
+    other = base.model_copy(update=change)
+    assert other != base, f"the {element} fixture does not actually differ"
+
+    forward = comparison_pairs([base, other])
+    backward = comparison_pairs([other, base])
+    assert len(forward) == 1 and len(backward) == 1
+    assert forward[0][0] == backward[0][0], (
+        f"candidates differing only in {element} tie under `_ordering_key`, so the "
+        "pair's orientation follows arrival order"
+    )
 
 
 def test_candidates_differing_only_in_verbatim_value_still_order_canonically() -> None:

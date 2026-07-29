@@ -76,7 +76,19 @@ def test_resolved_field_accepts_a_resolution() -> None:
             value_after=650,
         ),
     )
+    # Echoing the constructor kwarg back tests pydantic, not the validator. What
+    # `_resolution_matches_status` actually enforces is the *other* direction:
+    # RESOLVED without a Resolution is the state FR-HITL-06 forbids, because a
+    # decision with no record of who made it is not auditable.
     assert field.resolution is not None
+    with pytest.raises(ValidationError):
+        CanonicalField(
+            value=650,
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="doc-1"),
+            confidence=0.9,
+            conflict_status=ConflictStatus.RESOLVED,
+        )
 
 
 def test_confidence_is_bounded() -> None:

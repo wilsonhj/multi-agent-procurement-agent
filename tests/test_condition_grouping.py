@@ -81,24 +81,76 @@ def test_grouping_key_is_order_independent() -> None:
 
 
 def test_grouping_key_separates_the_three_conditions() -> None:
-    """Unstated conditions form their own group rather than bridging two others."""
+    """Unstated conditions form their own group rather than bridging two others.
+
+    `_key_buckets` is a local reimplementation, so this pins the *property* of
+    `grouping_key`; `tests/test_comparison_pairs.py` pins the shipped
+    `comparison_groups` against a literal partition."""
     assert len(_key_buckets([EU, SILENT, CEC])) == 3
 
 
 def test_grouping_key_is_hashable_and_equal_for_equal_conditions() -> None:
-    assert (
-        Condition(basis=MeasurementBasis.STC).grouping_key()
-        == Condition(basis=MeasurementBasis.STC).grouping_key()
+    """Equal conditions share a key and unequal ones do not.
+
+    The inequality half matters: with `grouping_key` replaced by `return ()` the
+    equality assertions still held, and a constant key puts every candidate in
+    one display group."""
+    stc = Condition(basis=MeasurementBasis.STC).grouping_key()
+    assert stc == Condition(basis=MeasurementBasis.STC).grouping_key()
+    assert len({stc, Condition(basis=MeasurementBasis.STC).grouping_key()}) == 1
+    assert stc != Condition(basis=MeasurementBasis.NOCT).grouping_key()
+    assert stc != Condition().grouping_key()
+
+
+def test_the_grouping_key_has_a_fixed_layout() -> None:
+    """Pinned as a literal, because every other assertion compares one
+    `grouping_key()` to another — self-consistency with no anchor, which is the
+    same shape as the pair-orientation reversal that once kept 79 tests green.
+
+    Reordering `ConditionDimensions.model_fields` changes what position a
+    dimension occupies without changing any key-to-key comparison, and the
+    display partition is repr-sorted on exactly that tuple."""
+    assert tuple(ConditionDimensions.model_fields) == (
+        "basis",
+        "temperature_c",
+        "side",
+        "duration_h",
+        "weighting",
+        "standards_regime",
+        "reference_temperature_c",
+        "rte_boundary",
+        "tap_position_pct",
+        "base_mva",
     )
-    assert (
-        len(
-            {
-                Condition(basis=MeasurementBasis.STC).grouping_key(),
-                Condition(basis=MeasurementBasis.STC).grouping_key(),
-            }
-        )
-        == 1
+    assert Condition(basis=MeasurementBasis.STC).grouping_key() == (
+        MeasurementBasis.STC,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
+
+
+def test_is_unstated_is_false_the_moment_any_dimension_is_known() -> None:
+    """Only the all-`None` case was ever asserted, so `return True`,
+    `return any(...)` and `return self.note is None` all passed. Any code
+    branching on this would have treated every stated condition as unstated."""
+    assert Condition().is_unstated()
+    assert Condition(note="page 3").is_unstated(), "an annotation is not a dimension"
+    for stated in (
+        Condition(basis=MeasurementBasis.STC),
+        Condition(temperature_c=30.0),
+        Condition(side=PowerSide.DC),
+        Condition(rte_boundary=RteBoundary.DC_ROUND_TRIP),
+        Condition(tap_position_pct=0.0),
+        Condition(base_mva=10.0),
+    ):
+        assert not stated.is_unstated(), stated
 
 
 def test_grouping_key_ignores_note() -> None:
@@ -227,7 +279,12 @@ def test_derived_does_not_split_a_group() -> None:
     stated = Condition(basis=MeasurementBasis.STC)
     defaulted = Condition(basis=MeasurementBasis.STC, derived=frozenset({"basis"}))
     assert stated.grouping_key() == defaulted.grouping_key()
-    assert defaulted.derived == frozenset({"basis"})
+    # `derived` is excluded from the key by living on the subclass, so the check
+    # that means something is that it survives a store round-trip - echoing the
+    # constructor kwarg back only tests pydantic.
+    assert Condition.model_validate_json(defaulted.model_dump_json()).derived == frozenset(
+        {"basis"}
+    )
 
 
 def test_an_unrecognised_vocabulary_token_is_rejected() -> None:
@@ -265,8 +322,8 @@ def test_an_undated_sat_is_legal_and_never_aliased() -> None:
     a datasheet printing "SAT" with no epoch needs one of its own (decision 6).
     It must not alias onto either dated member: `basis` is a grouping dimension,
     so aliasing would silently merge one-month and three-month measurements."""
-    undated = Condition(basis=MeasurementBasis.SAT)
-    assert undated.basis is MeasurementBasis.SAT
+    undated = Condition(basis="SAT")  # type: ignore[arg-type]
+    assert undated.basis is MeasurementBasis.SAT, "the printed form has to reach the member"
     assert undated.grouping_key() != Condition(basis=MeasurementBasis.SAT_1MO).grouping_key()
     assert undated.grouping_key() != Condition(basis=MeasurementBasis.SAT_3MO).grouping_key()
 

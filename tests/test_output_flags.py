@@ -73,3 +73,13 @@ def test_flags_combine() -> None:
         confidence_threshold=THRESHOLD,
     )
     assert {CellFlag.WEB_SUPPLEMENTED, CellFlag.LOW_CONFIDENCE} <= flags
+
+
+def test_confidence_exactly_at_the_threshold_is_not_low() -> None:
+    """FR-OUT-04 flags values *below* the threshold. `<` mutated to `<=` survived
+    every other test here, because none of them sits on the boundary — and the
+    boundary is the one value a configured threshold is chosen to land on."""
+    at = _field(confidence=0.80)
+    assert CellFlag.LOW_CONFIDENCE not in flags_for(at, confidence_threshold=0.80)
+    just_below = _field(confidence=0.7999)
+    assert CellFlag.LOW_CONFIDENCE in flags_for(just_below, confidence_threshold=0.80)

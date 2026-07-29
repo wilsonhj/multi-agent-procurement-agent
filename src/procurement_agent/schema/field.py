@@ -25,7 +25,17 @@ from pydantic import (
     model_validator,
 )
 
-from .enums import ConflictClass, ConflictStatus, ResolutionAction, Severity, SourceTier
+from .enums import (
+    ConflictClass,
+    ConflictStatus,
+    EfficiencyWeighting,
+    MeasurementBasis,
+    PowerSide,
+    ResolutionAction,
+    Severity,
+    SourceTier,
+    StandardsRegime,
+)
 
 
 class SourceRef(BaseModel):
@@ -90,30 +100,50 @@ class ConditionDimensions(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    basis: str | None = Field(
+    basis: MeasurementBasis | None = Field(
         default=None,
-        description="Measurement basis, e.g. stc, nmot, noct, bnpi, fat, sat, bol, eol",
+        description=(
+            "What the rating is measured against. Which tokens are legal depends "
+            "on the parameter family - see the Conditions table in "
+            "contracts/canonical-parameters.md rather than restating it here."
+        ),
     )
     temperature_c: float | None = Field(
         default=None, description="Ambient the rating is stated at, e.g. 30 / 40 / 50"
     )
-    side: str | None = Field(default=None, description="ac or dc - load-bearing for BESS")
+    side: PowerSide | None = Field(default=None, description="Load-bearing for BESS")
     duration_h: float | None = Field(
         default=None, description="Rated duration; BESS RTE is duration-dependent"
     )
-    weighting: str | None = Field(
-        default=None, description="Efficiency weighting, e.g. cec, european, max"
-    )
-    standards_regime: str | None = Field(
+    weighting: EfficiencyWeighting | None = None
+    standards_regime: StandardsRegime | None = Field(
         default=None,
         description=(
-            "ieee or iec. Determines which multi-cooling rating is canonical, the "
-            "loss reference temperature, and the vector-group phase convention. "
-            "See clarifications.md D-6."
+            "Determines which multi-cooling rating is canonical, the loss reference "
+            "temperature, and the vector-group phase convention. clarifications.md D-6."
         ),
     )
     reference_temperature_c: float | None = Field(
         default=None, description="Loss reference temperature: 20 + rise (IEEE) or 75 (IEC)"
+    )
+    rte_boundary: str | None = Field(
+        default=None,
+        description=(
+            "Where a BESS round-trip efficiency is measured. A dimension, not a "
+            "note: four distinct boundaries are all called 'round-trip efficiency' "
+            "and they are worth 2-7 percentage points. The contract's Conditions "
+            "table routes this through `note`, which comparison ignores, so two "
+            "different boundaries compared as like-for-like. Amending that table "
+            "is part of adopting this field."
+        ),
+    )
+    tap_position: str | None = Field(
+        default=None,
+        description=(
+            "Transformer tap a %Z or loss figure is stated at. Same reason as "
+            "rte_boundary: the contract puts it in `note`, and nominal-tap versus "
+            "+5%-tap impedance are not the same measurement."
+        ),
     )
     base_mva: float | None = Field(
         default=None,
@@ -144,17 +174,29 @@ class ConditionDimensions(BaseModel):
         # different reprs, which flipped the order of a repr-sorted partition.
         return value + 0.0
 
-    @field_validator("basis", "side", "weighting", "standards_regime")
+    @field_validator(
+        "basis",
+        "side",
+        "weighting",
+        "standards_regime",
+        "rte_boundary",
+        "tap_position",
+        mode="before",
+    )
     @classmethod
     def _normalise_vocabulary(cls, value: str | None) -> str | None:
         """Fold case and strip padding so `STC` and `stc` share a group.
 
-        Under exact-key grouping an unnormalised case variant does not raise a
-        false conflict - it silently forms its own group and suppresses the
-        comparison, which is the failure direction that cannot be reviewed.
+        Runs `mode="before"`, so `"STC"` folds to `"stc"` and *then* coerces to
+        `MeasurementBasis.STC` rather than failing validation. Now that the
+        vocabularies are closed, an unrecognised token raises instead of silently
+        forming its own group - which is the failure direction that cannot be
+        reviewed, because nothing surfaces a comparison that never happened.
         """
         if value is None:
             return None
+        if not isinstance(value, str):
+            return value
         normalised = value.strip().casefold()
         # An extractor emitting "" rather than None would otherwise read as a
         # stated dimension and strand the value in its own group.

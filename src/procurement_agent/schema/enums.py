@@ -77,6 +77,75 @@ class ConflictStatus(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class MeasurementBasis(StrEnum):
+    """What a rating is measured against (contract, Conditions table).
+
+    One vocabulary spanning three families, because `basis` is one field:
+    PV electrical, inverter MPPT window, and BESS energy. Kept as a single enum
+    rather than three so `Condition` stays one shape across categories; which
+    tokens are legal for which family is the contract's table, not this type's job.
+    """
+
+    # PV electrical
+    STC = "stc"
+    NMOT = "nmot"
+    NOCT = "noct"
+    BNPI = "bnpi"
+
+    # Inverter MPPT window - `500-1500 V` and `860-1330 V` are different fields,
+    # not a discrepancy.
+    FULL_RANGE = "full_range"
+    FULL_POWER = "full_power"
+
+    # BESS energy. BOL and EOL differ ~26% on real projects.
+    NAMEPLATE = "nameplate"
+    BOL = "bol"
+    FAT = "fat"
+    SAT_1MO = "sat_1mo"
+    SAT_3MO = "sat_3mo"
+    SAT = "sat"
+    """Site acceptance, epoch not stated. A third member rather than an alias of
+    either dated one: `basis` is a grouping dimension, so aliasing `sat` onto
+    `sat_1mo` would silently merge one-month and three-month measurements - the
+    same class of merge `bol`-vs-`eol` exists to prevent. Now that the vocabulary
+    is closed, its absence would instead be a validation failure on any datasheet
+    that prints "SAT" undated. See open-decisions.md decision 6."""
+
+    EOL = "eol"
+
+    # BESS cycle life. The contract writes this family as "EOL SOH threshold
+    # (60/70/80%)" - a percentage, where every other `basis` value is a token.
+    # Encoded as tokens so the field keeps one type; flagged in open-decisions
+    # because it is an interpretation of a frozen contract, not a reading of it.
+    SOH_60 = "soh_60"
+    SOH_70 = "soh_70"
+    SOH_80 = "soh_80"
+
+
+class PowerSide(StrEnum):
+    """Which side of the PCS a BESS rating is taken on. Straddling it is ~28%."""
+
+    AC = "ac"
+    DC = "dc"
+
+
+class EfficiencyWeighting(StrEnum):
+    """Inverter efficiency weighting. 99.02 max / 98.5 CEC / 98.8 European is one
+    product, not three."""
+
+    MAX = "max"
+    CEC = "cec"
+    EUROPEAN = "european"
+
+
+class StandardsRegime(StrEnum):
+    """IEEE lists multi-cooling ratings base-first, IEC top-first. "Take the first
+    number" is right for one and wrong for the other."""
+
+    IEEE = "ieee"
+    IEC = "iec"
+
+
 class Severity(IntEnum):
     """How much a single unresolved conflict should hold up the workbook.
 

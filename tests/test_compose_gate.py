@@ -6,6 +6,7 @@ returns the blocking entries so FR-HITL-05's completeness manifest can name them
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +23,17 @@ from procurement_agent.schema import (
     SourceRef,
     SourceTier,
 )
+
+
+def _isolated_settings(**overrides: Any) -> Settings:
+    """`Settings` built without reading the ambient environment or a local `.env`.
+
+    A bare `Settings()` reads both, so a default-value test fails for anyone who
+    followed `.env.example` - which this branch ships. `_env_file` is a real
+    pydantic-settings argument that mypy does not model, hence the single ignore
+    here rather than one at every call site.
+    """
+    return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
 
 
 def _entry(severity: Severity, entry_id: str = "c-1") -> ConflictQueueEntry:
@@ -97,13 +109,13 @@ def test_threshold_has_a_configured_default(monkeypatch: pytest.MonkeyPatch) -> 
     developer who followed `.env.example` - which the same change ships.
     """
     monkeypatch.delenv("PROCUREMENT_COMPOSE_GATE_THRESHOLD", raising=False)
-    assert Settings(_env_file=None).compose_gate_threshold is Severity.MEDIUM
+    assert _isolated_settings().compose_gate_threshold is Severity.MEDIUM
 
 
 def test_threshold_reads_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """The path .env.example documents, and the one nothing covered."""
     monkeypatch.setenv("PROCUREMENT_COMPOSE_GATE_THRESHOLD", "3")
-    assert Settings(_env_file=None).compose_gate_threshold is Severity.HIGH
+    assert _isolated_settings().compose_gate_threshold is Severity.HIGH
 
 
 def test_the_gate_cannot_be_disabled_by_configuration() -> None:
@@ -112,7 +124,7 @@ def test_the_gate_cannot_be_disabled_by_configuration() -> None:
     Decision 2 requires the override to be a recorded, audited decision; an
     environment variable is neither, so CRITICAL is out of range."""
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, compose_gate_threshold=Severity.CRITICAL)
+        _isolated_settings(compose_gate_threshold=Severity.CRITICAL)
 
 
 def test_severity_is_required_on_a_queue_entry() -> None:

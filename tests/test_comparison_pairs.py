@@ -10,7 +10,13 @@ import itertools
 
 import pytest
 
-from procurement_agent.schema import Condition, ConflictCandidate, SourceRef, SourceTier
+from procurement_agent.schema import (
+    Condition,
+    ConflictCandidate,
+    MeasurementBasis,
+    SourceRef,
+    SourceTier,
+)
 from procurement_agent.services.conflict_hitl import (
     comparison_groups,
     comparison_pairs,
@@ -34,8 +40,8 @@ def _candidate(
 #: A commercial contract states a number with no test condition; datasheets and
 #: listings always state one. The asymmetry is the normal case, not an edge one.
 AGREEMENT = _candidate(650.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
-DATASHEET = _candidate(700.0, Condition(basis="stc"))
-CEC = _candidate(645.0, Condition(basis="stc"))
+DATASHEET = _candidate(700.0, Condition(basis=MeasurementBasis.STC))
+CEC = _candidate(645.0, Condition(basis=MeasurementBasis.STC))
 
 
 def _values(pairs: list[tuple[ConflictCandidate, ConflictCandidate]]) -> list[tuple[float, float]]:
@@ -55,8 +61,8 @@ def test_a_less_specific_condition_still_compares() -> None:
 
     Only wholly-unstated candidates were rescued, so a partially-stated
     system-of-record value stayed invisible."""
-    loose = _candidate(650.0, Condition(basis="stc"), SourceTier.SYSTEM_OF_RECORD)
-    precise = _candidate(700.0, Condition(basis="stc", temperature_c=25.0))
+    loose = _candidate(650.0, Condition(basis=MeasurementBasis.STC), SourceTier.SYSTEM_OF_RECORD)
+    precise = _candidate(700.0, Condition(basis=MeasurementBasis.STC, temperature_c=25.0))
     assert len(comparison_pairs([loose, precise])) == 1
 
 
@@ -80,7 +86,7 @@ def test_output_is_identical_under_every_permutation() -> None:
 def test_no_pair_is_raised_twice() -> None:
     """Folding unstated candidates into every stated group double-raised their
     mutual disagreement, once per stated group."""
-    stated_a = _candidate(700.0, Condition(basis="stc"))
+    stated_a = _candidate(700.0, Condition(basis=MeasurementBasis.STC))
     stated_b = _candidate(690.0, Condition(temperature_c=30.0))
     bare_a = _candidate(650.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
     bare_b = _candidate(655.0, Condition())
@@ -91,7 +97,7 @@ def test_no_pair_is_raised_twice() -> None:
 
 def test_an_empty_string_condition_does_not_masquerade_as_stated() -> None:
     """An extractor emitting "" rather than None would otherwise strand a value."""
-    blank = _candidate(650.0, Condition(basis="   "), SourceTier.SYSTEM_OF_RECORD)
+    blank = _candidate(650.0, Condition(basis="   "), SourceTier.SYSTEM_OF_RECORD)  # type: ignore[arg-type]
     assert blank.condition.basis is None
     assert blank.condition.is_unstated()
     assert len(comparison_pairs([blank, DATASHEET])) == 1
@@ -109,7 +115,9 @@ def test_signed_zero_does_not_reorder_groups() -> None:
 def test_derived_serialises_deterministically() -> None:
     """A frozenset serialises in hash order, randomised per process — the one
     thing a store justified by byte-determinism must not do."""
-    condition = Condition(basis="stc", derived=frozenset({"basis", "temperature_c", "side"}))
+    condition = Condition(
+        basis=MeasurementBasis.STC, derived=frozenset({"basis", "temperature_c", "side"})
+    )
     assert '"derived":["basis","side","temperature_c"]' in condition.model_dump_json(
         exclude_defaults=False
     ).replace(", ", ",")
@@ -134,7 +142,7 @@ def test_output_is_a_golden_ordered_list() -> None:
     Verified: flipping `(left, right)` to `(right, left)` kept all 79 tests green.
     A canonical order needs a literal expected list.
 
-    Both stated candidates carry `basis="stc"`, so they are comparable with each
+    Both stated candidates carry `basis=MeasurementBasis.STC`, so they are comparable with each
     other as well as with the unstated agreement - three pairs, not two. Writing
     this expectation is what surfaced that; the permutation test could not.
     """

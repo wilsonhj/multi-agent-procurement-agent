@@ -7,11 +7,22 @@ which fails the moment the conflict queue depends on ingest order.
 """
 
 import itertools
+import pathlib
+import re
+from enum import StrEnum
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
-from procurement_agent.schema import Condition, ConditionDimensions
+from procurement_agent.schema import (
+    Condition,
+    ConditionDimensions,
+    EfficiencyWeighting,
+    MeasurementBasis,
+    PowerSide,
+    StandardsRegime,
+)
 
 #: The Sungrow SG350HX case: an EU sheet at 30 degC, a distributor page stating
 #: no condition at all, and the CEC listing at 40 degC.
@@ -72,8 +83,19 @@ def test_grouping_key_separates_the_three_conditions() -> None:
 
 
 def test_grouping_key_is_hashable_and_equal_for_equal_conditions() -> None:
-    assert Condition(basis="stc").grouping_key() == Condition(basis="stc").grouping_key()
-    assert len({Condition(basis="stc").grouping_key(), Condition(basis="stc").grouping_key()}) == 1
+    assert (
+        Condition(basis=MeasurementBasis.STC).grouping_key()
+        == Condition(basis=MeasurementBasis.STC).grouping_key()
+    )
+    assert (
+        len(
+            {
+                Condition(basis=MeasurementBasis.STC).grouping_key(),
+                Condition(basis=MeasurementBasis.STC).grouping_key(),
+            }
+        )
+        == 1
+    )
 
 
 def test_grouping_key_ignores_note() -> None:
@@ -111,7 +133,7 @@ def test_non_finite_conditions_are_rejected() -> None:
 
 def test_grouping_is_stable_across_a_store_round_trip() -> None:
     """FR-OUT-06 purity: persisting and reloading must not move a value's group."""
-    original = Condition(basis="stc", temperature_c=25.0, base_mva=10.0)
+    original = Condition(basis=MeasurementBasis.STC, temperature_c=25.0, base_mva=10.0)
     revived = Condition.model_validate_json(original.model_dump_json())
     assert revived.grouping_key() == original.grouping_key()
 
@@ -119,8 +141,11 @@ def test_grouping_is_stable_across_a_store_round_trip() -> None:
 def test_vocabulary_case_does_not_split_a_group() -> None:
     """Under exact-key grouping an unnormalised variant does not raise a false
     conflict - it silently suppresses the comparison, which cannot be reviewed."""
-    assert Condition(basis="STC").grouping_key() == Condition(basis=" stc ").grouping_key()
-    assert Condition(side="DC").grouping_key() == Condition(side="dc").grouping_key()
+    upper = Condition(basis="STC").grouping_key()  # type: ignore[arg-type]
+    padded = Condition(basis=" stc ").grouping_key()  # type: ignore[arg-type]
+    assert upper == padded
+    upper_side = Condition(side="DC").grouping_key()  # type: ignore[arg-type]
+    assert upper_side == Condition(side=PowerSide.DC).grouping_key()
 
 
 def test_base_mva_is_a_grouping_dimension_not_a_note() -> None:
@@ -132,7 +157,115 @@ def test_base_mva_is_a_grouping_dimension_not_a_note() -> None:
 
 def test_derived_does_not_split_a_group() -> None:
     """A defaulted STC value and a stated STC value are the same measurement."""
-    stated = Condition(basis="stc")
-    defaulted = Condition(basis="stc", derived=frozenset({"basis"}))
+    stated = Condition(basis=MeasurementBasis.STC)
+    defaulted = Condition(basis=MeasurementBasis.STC, derived=frozenset({"basis"}))
     assert stated.grouping_key() == defaulted.grouping_key()
     assert defaulted.derived == frozenset({"basis"})
+
+
+def test_an_unrecognised_vocabulary_token_is_rejected() -> None:
+    """Issue #16. The frozen contract's own rule: "Extraction returning a value
+    outside the set is a validation failure, not a silent pass-through." With a
+    bare `str` it was exactly that pass-through — and under exact-key grouping a
+    junk token does not raise a false conflict, it silently forms its own group
+    and suppresses the comparison, which nothing surfaces."""
+    for field, junk in [
+        ("basis", "not_a_real_basis"),
+        ("side", "middle"),
+        ("weighting", "japanese"),
+        ("standards_regime", "ansi"),
+    ]:
+        with pytest.raises(ValidationError):
+            Condition(**{field: junk})  # type: ignore[arg-type]
+
+
+def test_vocabulary_normalisation_runs_before_enum_coercion() -> None:
+    """`"  STC "` has to fold to `stc` and *then* coerce, or closing the
+    vocabulary would break every datasheet that prints conditions in caps."""
+    # Raw strings on purpose: this is the coercion path, so the arguments are
+    # deliberately not enum members.
+    assert Condition(basis="  STC ").basis is MeasurementBasis.STC  # type: ignore[arg-type]
+    assert Condition(side="DC").side is PowerSide.DC  # type: ignore[arg-type]
+    weighting = Condition(weighting=" European").weighting  # type: ignore[arg-type]
+    assert weighting is EfficiencyWeighting.EUROPEAN
+    regime = Condition(standards_regime="IEC").standards_regime  # type: ignore[arg-type]
+    assert regime is StandardsRegime.IEC
+
+
+def test_an_undated_sat_is_legal_and_never_aliased() -> None:
+    """Closing the vocabulary turns a missing member into a validation failure, so
+    a datasheet printing "SAT" with no epoch needs one of its own (decision 6).
+    It must not alias onto either dated member: `basis` is a grouping dimension,
+    so aliasing would silently merge one-month and three-month measurements."""
+    undated = Condition(basis=MeasurementBasis.SAT)
+    assert undated.basis is MeasurementBasis.SAT
+    assert undated.grouping_key() != Condition(basis=MeasurementBasis.SAT_1MO).grouping_key()
+    assert undated.grouping_key() != Condition(basis=MeasurementBasis.SAT_3MO).grouping_key()
+
+
+def test_the_contract_conditions_table_names_only_real_fields() -> None:
+    """The table routed three real dimensions through `note`, which comparison
+    ignores. Amending it is part of #16, so the amendment is checked here rather
+    than trusted: every backticked name in the Conditions table is either a field
+    that actually gates comparison, or - inside an `in {...}` clause - a member of
+    that field's closed vocabulary. Otherwise the contract describes a rule the
+    code does not implement, which is how the `note` routing survived in the first
+    place.
+    """
+    contract = pathlib.Path(__file__).parent.parent / (
+        "specs/001-procurement-agent/contracts/canonical-parameters.md"
+    )
+    table = contract.read_text(encoding="utf-8").split("## Conditions", 1)[1]
+    rows = [line for line in table.splitlines() if line.startswith("| ") and " | " in line]
+
+    fields: set[str] = set()
+    for row in rows:
+        required = row.split("|")[2]
+        # `basis` in {`stc`, ...}: the head is a field, the braces hold its vocabulary.
+        for head, listed in re.findall(r"`([a-z_]+)`\s*∈\s*\{([^}]*)\}", required):
+            annotation = ConditionDimensions.model_fields[head].annotation
+            # Resolved from the annotation rather than a hand-kept mapping, so a
+            # new closed-vocabulary dimension is covered without registering it.
+            enums = [
+                arg
+                for arg in get_args(annotation)
+                if isinstance(arg, type) and issubclass(arg, StrEnum)
+            ]
+            assert enums, f"the table gives `{head}` a vocabulary but its type is open"
+            vocabulary = {member.value for member in enums[0]}
+            named = set(re.findall(r"`([a-z_0-9]+)`", listed))
+            assert named <= vocabulary, f"`{head}` in the table admits {named - vocabulary}"
+            fields.add(head)
+            required = required.replace(f"{{{listed}}}", "")
+        fields |= set(re.findall(r"`([a-z_]+)`", required))
+
+    unknown = fields - set(ConditionDimensions.model_fields)
+    assert not unknown, f"the Conditions table names {unknown}, which gate nothing"
+    assert {"rte_boundary", "tap_position", "base_mva"} <= fields, (
+        "the three dimensions promoted out of `note` must appear in the table"
+    )
+
+    # The cycle-life row is the one place the table wrote a `basis` vocabulary as
+    # prose - "EOL SOH threshold (60/70/80%)" - where every other row writes
+    # tokens. Prose passes the check above vacuously, because it backticks no
+    # member for the check to reject, so pin the tokens it must now name.
+    cycle_life = next(row for row in rows if "cycle life" in row)
+    assert re.search(r"`soh_60`.*`soh_70`.*`soh_80`", cycle_life), (
+        "cycle life must name its `basis` vocabulary as tokens, not as a percentage"
+    )
+
+
+def test_rte_boundary_gates_comparison() -> None:
+    """Four distinct boundaries are all called "round-trip efficiency", worth 2-7
+    percentage points. The contract routes this through `note`, which comparison
+    ignores, so an 88% including-auxiliaries figure compared as like-for-like with
+    a 93% excluding-auxiliaries one and fabricated a 5 pp conflict."""
+    including = Condition(duration_h=4.0, rte_boundary="includes_auxiliaries")
+    excluding = Condition(duration_h=4.0, rte_boundary="excludes_auxiliaries")
+    assert not including.comparable_with(excluding)
+    assert including.grouping_key() != excluding.grouping_key()
+
+
+def test_tap_position_gates_comparison() -> None:
+    """Nominal-tap and +5%-tap impedance are not the same measurement."""
+    assert not Condition(tap_position="nominal").comparable_with(Condition(tap_position="+5"))

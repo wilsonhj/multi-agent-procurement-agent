@@ -38,6 +38,11 @@ extract = [
     "instructor>=1.15",
     "openai>=1.50",
 ]
+# Postgres-backed stage state machine and canonical store (plan Decisions 1, 3a, 9).
+store = [
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+]
 # CEC equipment-list cross-check (FR-WEB-05 authority tier).
 # WARNING: pvlib's BUNDLED CEC library is frozen at March 2019 and contains ZERO
 # modules >=600 W, while this project's modules are 600-740 W. Never call
@@ -48,6 +53,7 @@ solar = [
 ]
 dev = [
     "pytest>=8.3",
+    "types-openpyxl>=3.1",
     "ruff>=0.7",
     "mypy>=1.11",
 ]
@@ -72,6 +78,8 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"
-packages = ["procurement_agent"]
+# `files`, not `packages`: with packages = ["procurement_agent"] mypy never
+# looked at tests/, so every "mypy strict clean" claim covered source only.
+files = ["src", "tests"]
 mypy_path = "src"
 strict = true

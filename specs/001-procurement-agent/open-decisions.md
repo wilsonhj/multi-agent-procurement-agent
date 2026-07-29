@@ -1,6 +1,6 @@
 # Open decisions — recommended defaults
 
-Six decisions the specs left to a human. Each carries a recommendation, the
+Seven decisions the specs left to a human. Each carries a recommendation, the
 reasoning, and a confidence marking. Nothing here is adopted; adopting means
 folding it into `clarifications.md` and deleting the entry.
 
@@ -209,3 +209,44 @@ Underlying defect to fix either way: `field.py`'s `basis` description restates a
 partial merge of the per-family vocabularies and omits `nameplate`. It should
 point at the contract's Conditions table rather than restate it — that drift is
 the source of the `sat` mismatch. Tracked as #16.
+
+**Status: both applied under #16.** `reference_temperature_c` kept; `sat` added
+alongside `sat_1mo`/`sat_3mo` as a third member meaning "epoch not stated", never
+aliased — which closing the vocabulary made load-bearing, since its absence would
+otherwise reject any datasheet printing an undated "SAT". The `basis` description
+now points at the Conditions table instead of restating it, and
+`test_the_contract_conditions_table_names_only_real_fields` checks the table
+against the model so the drift cannot silently return.
+
+---
+
+## 7. `basis` for BESS cycle life — a token where the contract wrote a percentage
+
+**Confidence: firm on the encoding, open on whether it is the right reading.**
+
+The Conditions table wrote this family as `basis` = EOL SOH threshold (60/70/80%)
+— a percentage, where every other `basis` value in the table is a token. Closing
+the vocabulary under #16 forced a choice, because a percentage cannot be a member
+of the same enum as `stc` and `bol` without `basis` becoming `str | float`.
+
+**Recommended: `soh_60` / `soh_70` / `soh_80` as tokens.** It keeps `basis` one
+type across all eight categories, and the three thresholds are the ones the
+industry actually quotes, so a numeric field would buy range it never uses. The
+contract's Conditions table has been amended to match.
+
+**Why it is still listed here.** This is an *interpretation* of a frozen
+artifact, not a reading of it — the only such edit in this branch. The two ways
+it could be wrong:
+
+- **A threshold outside the three.** A supplier quoting cycle life to 65 % SOH is
+  now a validation failure rather than a value. That is the correct failure
+  direction (loud, not silent), but it is a failure a numeric field would not
+  have had.
+- **The threshold is arguably not a `basis`.** It qualifies a *count*, not a
+  measurement basis; an alternative is a `soh_threshold_pct: float | None`
+  dimension of its own, which would compare correctly and admit any threshold.
+  That is the cleaner model and the larger change: it adds a dimension used by
+  one family, where `basis` is already there.
+
+Adopting either means editing a frozen contract, which is why it is a human's
+call and not a default.

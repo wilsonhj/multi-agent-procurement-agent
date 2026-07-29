@@ -301,12 +301,28 @@ Which condition fields are required, by parameter family:
 | Inverter efficiency | `weighting` ∈ {`max`, `cec`, `european`} | 99.02% max, 98.5% CEC and 98.8% European are one product. |
 | Inverter MPPT window | `basis` ∈ {`full_range`, `full_power`} | `500–1500 V` and `860–1330 V` are different fields, not a discrepancy. |
 | BESS energy | `side` ∈ {`ac`, `dc`}, `basis` ∈ {`nameplate`, `bol`, `fat`, `sat_1mo`, `sat_3mo`, `eol`} | BOL vs EOL differ ~26% on real projects. AC vs DC straddles the PCS. |
-| BESS RTE | `side`, `duration_h`, plus boundary in `note` | Four distinct boundaries all called "round-trip efficiency", worth 2–7 pp. RTE is duration-dependent even at one boundary. |
-| BESS cycle life | `basis` = EOL SOH threshold (60/70/80%) | Frequently omitted entirely, which makes the number uncomparable. |
+| BESS RTE | `side`, `duration_h`, `rte_boundary` | Four distinct boundaries all called "round-trip efficiency", worth 2–7 pp. RTE is duration-dependent even at one boundary. |
+| BESS cycle life | `basis` ∈ {`soh_60`, `soh_70`, `soh_80`} | The EOL state-of-health threshold the cycle count is quoted to. Frequently omitted entirely, which makes the number uncomparable. |
 | Transformer MVA | `standards_regime`, plus cooling class per rating | IEEE lists base-first, IEC top-first. "Take the first number" is right for one and wrong for the other. |
-| Transformer %Z | `standards_regime`, base MVA and tapping in `note` | %Z scales linearly with the MVA base — the same unit differs 1.25–1.67× between regimes. |
+| Transformer %Z | `standards_regime`, `base_mva`, `tap_position` | %Z scales linearly with the MVA base — the same unit differs 1.25–1.67× between regimes. Nominal-tap and +5%-tap impedance are likewise not the same measurement. |
 | Transformer losses | `reference_temperature_c` | IEEE load loss at `20 + rise` (75/85/95 °C); IEC at 75 °C regardless. No-load loss is **not** temperature-corrected. |
 
 **Absent is unknown, not contradictory.** A condition field set on one side and absent on the
 other does not block comparison. This admits some false conflicts; refusing to compare whenever a
 datasheet states conditions incompletely would block nearly everything.
+
+**`note` does not gate comparison.** It is deliberately excluded from `grouping_key()` and
+`comparable_with()` — free text is provenance for a reviewer, not something two values can be
+matched on. Three rows above once routed a real dimension through it (the RTE boundary, the
+transformer base MVA, the tap position), which meant those measurements compared as like-for-like
+and manufactured conflicts worth 2–7 pp, 1.25–1.67× and a full tap step respectively. Each is now
+its own field on `ConditionDimensions`. **A dimension that changes what a number means belongs on
+`ConditionDimensions`; only an annotation belongs in `note`.** Issue #16.
+
+**The vocabularies above are closed.** `basis`, `side`, `weighting` and `standards_regime` are
+enums (`schema/enums.py`), not free strings, so a token outside the set is a validation failure
+rather than a silent pass-through. Case and surrounding whitespace are normalised before
+coercion, so a datasheet printing `STC` and one printing `stc` land in the same group. The BESS
+cycle-life row is the one interpretation rather than a reading: this table wrote that family as a
+percentage where every other `basis` value is a token, so it is encoded as `soh_60` / `soh_70` /
+`soh_80` to keep `basis` one type. See open-decisions.md.

@@ -3,9 +3,19 @@
 Maps every requirement from the FRD and TRS to where it is addressed in the codebase.
 
 Status values:
-- **enforced** — implemented and covered by a test
+- **enforced** — implemented **and covered by a test**
+- **partial** — some of the cited artifact is tested, some is not
 - **declared** — the type, signature or contract exists; behaviour is not implemented
 - **open** — no home in the code yet
+
+> **Audit, 2026-07-28.** Fourteen rows changed status after review, **ten** of them demoted from
+> **enforced** with no test covering the cited artifact — including NFR-04, whose entire citation
+> is a module no test imports. Three cited symbols had been deleted outright
+> (`orchestrator.INTERRUPTING_STAGES`, `config.hitl_confidence_threshold`). `enforced` in this
+> table means a test exists, not that the author believed the code was right.
+>
+> The counts in an earlier version of this note ("eleven" and "eight") were both wrong; they are
+> recomputed from the diff above.
 
 ---
 
@@ -15,12 +25,12 @@ Status values:
 |---|---|---|---|
 | FR-1 | Multi-format intake | `services/ingestion.detect_content_signature` | declared |
 | FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
-| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField`, `schema.ComponentInstance` | enforced |
+| FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)) enforced; `schema.ComponentInstance` ordering enforced, `unresolved_conflicts()` untested | partial |
 | FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
-| FR-5 | Conflict surfacing, no auto-resolution | `schema.ConflictQueueEntry`, same guard | enforced |
+| FR-5 | Conflict surfacing, no auto-resolution | guard, `comparison_pairs` and `values_conflict` enforced; nothing constructs a `ConflictQueueEntry` in production yet | partial |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
 | FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
-| FR-8 | Decision authority stays human | `orchestrator.INTERRUPTING_STAGES` | declared |
+| FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
 
 ## Functional requirements — TRS
 
@@ -33,20 +43,20 @@ Status values:
 | FR-ING-03 | Text-layer PDFs: layout-aware, page numbers | `ports.ParsedElement` | declared |
 | FR-ING-04 | Scanned PDFs/images: OCR, bounding boxes | `ports.OCRPort`, `schema.SourceRef.bounding_box` | declared |
 | FR-ING-05 | Word: paragraphs, tables, footnotes | `ports.ParserPort` | open |
-| FR-ING-06 | Classify into eight document types | `schema.DocumentType` | enforced |
+| FR-ING-06 | Classify into eight document types | `schema.DocumentType`; `classify_document` raises NotImplementedError | declared |
 | FR-ING-07 | Schema-constrained extraction with confidence + source pointer | `ports.LLMPort.extract`, `schema.CanonicalField` | declared |
 | FR-ING-08 | Normalize units, retain verbatim | `schema.CanonicalField.verbatim_value`, `services/ingestion.normalize_unit` | declared |
 | FR-ING-09 | Stable IDs, content hash, dedup | `schema.SourceDocument.content_hash` | declared |
-| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.hitl_confidence_threshold` | declared |
+| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.target_precision_auto_accepted`; tiering in [D-3](../specs/001-procurement-agent/clarifications.md) | declared |
 
 ### Indexing, retrieval & RAG
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| FR-RAG-01 | Structure-aware chunking, 400–512 tokens, 10–20% overlap | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
+| FR-RAG-01 | Structure-aware chunking, 512 tokens, 0–10% overlap (revised from the TRS by plan Decision 6) | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
 | FR-RAG-02 | ANN index, cosine, full metadata set | `ports.VectorStorePort` | declared |
 | FR-RAG-03 | Hybrid retrieval, rerank, tier stays distinguishable | `ports.RetrievedChunk.source_tier` | declared |
-| FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `ports.LLMPort.extract` returns `None`; `ConflictStatus.INSUFFICIENT_EVIDENCE` | enforced |
+| FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `INSUFFICIENT_EVIDENCE` enforced; `ports.LLMPort.extract` returning `None` untested (no test imports `ports`) | partial |
 | FR-RAG-05 | Incremental add/update/delete by stable ID | `ports.VectorStorePort.upsert` / `.delete` | declared |
 
 ### Web search
@@ -54,21 +64,21 @@ Status values:
 | ID | Requirement | Where | Status |
 |---|---|---|---|
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` | declared |
-| FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | `schema.SourceTier`, `schema.SourceRef` | enforced |
+| FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | tier tagging enforced; `SourceRef.retrieved_at` optional and never asserted, query logging has no code | partial |
 | FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
-| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` | open |
+| FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` implemented against `conflict_hitl/tolerance.FIELD_TOLERANCES`, the [D-2](../specs/001-procurement-agent/clarifications.md) table transcribed | enforced |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` | declared |
 
 ### Conflict detection & HITL
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| FR-HITL-01 | Five conflict classes | `schema.ConflictClass` | enforced |
+| FR-HITL-01 | Five conflict classes | `schema.ConflictClass` — no test asserts the count | declared |
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
-| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` | enforced |
-| FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` | enforced |
-| FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
-| FR-HITL-06 | Immutable decision log | `schema.Resolution` (frozen), validator on `CanonicalField` | enforced |
+| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`); no production path builds one | partial |
+| FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
+| FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |
+| FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |
 
 ### Output
 
@@ -77,8 +87,8 @@ Status values:
 | FR-OUT-01 | Tab per category, suppliers rows or columns | `config.suppliers_as_rows` | declared |
 | FR-OUT-02 | Exactly 13 tabs | `schema.WorkbookTab` | enforced |
 | FR-OUT-03 | Per-cell provenance | `services/output.write_workbook` | declared |
-| FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` | enforced |
-| FR-OUT-05 | Certification/standards columns per category | — | open |
+| FR-OUT-04 | Four conditional-formatting states | `services/output.flags_for` enforced; no test exercises the formatting itself, and the writer that would apply it is unimplemented | partial |
+| FR-OUT-05 | Certification/standards columns per category | [contracts/canonical-parameters.md](../specs/001-procurement-agent/contracts/canonical-parameters.md) | declared |
 | FR-OUT-06 | Canonical units, deterministic regeneration | `services/output.write_workbook` | declared |
 
 ---
@@ -90,11 +100,11 @@ Status values:
 | NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator | enforced |
 | NFR-02 | Immutable audit log | `schema.Resolution` frozen; store not yet built | declared |
 | NFR-03 | Access control at retrieval time; confidential path self-hosted | `VectorStorePort.search(allowed_document_ids=...)`, `.env.example` | declared |
-| NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols | enforced |
+| NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols; **no test imports `ports` at all** | declared |
 | NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` | declared |
 | NFR-06 | Hundreds of documents | — | open |
 | NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
-| NFR-08 | Human retains final authority | `orchestrator.INTERRUPTING_STAGES` | declared |
+| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
 
 ---
 
@@ -103,7 +113,7 @@ Status values:
 | ID | Criterion | Test | Status |
 |---|---|---|---|
 | AC-1 | Scanned spec sheet extracts fields with provenance, low confidence to HITL | — | open |
-| AC-2 | Web contradiction raises conflict; record value unchanged | `tests/test_source_of_record_rule.py` | enforced |
+| AC-2 | Web contradiction raises conflict; record value unchanged | `tests/test_source_of_record_rule.py` calls `assert_no_autonomous_overwrite` directly; no test drives a web contradiction through detection to a queue entry | partial |
 | AC-3 | All 13 tabs with conditional formatting | `tests/test_schema_invariants.py`, `tests/test_output_flags.py` | partial |
 | AC-4 | Every cell resolves to a source | `tests/test_schema_invariants.py::test_source_ref_requires_a_source` | enforced |
 | AC-5 | Re-ingest creates no duplicates | — | open |

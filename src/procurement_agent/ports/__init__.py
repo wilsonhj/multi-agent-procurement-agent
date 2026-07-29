@@ -6,8 +6,20 @@
 Six interfaces, one per named swap point. They are structural Protocols rather
 than base classes so that adapters can wrap third-party clients without
 inheriting from anything here, and so no concrete dependency leaks into the core
-package. Concrete adapters live under adapters/ and are pulled in by the
-optional extras declared in pyproject.toml.
+package. No concrete adapter exists yet; when one does it will depend on an
+optional extra declared in pyproject.toml, never on the core - the extras
+there currently declare dependency groups only.
+
+**These Protocols are synchronous, deliberately.** Concurrency in this system is
+per-process, not per-coroutine: the runner is a Postgres job table with a
+`SELECT ... FOR UPDATE SKIP LOCKED` worker loop (plan.md Decision 1), so scaling
+means more worker processes. Parse and OCR are CPU-bound in-process; embedding
+and reranking already take batches, so their parallelism is inside the payload
+rather than at the call boundary; and the vector store is a local Postgres
+round-trip under Decision 3a. A caller that needs overlap can wrap any of these
+in a ThreadPoolExecutor or ProcessPoolExecutor without touching the interface,
+and an async variant can be added alongside later - Protocols are structural, so
+that is additive rather than a breaking change.
 
 The reference memo's parser-router finding applies directly: no single engine
 wins across document types, so ParserPort is expected to have several
@@ -97,7 +109,14 @@ class EmbedderPort(Protocol):
 
 @runtime_checkable
 class VectorStorePort(Protocol):
-    """ANN index over chunks (HNSW/IVF, cosine per FR-RAG-02)."""
+    """Vector store over chunks.
+
+    FR-RAG-02 asks for an ANN index (HNSW/IVF, cosine); **plan Decision 3a
+    reverses that** - exact search, because pgvector was measured silently
+    under-returning on a filtered top-k, and an HNSW index cost more than the
+    table. The Protocol is agnostic; do not build an ANN index on the strength
+    of the requirement text alone.
+    """
 
     def upsert(
         self, chunk_ids: list[str], vectors: list[list[float]], metadata: list[dict[str, Any]]
@@ -128,7 +147,12 @@ class VectorStorePort(Protocol):
 
 @runtime_checkable
 class RerankerPort(Protocol):
-    """Reranking over hybrid vector + BM25 candidates (FR-RAG-03)."""
+    """Reranking over hybrid retrieval candidates.
+
+    FR-RAG-03 says vector + BM25; **plan Decision 3b reverses the BM25 half** -
+    there is no permissively licensed true-BM25 for PostgreSQL, so lexical
+    matching comes from the embedding model's sparse output instead.
+    """
 
     def rerank(
         self, query: str, chunks: list[RetrievedChunk], *, limit: int

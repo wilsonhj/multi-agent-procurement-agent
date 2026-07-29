@@ -49,7 +49,45 @@ class ComponentInstance(BaseModel):
     supplier: str
     model: str
     component_category: ComponentCategory
+    nameplate: float | None = Field(
+        default=None,
+        description=(
+            "Bin discriminator. One datasheet routinely covers several SKUs - a Trina "
+            "TSM-NEG21C.20 sheet spans 6 bins and 22 CEC rows - so supplier+model alone "
+            "does not identify a product."
+        ),
+    )
+    surrogate_id: str | None = Field(
+        default=None,
+        description=(
+            "hash(normalised_supplier, normalised_model, nameplate). There is no stable "
+            "ID upstream: CEC publishes none, and (Manufacturer, Model Number) is not "
+            "unique - 36 duplicated pairs measured, plus 157 model numbers appearing "
+            "under more than one manufacturer. See clarifications.md D-4 and D-8."
+        ),
+    )
     fields: dict[str, CanonicalField] = Field(default_factory=dict)
+
+    def ordering_key(self) -> tuple[str, str, str, float, str]:
+        """Canonical sort position for deterministic workbook regeneration.
+
+        AC-7 requires byte-identical output from an unchanged store, which needs a
+        total order over component instances. `sorted-key JSON` orders keys *within*
+        an object; it says nothing about row order *across* instances.
+
+        `surrogate_id` is the tie-break rather than the primary key because
+        (category, supplier, model) is provably not unique on real data - two Adani
+        entities publish `ASB-M10-144-550` with genuinely different specs (PTC 509.9
+        vs 518.2). Without the tie-break the sort is unstable exactly where the data
+        is most ambiguous.
+        """
+        return (
+            self.component_category.value,
+            self.supplier,
+            self.model,
+            self.nameplate if self.nameplate is not None else float("-inf"),
+            self.surrogate_id or "",
+        )
 
     def unresolved_conflicts(self) -> list[str]:
         """Field names still awaiting a human decision.

@@ -12,9 +12,18 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .schema import Severity
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PROCUREMENT_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="PROCUREMENT_",
+        env_file=".env",
+        extra="ignore",
+        # The compose-gate threshold is a safety interlock, and a bound checked
+        # only at construction is bypassed by plain attribute assignment.
+        validate_assignment=True,
+    )
 
     # --- Endpoints (swappable per NFR-04, self-hosted for confidential data per NFR-03) ---
     llm_endpoint: str | None = None
@@ -28,28 +37,74 @@ class Settings(BaseSettings):
     object_store_url: str | None = None
     web_search_api_key: str | None = None
 
-    # --- Thresholds. Both are undefined in the TRS. ---
-    hitl_confidence_threshold: float = Field(
-        default=0.80,
+    # --- Review routing ---
+    # There is deliberately no `hitl_confidence_threshold` float. A hardcoded
+    # number is not derived from anything, and LLM self-reported confidence
+    # scores 0.692 ROC AUC - worse than raw logprobs and dangerously
+    # plausible-looking. The defensible construction is a precision target with
+    # tau read off a risk-coverage curve on a labelled set, tiered by field
+    # criticality. See clarifications.md D-3.
+    target_precision_auto_accepted: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        description="Target precision on fields accepted without human review",
+    )
+    review_budget_fraction: float = Field(
+        default=0.20,
         ge=0.0,
         le=1.0,
         description=(
-            "FR-ING-10 routes sub-threshold fields to HITL but names no number. "
-            "The TRS baseline is 85-95% extraction accuracy on clean documents."
-        ),
-    )
-    numeric_conflict_tolerance: float = Field(
-        default=0.02,
-        ge=0.0,
-        description=(
-            "FR-WEB-04 raises a conflict when values differ 'beyond tolerance' but "
-            "never defines it. Fractional, so 0.02 means 2 percent."
+            "Expected fraction of field instances routed to review in year one. "
+            "Falling below this means accepting lower precision - that must be an "
+            "explicit decision, not an emergent one."
         ),
     )
 
-    # --- Chunking (FR-RAG-01: ~400-512 tokens, 10-20% overlap) ---
+    # --- Conflict tolerance ---
+    # There is deliberately no global `numeric_conflict_tolerance` float either.
+    # A 2% band on a 650 Wp nameplate is +/-13 W, which merges three adjacent
+    # 5 W SKUs; the same band on a -0.29 %/degC temperature coefficient is below
+    # datasheet precision. Tolerance is per-field with three kinds (exact,
+    # absolute, relative) - see the table in clarifications.md D-2.
+
+    # --- Chunking (FR-RAG-01, revised by plan.md Decision 6) ---
+    # Overlap reduced from the TRS's 10-20%: systematic analysis found no
+    # measurable benefit, and Docling supplies real section boundaries, which is
+    # most of what overlap compensated for.
     chunk_size_tokens: int = 512
-    chunk_overlap_ratio: float = Field(default=0.15, ge=0.0, le=0.5)
+    chunk_overlap_ratio: float = Field(default=0.05, ge=0.0, le=0.10)
+
+    # --- Concurrency ---
+    # The ports are synchronous (plan.md Decision 10); concurrency is driven by the
+    # caller via concurrent.futures and bounded here. Size the parse pool off the
+    # MEAN page cost, not the median - the distribution is right-skewed, since an
+    # OCR page costs roughly an order of magnitude more than a text-layer page.
+    max_concurrent_parse: int = Field(
+        default=4, ge=1, description="ProcessPoolExecutor width for parse/OCR"
+    )
+    max_concurrent_llm: int = Field(
+        default=8, ge=1, description="ThreadPoolExecutor width for extraction calls"
+    )
+    web_search_rate_limit_per_minute: int = Field(
+        default=30, ge=1, description="Cap on supplementary web queries (FR-WEB-01)"
+    )
+
+    # --- Compose gate (issue #14) ---
+    # Composition refuses to run while an unresolved conflict sits STRICTLY ABOVE
+    # this level. MEDIUM means decision-driving specs may still be open, but a
+    # pricing, warranty or certification conflict stops the workbook.
+    compose_gate_threshold: Severity = Field(
+        default=Severity.MEDIUM,
+        le=Severity.HIGH,
+        description=(
+            "Unresolved conflicts strictly above this severity block composition. "
+            "Capped below CRITICAL on purpose: with a strict '>', setting this to "
+            "CRITICAL would disable the gate entirely, and Decision 2 requires the "
+            "override to be a recorded, audited decision - an environment variable "
+            "is neither."
+        ),
+    )
 
     # --- Output (FR-OUT-01) ---
     suppliers_as_rows: bool = True

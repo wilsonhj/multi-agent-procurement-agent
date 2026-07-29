@@ -24,7 +24,7 @@ Status values:
 | FR-2 | Document understanding | `schema.DocumentType`, `services/ingestion.classify_document` | declared |
 | FR-3 | Fact extraction into a consistent structure | `schema.CanonicalField` (+ `schema.Condition`, see [D-1](../specs/001-procurement-agent/clarifications.md)) enforced; `schema.ComponentInstance` ordering enforced, `unresolved_conflicts()` untested | partial |
 | FR-4 | Web supplement, never silent overwrite | `services/conflict_hitl.assert_no_autonomous_overwrite` | enforced |
-| FR-5 | Conflict surfacing, no auto-resolution | guard enforced; `schema.ConflictQueueEntry` never constructed in a test | partial |
+| FR-5 | Conflict surfacing, no auto-resolution | `assert_no_autonomous_overwrite`, `services/conflict_hitl.comparison_groups`, `schema.ConflictQueueEntry` | enforced |
 | FR-6 | One workbook, tab per category, flagged | `services/output.write_workbook`, `schema.WorkbookTab` | declared |
 | FR-7 | Source traceability, no unsourced values | `schema.SourceRef` validator | enforced |
 | FR-8 | Decision authority stays human | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
@@ -72,7 +72,7 @@ Status values:
 |---|---|---|---|
 | FR-HITL-01 | Five conflict classes | `schema.ConflictClass` — no test asserts the count | declared |
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
-| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` — never constructed in a test | declared |
+| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` (severity required, candidates carry `condition`) | enforced |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` | enforced |
 | FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |

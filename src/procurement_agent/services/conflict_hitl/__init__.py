@@ -12,7 +12,51 @@ AC-2 tests it directly.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from ...schema import CanonicalField, ConflictCandidate, SourceTier
+
+
+def comparison_groups(candidates: Sequence[ConflictCandidate]) -> list[list[ConflictCandidate]]:
+    """Partition candidates into sets that may be compared like for like.
+
+    Two rules, and the second is what makes this correct rather than merely
+    deterministic.
+
+    **Partition by `Condition.grouping_key()`, never by `comparable_with`.** That
+    predicate is not transitive - `@30 degC` and `@40 degC` are each comparable
+    with an unstated condition but not with each other - so first-fit bucketing
+    over it yields different groups depending on arrival order, and therefore a
+    different conflict queue from an unchanged store. FR-OUT-06 forbids that.
+
+    **Fold wholly-unstated candidates into every stated group.** Grouping on the
+    key alone is strictly comparison-losing: a supply agreement stating `650 W`
+    with no test condition would strand in its own group while the datasheet and
+    the CEC listing, both marked STC, compare only with each other. The
+    system-of-record value - the one FR-HITL-02 exists to protect - would be
+    compared against nothing, no queue entry would be raised, and the compose gate
+    would never fire. That trades a *visible* false positive for an *invisible*
+    false negative, which is the worse failure for a tool whose premise is that a
+    human decides.
+
+    Folding stays order-independent because the unstated group is identified
+    canonically - by its all-`None` key - rather than by which candidate happened
+    to arrive first. Groups are returned in sorted key order for the same reason.
+
+    A candidate may therefore appear in more than one group: that is deliberate,
+    since an unqualified value is a legitimate counterpart to several stated ones.
+    """
+    grouped: dict[tuple[object, ...], list[ConflictCandidate]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.condition.grouping_key(), []).append(candidate)
+
+    unstated_key = tuple(None for _ in range(len(next(iter(grouped), ()))))
+    unstated = grouped.pop(unstated_key, []) if grouped else []
+
+    if not grouped:
+        return [unstated] if unstated else []
+
+    return [grouped[key] + unstated for key in sorted(grouped, key=repr)]
 
 
 class AutonomousOverwriteError(RuntimeError):

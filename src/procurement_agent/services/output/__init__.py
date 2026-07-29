@@ -6,6 +6,7 @@ formatting.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import zipfile
@@ -22,40 +23,85 @@ DETERMINISTIC_TIMESTAMP = (1980, 1, 1, 12, 0, 0)
 #: bytes on a patch bump with zero data change.
 DETERMINISTIC_APPLICATION = "Procurement Agent"
 
+#: plan.md Decision 8c: sorted entries with `[Content_Types].xml` forced first.
+#: openpyxl 3.1.5 writes it *last*, so preserving `infolist()` order preserves a
+#: non-conformant archive.
+CONTENT_TYPES = "[Content_Types].xml"
+
+#: Decision 8c. Pinned so output bytes do not depend on the host's zlib default,
+#: which varies across Python builds.
+DETERMINISTIC_COMPRESSLEVEL = 6
+
+#: Decision 8c: always "Unix", else `ZipInfo.__init__` picks 0 on Windows and 3
+#: elsewhere, so the same store would produce different bytes per platform.
+_CREATE_SYSTEM_UNIX = 3
+_EXTERNAL_ATTR = 0o644 << 16
+
 _APPLICATION_RE = re.compile(rb"<Application>[^<]*</Application>")
 _APP_VERSION_RE = re.compile(rb"<AppVersion>[^<]*</AppVersion>")
+_DCTERMS_RE = re.compile(rb"(<dcterms:(?:created|modified)[^>]*>)[^<]*(</dcterms:)")
+
+#: The epoch as it appears inside `docProps/core.xml`, matching the ZIP stamp.
+#: Substituted with \g<N> back-references, not \N - the replacement starts with
+#: "1980", so "\1" + "1980..." would parse as group 11.
+_CORE_XML_EPOCH = b"1980-01-01T12:00:00Z"
 
 
 def normalize_archive(path: Path) -> Path:
-    """Strip every wall-clock and library-version trace from a saved `.xlsx`.
+    """Strip every wall-clock, library-version and platform trace from an `.xlsx`.
 
     Required by FR-OUT-06 and AC-7. Freezing `workbook.properties.modified` is
     **not sufficient**: openpyxl re-stamps it unconditionally on save
-    (`openpyxl/writer/excel.py:292`, no opt-out), and even with it pinned the
-    archive still differs run to run because each ZIP local header carries an
-    mtime derived from the clock via `writestr`. Measured: all members
-    decompress byte-identically while the files hash differently. See issue #13.
+    (`openpyxl/writer/excel.py:292`, no opt-out), and each ZIP local header
+    carries an mtime derived from the clock. See issue #13.
 
-    Rewriting the archive is the only fix openpyxl leaves available, and it also
-    lets `openpyxl` float on a version range instead of being pinned exactly.
+    Five sources of run-to-run variance, all of which have to go - missing any
+    one leaves the archive non-deterministic while looking fixed:
+
+    1. ZIP local-header mtimes, from the clock via `writestr`.
+    2. `docProps/core.xml` `dcterms:created` / `dcterms:modified`. This is the one
+       an earlier version of this function missed, so two saves seconds apart
+       still differed while every other member was byte-identical.
+    3. `docProps/app.xml`, which embeds the openpyxl version verbatim.
+    4. Compression level. Decision 8c warns by name that `ZipFile(compresslevel=)`
+       is **silently ignored** for a hand-built `ZipInfo` - it must be set as
+       `_compresslevel` on the info object itself.
+    5. `create_system` and `external_attr`, which otherwise vary by platform.
+
+    Member order is normalised too: sorted, with `[Content_Types].xml` first per
+    Decision 8c. openpyxl writes it last.
     """
     with zipfile.ZipFile(path) as source:
-        members = [(info, source.read(info.filename)) for info in source.infolist()]
+        members = {info.filename: source.read(info.filename) for info in source.infolist()}
 
-    staging = path.with_suffix(path.suffix + ".normalizing")
-    with zipfile.ZipFile(staging, "w", zipfile.ZIP_DEFLATED) as target:
-        for info, payload in members:
-            if info.filename == "docProps/app.xml":
-                payload = _APPLICATION_RE.sub(
-                    f"<Application>{DETERMINISTIC_APPLICATION}</Application>".encode(), payload
-                )
-                payload = _APP_VERSION_RE.sub(b"<AppVersion>1.0</AppVersion>", payload)
-            rewritten = zipfile.ZipInfo(info.filename, date_time=DETERMINISTIC_TIMESTAMP)
-            rewritten.compress_type = info.compress_type
-            rewritten.external_attr = info.external_attr
-            target.writestr(rewritten, payload)
+    ordered = sorted(members, key=lambda name: (name != CONTENT_TYPES, name))
 
-    shutil.move(staging, path)
+    staging = path.with_name(f"{path.name}.{os.getpid()}.normalizing")
+    try:
+        with zipfile.ZipFile(staging, "w", zipfile.ZIP_DEFLATED) as target:
+            for name in ordered:
+                payload = members[name]
+                if name == "docProps/app.xml":
+                    payload = _APPLICATION_RE.sub(
+                        f"<Application>{DETERMINISTIC_APPLICATION}</Application>".encode(), payload
+                    )
+                    payload = _APP_VERSION_RE.sub(b"<AppVersion>1.0</AppVersion>", payload)
+                elif name == "docProps/core.xml":
+                    payload = _DCTERMS_RE.sub(rb"\g<1>" + _CORE_XML_EPOCH + rb"\g<2>", payload)
+
+                info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_TIMESTAMP)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                # Private on purpose: Decision 8c records that
+                # `ZipFile(compresslevel=)` is silently ignored for a hand-built
+                # ZipInfo, and stdlib exposes no public setter. Untyped, hence
+                # the ignore.
+                info._compresslevel = DETERMINISTIC_COMPRESSLEVEL  # type: ignore[attr-defined]
+                info.create_system = _CREATE_SYSTEM_UNIX
+                info.external_attr = _EXTERNAL_ATTR
+                target.writestr(info, payload)
+        shutil.move(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
     return path
 
 
@@ -84,7 +130,7 @@ def write_workbook(
     destination: Path,
     *,
     suppliers_as_rows: bool = True,
-    confidence_threshold: float = 0.80,
+    confidence_threshold: float,
 ) -> Path:
     """Emit the workbook. All thirteen tabs, always (FR-OUT-02, AC-3).
 

@@ -7,6 +7,9 @@ returns the blocking entries so FR-HITL-05's completeness manifest can name them
 
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
 from procurement_agent.config import Settings
 from procurement_agent.orchestrator import blocking_conflicts, compose_gate_blocks
 from procurement_agent.schema import (
@@ -84,6 +87,36 @@ def test_gate_agrees_with_its_primitive() -> None:
     )
 
 
-def test_threshold_has_a_configured_default() -> None:
-    """Every caller inventing its own threshold was half of issue #14."""
-    assert Settings().compose_gate_threshold is Severity.MEDIUM
+def test_threshold_has_a_configured_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every caller inventing its own threshold was half of issue #14.
+
+    `_env_file=None` plus a cleared env var on purpose: a bare `Settings()` reads
+    the ambient environment and any local `.env`, so this test would fail for any
+    developer who followed `.env.example` - which the same change ships.
+    """
+    monkeypatch.delenv("PROCUREMENT_COMPOSE_GATE_THRESHOLD", raising=False)
+    assert Settings(_env_file=None).compose_gate_threshold is Severity.MEDIUM
+
+
+def test_threshold_reads_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The path .env.example documents, and the one nothing covered."""
+    monkeypatch.setenv("PROCUREMENT_COMPOSE_GATE_THRESHOLD", "3")
+    assert Settings(_env_file=None).compose_gate_threshold is Severity.HIGH
+
+
+def test_the_gate_cannot_be_disabled_by_configuration() -> None:
+    """With a strict '>', threshold=CRITICAL would switch the gate off entirely.
+
+    Decision 2 requires the override to be a recorded, audited decision; an
+    environment variable is neither, so CRITICAL is out of range."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, compose_gate_threshold=Severity.CRITICAL)
+
+
+def test_severity_is_required_on_a_queue_entry() -> None:
+    """A default at or below the gate threshold would make a forgotten severity
+    silently unable to block - the one value that fails open."""
+    payload = _entry(Severity.HIGH).model_dump()
+    payload.pop("severity")
+    with pytest.raises(ValidationError):
+        ConflictQueueEntry(**payload)

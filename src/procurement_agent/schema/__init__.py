@@ -38,9 +38,9 @@ __all__ = [
     "DocumentType",
     "Resolution",
     "ResolutionAction",
+    "Severity",
     "SourceDocument",
     "SourceRef",
-    "Severity",
     "SourceTier",
     "WorkbookTab",
 ]

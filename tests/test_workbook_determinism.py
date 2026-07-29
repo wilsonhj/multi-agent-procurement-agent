@@ -12,6 +12,7 @@ itself, not on a hash comparison that luck can satisfy.
 """
 
 import hashlib
+import time
 import zipfile
 from pathlib import Path
 
@@ -59,10 +60,55 @@ def test_unnormalized_saves_are_not_byte_identical_in_general(tmp_path: Path) ->
     assert stamps != {DETERMINISTIC_TIMESTAMP}
 
 
-def test_normalized_saves_are_byte_identical(tmp_path: Path) -> None:
+def test_normalized_saves_are_byte_identical_across_a_second_boundary(tmp_path: Path) -> None:
+    """Deliberately slow. A save-twice-compare test that does NOT cross a second
+    boundary passes on a broken fix - which is how the first attempt at this
+    shipped green while `docProps/core.xml` still carried the wall clock."""
     first = normalize_archive(_write(tmp_path / "first.xlsx"))
+    time.sleep(1.1)
     second = normalize_archive(_write(tmp_path / "second.xlsx"))
     assert _digest(first) == _digest(second)
+
+
+def test_core_xml_timestamps_are_frozen(tmp_path: Path) -> None:
+    """The member the first attempt missed entirely."""
+    book = normalize_archive(_write(tmp_path / "book.xlsx"))
+    with zipfile.ZipFile(book) as archive:
+        core = archive.read("docProps/core.xml").decode()
+    assert "1980-01-01T12:00:00Z" in core
+    assert core.count("1980-01-01T12:00:00Z") >= 1
+    for year in ("2024", "2025", "2026", "2027"):
+        assert year not in core
+
+
+def test_content_types_is_first_and_the_rest_sorted(tmp_path: Path) -> None:
+    """plan.md Decision 8c. openpyxl writes it last."""
+    book = normalize_archive(_write(tmp_path / "book.xlsx"))
+    with zipfile.ZipFile(book) as archive:
+        names = archive.namelist()
+    assert names[0] == "[Content_Types].xml"
+    assert names[1:] == sorted(names[1:])
+
+
+def test_archive_metadata_does_not_vary_by_platform(tmp_path: Path) -> None:
+    """`create_system` and `external_attr` otherwise differ on Windows."""
+    book = normalize_archive(_write(tmp_path / "book.xlsx"))
+    with zipfile.ZipFile(book) as archive:
+        infos = archive.infolist()
+    assert {i.create_system for i in infos} == {3}
+    assert {i.external_attr for i in infos} == {0o644 << 16}
+    assert {i.compress_type for i in infos} == {zipfile.ZIP_DEFLATED}
+
+
+def test_normalization_is_idempotent(tmp_path: Path) -> None:
+    book = _write(tmp_path / "book.xlsx")
+    once = _digest(normalize_archive(book))
+    assert _digest(normalize_archive(book)) == once
+
+
+def test_no_staging_file_is_left_behind(tmp_path: Path) -> None:
+    normalize_archive(_write(tmp_path / "book.xlsx"))
+    assert [p.name for p in tmp_path.iterdir()] == ["book.xlsx"]
 
 
 def test_library_version_is_not_embedded_in_the_output(tmp_path: Path) -> None:

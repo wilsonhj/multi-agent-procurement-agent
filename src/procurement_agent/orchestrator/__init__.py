@@ -23,7 +23,7 @@ Pipeline:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Sequence
 from enum import StrEnum
 
 from ..schema import ConflictQueueEntry, Severity
@@ -46,7 +46,7 @@ class Stage(StrEnum):
 
 
 def blocking_conflicts(
-    unresolved: Iterable[ConflictQueueEntry], *, threshold: Severity
+    unresolved: Sequence[ConflictQueueEntry], *, threshold: Severity
 ) -> list[ConflictQueueEntry]:
     """The unresolved conflicts severe enough to hold up composition.
 
@@ -58,12 +58,17 @@ def blocking_conflicts(
     Strictly **above** the threshold, matching plan.md Decision 2 and tasks.md I.3
     ("unresolved conflicts above a severity threshold"). The previous `>=` blocked
     at the threshold itself; see issue #14.
+
+    Takes a `Sequence`, not an `Iterable`: the documented pairing is
+    `if compose_gate_blocks(q): manifest(blocking_conflicts(q))`, and with a
+    generator the second call would return `[]` - reporting zero blockers into
+    the very manifest the refusal exists to populate.
     """
     return [entry for entry in unresolved if entry.severity > threshold]
 
 
 def compose_gate_blocks(
-    unresolved: Iterable[ConflictQueueEntry], *, threshold: Severity
+    unresolved: Sequence[ConflictQueueEntry], *, threshold: Severity
 ) -> bool:
     """Whether composition should refuse to run.
 

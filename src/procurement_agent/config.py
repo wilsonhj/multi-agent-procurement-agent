@@ -89,7 +89,14 @@ class Settings(BaseSettings):
     # pricing, warranty or certification conflict stops the workbook.
     compose_gate_threshold: Severity = Field(
         default=Severity.MEDIUM,
-        description="Unresolved conflicts above this severity block composition",
+        le=Severity.HIGH,
+        description=(
+            "Unresolved conflicts strictly above this severity block composition. "
+            "Capped below CRITICAL on purpose: with a strict '>', setting this to "
+            "CRITICAL would disable the gate entirely, and Decision 2 requires the "
+            "override to be a recorded, audited decision - an environment variable "
+            "is neither."
+        ),
     )
 
     # --- Output (FR-OUT-01) ---

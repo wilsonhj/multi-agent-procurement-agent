@@ -13,9 +13,10 @@ determinism requirement rests on this type being stable.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .enums import ConflictClass, ConflictStatus, ResolutionAction, Severity, SourceTier
 
@@ -74,6 +75,10 @@ class ConditionDimensions(BaseModel):
     Membership of this model *is* the definition of what gates comparison, so a
     new dimension participates automatically and a new human-readable annotation
     automatically does not. See clarifications.md D-1.
+
+    Not intended as a field annotation anywhere: annotate with `Condition`. A
+    field typed as this class accepts a `Condition` but serialises through the
+    parent schema and silently drops `note`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -103,6 +108,41 @@ class ConditionDimensions(BaseModel):
     reference_temperature_c: float | None = Field(
         default=None, description="Loss reference temperature: 20 + rise (IEEE) or 75 (IEC)"
     )
+    base_mva: float | None = Field(
+        default=None,
+        description=(
+            "Rating the transformer's %Z and losses are referred to. A grouping "
+            "dimension, not a note: IEEE refers impedance to the ONAN base and IEC "
+            "to the top rating, so two %Z figures on different bases differ by "
+            "1.25-1.67x - far beyond the +/-7.5% tolerance. See clarifications.md D-6."
+        ),
+    )
+
+    @field_validator("temperature_c", "duration_h", "reference_temperature_c", "base_mva")
+    @classmethod
+    def _reject_non_finite(cls, value: float | None) -> float | None:
+        """NaN would break the equivalence relation `grouping_key` depends on.
+
+        `NaN != NaN`, so two identically-conditioned values would land in separate
+        groups and never compare - and pydantic serialises NaN to JSON `null`, so
+        the same record would group differently before and after a store
+        round-trip. That is precisely the FR-OUT-06 purity `grouping_key` exists to
+        guarantee, so a non-finite condition is rejected at the boundary instead.
+        """
+        if value is not None and not math.isfinite(value):
+            raise ValueError("condition dimensions must be finite (no NaN or infinity)")
+        return value
+
+    @field_validator("basis", "side", "weighting", "standards_regime")
+    @classmethod
+    def _normalise_vocabulary(cls, value: str | None) -> str | None:
+        """Fold case and strip padding so `STC` and `stc` share a group.
+
+        Under exact-key grouping an unnormalised case variant does not raise a
+        false conflict - it silently forms its own group and suppresses the
+        comparison, which is the failure direction that cannot be reviewed.
+        """
+        return value.strip().casefold() if value is not None else None
 
 
 class Condition(ConditionDimensions):
@@ -116,17 +156,42 @@ class Condition(ConditionDimensions):
     """
 
     note: str | None = Field(default=None, description="Any condition not captured above")
+    derived: frozenset[str] = Field(
+        default=frozenset(),
+        description=(
+            "Dimensions filled by convention rather than read from the source. "
+            "Lives on this subclass, not on ConditionDimensions, so it is excluded "
+            "from grouping by construction: a defaulted STC value and a stated STC "
+            "value group together while the provenance stays honest for a reviewer."
+        ),
+    )
+
+    def is_unstated(self) -> bool:
+        """Whether no comparable dimension is known at all.
+
+        These do not form a meaningful group of their own - see
+        `services.conflict_hitl.comparison_groups`, which folds them into every
+        stated group rather than stranding them.
+        """
+        return all(value is None for value in self.grouping_key())
 
     def grouping_key(self) -> tuple[object, ...]:
         """The partition key for candidate values. **Use this to group, not
         `comparable_with`.**
 
-        Equality over this tuple is an equivalence relation, so partitioning by it
-        is transitive and independent of the order candidates arrive in - which
-        FR-OUT-06 requires, since composition must be a pure function of the store.
+        Equality over this tuple is an equivalence relation - reflexive because
+        non-finite floats are rejected at construction, and transitive because it
+        is plain tuple equality - so partitioning by it does not depend on the
+        order candidates arrive in. FR-OUT-06 requires that, since composition
+        must be a pure function of the store.
 
-        `note` is excluded: free text is provenance for a human, not a
-        machine-comparable dimension.
+        Grouping by this key alone is *comparison-losing*, though: a value whose
+        conditions are unstated would strand in its own group and be compared
+        against nothing. `comparison_groups` is the function that closes that gap;
+        this key is only the partition it starts from.
+
+        `note` and `derived` are excluded: free text is provenance for a human,
+        and how a dimension came to be filled does not change what it says.
         """
         return tuple(getattr(self, name) for name in ConditionDimensions.model_fields)
 
@@ -197,6 +262,15 @@ class ConflictCandidate(BaseModel):
     verbatim_value: str | None = Field(
         default=None, description="FR-HITL-03 requires the verbatim source text"
     )
+    condition: Condition = Field(
+        default_factory=Condition,
+        description=(
+            "The conditions this candidate holds under. Required for the queue to "
+            "explain itself (FR-HITL-03): '352 kVA vs 320.865 kW' is unreadable "
+            "without @30 degC / @40 degC attached. Also what "
+            "services.conflict_hitl.comparison_groups partitions on."
+        ),
+    )
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
@@ -217,10 +291,12 @@ class ConflictQueueEntry(BaseModel):
     component_category: str
     conflict_class: ConflictClass
     severity: Severity = Field(
-        default=Severity.MEDIUM,
         description=(
             "Drives the compose gate (issue #14). Assigned from the field's "
-            "criticality tier, not from the size of the divergence - see D-3."
+            "criticality tier, not from the size of the divergence - see D-3. "
+            "Deliberately REQUIRED: this is a safety interlock, and any default "
+            "at or below the gate threshold would make a forgotten severity "
+            "silently unable to block."
         ),
     )
     candidates: list[ConflictCandidate]

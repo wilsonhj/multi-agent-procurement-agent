@@ -57,7 +57,7 @@ Status values:
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| FR-RAG-01 | Structure-aware chunking, 512 tokens, 0–10% overlap (revised from the TRS by plan Decision 6) | `config.chunk_size_tokens`, `services/indexing.chunk` | declared |
+| FR-RAG-01 | Structure-aware chunking, 512 tokens, 0–10% overlap (revised from the TRS by plan Decision 6) | `config.chunk_size_tokens` bound enforced and tested (`tests/test_settings_bounds.py`); `services/indexing.chunk` still raises `NotImplementedError` | partial |
 | FR-RAG-02 | ANN index, cosine, full metadata set | `ports.VectorStorePort` | declared |
 | FR-RAG-03 | Hybrid retrieval, rerank, tier stays distinguishable | `ports.RetrievedChunk.source_tier` | declared |
 | FR-RAG-04 | Retrieved context only, cite source, "insufficient evidence" | `INSUFFICIENT_EVIDENCE` enforced; `ports.LLMPort.extract` returning `None` untested (no test imports `ports`) | partial |
@@ -79,10 +79,10 @@ Status values:
 |---|---|---|---|
 | FR-HITL-01 | Five conflict classes | `schema.ConflictClass` — no test asserts the count | declared |
 | FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
-| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`); no production path builds one | partial |
+| FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`, `component_category` is the closed vocabulary); no production path builds one | partial |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |
-| FR-HITL-06 | Immutable decision log | validator enforced; `Resolution` frozen-ness never tested | partial |
+| FR-HITL-06 | Immutable decision log | `CanonicalField`'s validator enforced at construction *and* assignment, in both directions (`test_resolution_invariant_survives_assignment`, `test_a_resolved_field_cannot_have_its_resolution_cleared`); `ConflictQueueEntry` frozen, so a recorded resolution cannot be replaced (`test_a_recorded_resolution_cannot_be_replaced`). **Three routes remain open:** `CanonicalField.model_copy(update=...)` re-runs no validators and still reaches the forbidden state; the freeze is shallow, so `ConflictQueueEntry.candidates` is mutable in place; and `Resolution`'s own field-level frozen-ness is untested. Persisted, tamper-evident storage is NFR-02, still `declared` | partial |
 
 ### Output
 

@@ -29,6 +29,7 @@ from pydantic import (
 )
 
 from .enums import (
+    ComponentCategory,
     ConflictClass,
     ConflictStatus,
     EfficiencyWeighting,
@@ -468,7 +469,27 @@ class CanonicalField(BaseModel):
 
     Nine keys: the eight fixed by TRS section 5, plus `condition`. The deviation
     is recorded in analysis.md A-1.
+
+    Mutable, because a field is a working record that gains a resolution as the
+    pipeline runs - but `validate_assignment`, because `_resolution_matches_status`
+    ran only in the constructor and the state FR-HITL-06 forbids was therefore one
+    attribute assignment away.
+
+    **This closes assignment, not every route.** `model_copy(update=...)` re-runs
+    no validators in pydantic, so it still produces a RESOLVED field carrying no
+    `Resolution`, and that copy serialises to the audit trail without complaint.
+    Freezing would not have helped - it makes `model_copy` the only way to update
+    a field, so the same hole becomes the sole path rather than the second one.
+    Closing it needs an explicit revalidating constructor for updates, which
+    nothing owns yet; until then the guarantee here is "no invalid state by
+    assignment", not "no invalid state".
+
+    Note also that the two-step update has an order: setting `conflict_status` to
+    RESOLVED before attaching the `Resolution` raises, because that intermediate
+    state is exactly the forbidden one. Attach the resolution first.
     """
+
+    model_config = ConfigDict(validate_assignment=True)
 
     value: object | None = None
     unit: str | None = Field(default=None, description="Canonical unit per FR-ING-08")
@@ -529,13 +550,34 @@ class ConflictQueueEntry(BaseModel):
     FR-HITL-03 fixes the payload: canonical field, component/supplier, all
     candidate values with verbatim source text, source tier, source authority,
     doc/page/URL, timestamps and a generated explanation.
+
+    Frozen, because FR-HITL-06's log is immutable and freezing `Resolution` alone
+    did not deliver that: the *pointer* was assignable, so a second write replaced
+    a reviewer's decision with no trace the first had ever existed. Attaching a
+    resolution is `model_copy(update=...)`, which produces a new record rather
+    than editing one - the shape an append-only audit log wants anyway.
+
+    Frozen is shallow, as it always is in pydantic: `candidates` is a list, and
+    nothing stops a caller mutating it in place. So the guarantee this buys is
+    narrow and worth stating as such - a recorded `resolution` cannot be silently
+    swapped. That is one part of FR-HITL-06, not the whole of it: the requirement
+    also wants a persisted, tamper-evident log, which is NFR-02 and plan Decision
+    9 and does not exist yet.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     entry_id: str
     field_name: str
     supplier: str
     model: str
-    component_category: str
+    #: The closed vocabulary, not a bare `str`: the frozen contract types this
+    #: `ComponentCategory` (contracts/canonical-parameters.md), and
+    #: `ComponentInstance` already did. The bare `str` here accepted a plausible
+    #: label like "PV Modules" that is not a member, and `CATEGORY_TO_TAB` is keyed
+    #: on the enum - so once composition reads this field, such a value routes to
+    #: no tab. Closing it now makes that a construction-time error instead.
+    component_category: ComponentCategory
     conflict_class: ConflictClass
     severity: Severity = Field(
         description=(

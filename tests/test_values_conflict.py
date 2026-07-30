@@ -31,6 +31,7 @@ from procurement_agent.services.conflict_hitl import (
 from procurement_agent.services.conflict_hitl.tolerance import (
     DEFAULT_TOLERANCE,
     FIELD_TOLERANCES,
+    NEVER_COMPARABLE,
     UNIMPLEMENTED_D2_ROWS,
     FieldTolerance,
 )
@@ -359,11 +360,35 @@ def test_mismatched_conditions_raise_rather_than_returning_no_conflict() -> None
 
 
 def test_a_never_compare_field_raises() -> None:
-    """kVA against kW is not a wide tolerance; it is not a comparison."""
+    """kVA against kW is not a wide tolerance; it is not a comparison.
+
+    Built here rather than fetched by name. The row this used to call
+    `tolerance_for("inverter_power_kva_vs_kw")` for was keyed on a name the
+    frozen contract does not have, so the test drove the guard through a string
+    no caller could ever pass - full branch coverage over an unreachable branch.
+    """
     with pytest.raises(IncomparableCandidatesError):
         values_conflict(
-            _c(352.0), _c(320.0, doc="doc-b"), tolerance=tolerance_for("inverter_power_kva_vs_kw")
+            _c(352.0),
+            _c(320.0, doc="doc-b"),
+            tolerance=FieldTolerance(rule=ToleranceRule.NEVER_COMPARE, basis="test"),
         )
+
+
+def test_the_kva_versus_kw_row_is_accounted_for() -> None:
+    """D-2 line 100 says inverter kVA vs kW is never compared, and the contract
+    gives no key to hang that on: `rated_ac_power` is defined in kVA and there is
+    no kW sibling, so a kW value for it is a unit mismatch, not a second field.
+
+    Recorded rather than invented. The row previously sat in `NEVER_COMPARABLE`
+    under a made-up key, which read as an enforced rule while being unreachable.
+    """
+    assert any("kva" in name.lower() for name in UNIMPLEMENTED_D2_ROWS)
+    verdict = values_conflict(
+        _c(352.0, unit="kVA"), _c(320.0, unit="kW", doc="doc-b"), tolerance=AC_POWER
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.UNIT_NORMALIZATION
 
 
 def test_a_bool_is_not_a_number() -> None:
@@ -476,19 +501,49 @@ def test_every_tolerance_key_is_a_contract_key() -> None:
     is never a nonconformity, became a queued conflict; everything else failed
     toward queue inflation, which D-1 names as the worst outcome for a HITL tool.
     """
-    unknown = set(FIELD_TOLERANCES) - _contract_keys()
+    unknown = (set(FIELD_TOLERANCES) | set(NEVER_COMPARABLE)) - _contract_keys()
     assert not unknown, (
         f"tolerance rows keyed on names the frozen contract does not have: {unknown}"
     )
 
 
+def test_every_tolerance_condition_is_wired_or_accounted_for() -> None:
+    """A discriminator no row selects is a branch that can never run.
+
+    `_magnitude_matches_rule` already refuses half a conditional row, because
+    "one without the other is a branch that can never be selected". The same
+    hazard lives one level up: a `ToleranceCondition` member that no
+    `FieldTolerance` names is dead in exactly the same way, and silence is what
+    let the invented-key defect survive four commits.
+    """
+    from procurement_agent.services.conflict_hitl.tolerance import UNWIRED_TOLERANCE_CONDITIONS
+
+    wired = {
+        row.alternate_when
+        for row in (*FIELD_TOLERANCES.values(), *NEVER_COMPARABLE.values())
+        if row.alternate_when is not None
+    }
+    assert wired.isdisjoint(UNWIRED_TOLERANCE_CONDITIONS), (
+        "a condition cannot be both wired to a row and recorded as unwired"
+    )
+    assert wired | set(UNWIRED_TOLERANCE_CONDITIONS) == set(ToleranceCondition)
+    for condition, why in UNWIRED_TOLERANCE_CONDITIONS.items():
+        assert len(why) > 40, f"{condition} has no stated reason"
+
+
 def test_no_d2_row_is_dropped_without_saying_so() -> None:
-    """D-2 has four rows this table cannot express. Silence is what made the
-    invented-key defect invisible, so each is named rather than left out."""
+    """D-2 has rows this table cannot express. Silence is what made the
+    invented-key defect invisible, so each is named rather than left out.
+
+    `inverter kVA vs kW` joined them: it had been sitting in `NEVER_COMPARABLE`
+    under a key the frozen contract does not have, which read as an enforced rule
+    while being unreachable.
+    """
     assert set(UNIMPLEMENTED_D2_ROWS) == {
         "transformer total losses",
         "transformer no-load current",
         "transformer MVA per cooling class",
+        "inverter kVA vs kW",
     }
     for name, why in UNIMPLEMENTED_D2_ROWS.items():
         assert len(why) > 40, f"{name} has no stated reason"
@@ -591,12 +646,84 @@ def test_a_leading_qualifier_in_verbatim_does_not_set_the_precision() -> None:
     qualified = _c(22.35, unit="%", verbatim="@ 25 degC: 22.35 %")
     other = _c(22.8, unit="%", doc="doc-b", verbatim="@ 25 degC: 22.8 %")
     assert values_conflict(qualified, other, tolerance=efficiency).conflicts
-    # A thousands separator stops the regex early in the same way.
-    assert values_conflict(
-        _c(1234.5, unit="W", verbatim="1,234.5 W"),
-        _c(1236.0, unit="W", doc="doc-b", verbatim="1,236.0 W"),
-        tolerance=tolerance_for("nameplate_power"),
-    ).conflicts
+
+
+def test_a_thousands_separator_does_not_widen_the_rounding_floor() -> None:
+    """The comma is the case the fix above did *not* cover, and the old assertion
+    could not see it: it used `nameplate_power`, whose ABSOLUTE +/-1.0 W band
+    exceeds any floor either reading produces, so `max(magnitude, floor)` returned
+    1.0 whether the decimals were counted right or not.
+
+    Under EXACT there is no magnitude, so the floor *is* the comparison - and
+    EXACT is `DEFAULT_TOLERANCE`, the rule for every contract key D-2's table
+    does not cover. `re.finditer` splits `125,000.50` into `125` and `000.50`,
+    neither of which equals the parsed value, so the scan finds nothing and falls
+    back to `repr(float)` - which drops the printed trailing zero and reports one
+    decimal place instead of two, widening the floor tenfold.
+
+    Pinned against the identical comparison without the separator: same numbers,
+    same rule, so any difference in verdict is the formatting alone.
+    """
+    with_comma = values_conflict(
+        _c(125000.50, unit="kWh", verbatim="$125,000.50"),
+        _c(125000.48, unit="kWh", doc="doc-b", verbatim="$125,000.48"),
+        tolerance=DEFAULT_TOLERANCE,
+    )
+    without_comma = values_conflict(
+        _c(125000.50, unit="kWh", verbatim="$125000.50"),
+        _c(125000.48, unit="kWh", doc="doc-b", verbatim="$125000.48"),
+        tolerance=DEFAULT_TOLERANCE,
+    )
+    assert without_comma.conflicts, "0.02 apart at two printed decimals is a real disagreement"
+    assert with_comma.conflicts, (
+        "the same two values disagree by the same amount; a thousands separator "
+        "in the source text must not decide whether the conflict is surfaced"
+    )
+
+
+def test_a_comma_joining_two_numbers_does_not_swallow_the_value() -> None:
+    """Reading `,\\d{3}` as a thousands group is a guess, and it has to be the
+    *second* guess.
+
+    Two adjacent table cells whose separating whitespace was lost render as
+    `650,700.20`, and a greedy separator-aware scan reads that as one number -
+    650700.20, which is not the value, so nothing matches and the count falls back
+    to `repr(float)` and its lost trailing zero. Scanning for bare digit runs, the
+    thing the separator fix replaced, gets this one right.
+
+    So both readings are tried. Neither tokenisation is correct on its own, and a
+    token only counts when it equals the parsed value, so trying more of them
+    cannot invent a match - it can only find the one that was there.
+    """
+    joined = values_conflict(
+        _c(700.20, unit="ft2", verbatim="650,700.20 sqft"),
+        _c(700.23, unit="ft2", doc="doc-b", verbatim="700.23 sqft"),
+        tolerance=DEFAULT_TOLERANCE,
+    )
+    assert joined.conflicts, (
+        "0.03 apart at two printed decimals; a comma joining the value to its "
+        "neighbour must not widen the floor enough to absorb it"
+    )
+
+
+def test_the_most_precise_reading_of_the_value_wins() -> None:
+    """When more than one token in the text equals the value, the count is the
+    largest, not the first or the smallest.
+
+    Under-reporting is the direction that hides conflicts - fewer decimals is a
+    wider floor - so a tie has to break toward precision. If the source printed
+    `22.30` anywhere, it expressed two decimals, and the fact that it also wrote
+    `22.3` in prose beforehand does not withdraw that.
+
+    Written against `min` first: with the least precise reading the floor widens
+    to 0.05 and this 0.04 pp disagreement disappears.
+    """
+    verdict = values_conflict(
+        _c(22.3, unit="%", verbatim="22.3 % (22.30 % as measured)"),
+        _c(22.34, unit="%", doc="doc-b", verbatim="22.34 %"),
+        tolerance=DEFAULT_TOLERANCE,
+    )
+    assert verdict.conflicts
 
 
 def test_a_decimal_value_reports_its_own_precision() -> None:

@@ -236,6 +236,57 @@ def test_every_ordering_element_is_load_bearing(element: str, change: dict[str, 
     )
 
 
+#: The three `_ordering_key` elements that were folded through `x or ""`, which
+#: maps `None` and `""` onto the same component. Each case is a pair that differs
+#: only in absent-versus-empty.
+_ABSENT_VERSUS_EMPTY: list[tuple[str, dict[str, object], dict[str, object]]] = [
+    ("verbatim_value", {"verbatim_value": None}, {"verbatim_value": ""}),
+    ("unit", {"unit": None}, {"unit": ""}),
+    ("note", {"condition": Condition()}, {"condition": Condition(note="")}),
+]
+
+
+@pytest.mark.parametrize(
+    "element,absent,empty", _ABSENT_VERSUS_EMPTY, ids=[n for n, _, _ in _ABSENT_VERSUS_EMPTY]
+)
+def test_absent_and_empty_do_not_tie_the_ordering_key(
+    element: str, absent: dict[str, object], empty: dict[str, object]
+) -> None:
+    """`_ordering_key` promises a total order, and `x or ""` broke it.
+
+    `None` and `""` are distinct candidate states that folded onto one key
+    component, so two distinct candidates tied - and `sorted` being stable then
+    leaked arrival order back into the pair's orientation. That is the same
+    defect the key's own docstring says adding `verbatim_value` fixed, reached
+    through a different door.
+
+    `schema.field._normalise_token` guards the condition vocabularies against
+    exactly this substitution - an extractor emitting `""` where `None` is meant -
+    so the schema already treats it as worth defending against. Nothing normalises
+    a candidate's `unit` or `verbatim_value`.
+    """
+    base = ConflictCandidate(
+        value=650.0,
+        unit="W",
+        verbatim_value="650 W",
+        condition=Condition(),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-fold"),
+        confidence=0.9,
+    )
+    a = base.model_copy(update=absent)
+    b = base.model_copy(update=empty)
+    assert a != b, f"the {element} fixture does not actually differ"
+
+    forward = comparison_pairs([a, b])
+    backward = comparison_pairs([b, a])
+    assert len(forward) == 1 and len(backward) == 1
+    assert forward[0][0] == backward[0][0], (
+        f"an absent {element} and an empty one tie under `_ordering_key`, so the "
+        "pair's orientation follows arrival order"
+    )
+
+
 def test_candidates_differing_only_in_verbatim_value_still_order_canonically() -> None:
     """`_ordering_key` once omitted `verbatim_value`, `confidence` and the
     condition's `note`/`derived`. Candidates differing only in those tied, and

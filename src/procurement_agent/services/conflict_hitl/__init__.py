@@ -47,16 +47,31 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     FR-HITL-03 *requires* the queue to carry - tied, and `sorted` being stable
     then preserved arrival order in both the list and each pair's orientation.
     A key that is not total is not a canonical order.
+
+    Every optional element is `repr`'d rather than folded through `x or ""`, which
+    was the same defect wearing different clothes: `None` and `""` are distinct
+    candidate states, and mapping both onto the empty string tied two candidates
+    that genuinely differ.
+
+    `schema.field._normalise_token` establishes that the substitution is real -
+    it exists partly to handle an extractor emitting `""` where `None` is meant -
+    but it takes the **opposite** policy, collapsing `""` to `None` so an empty
+    token cannot read as a stated dimension. That is right there and wrong here:
+    normalising is a choice a vocabulary boundary gets to make, and this key is
+    not a boundary. It has to order faithfully whatever the model actually holds,
+    and two candidates that differ are two candidates. Nothing normalises a
+    candidate's `unit` or `verbatim_value` on the way in, so preserving the
+    distinction is the only way the order stays total.
     """
     return (
         repr(candidate.condition.grouping_key()),
         repr(candidate.value),
-        candidate.unit or "",
+        repr(candidate.unit),
         candidate.source_tier.value,
         repr(candidate.source_ref.model_dump(mode="json")),
-        candidate.verbatim_value or "",
+        repr(candidate.verbatim_value),
         repr(candidate.confidence),
-        candidate.condition.note or "",
+        repr(candidate.condition.note),
         repr(sorted(candidate.condition.derived)),
     )
 
@@ -262,6 +277,26 @@ def _places(text: str) -> int:
     return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
+#: The two ways a run of digits and commas can be read, because a comma is
+#: genuinely ambiguous and neither reading is right on its own.
+#:
+#: Grouped treats `,\d{3}` as a thousands separator, which bare digit runs get
+#: wrong: they split `125,000.50` into `125` and `000.50`, so no token equals the
+#: parsed value and the scan falls through to `repr(float)` and its lost trailing
+#: zero. Ungrouped stops at every comma, which the grouped reading gets wrong in
+#: the other direction: two table cells that lost their separating whitespace
+#: render as `650,700.20`, and reading that as one number loses the 700.20 that is
+#: actually there.
+#:
+#: Both are tried. A token only counts when it equals the parsed value, so the
+#: extra readings cannot invent a match - `_decimals` is choosing between
+#: interpretations of the same text, not trusting either one.
+_NUMBER_TOKENS = (
+    re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][+-]?\d+)?"),
+    re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"),
+)
+
+
 def _decimals(candidate: ConflictCandidate) -> int:
     """Printed decimal places — D-2's `decimals_a` / `decimals_b`.
 
@@ -275,11 +310,23 @@ def _decimals(candidate: ConflictCandidate) -> int:
     unconditionally meant a leading qualifier decided the precision of the whole
     comparison - `"@ 25 degC: 22.35 %"` reported zero places, widening the floor
     to 0.5 and absorbing a 0.45 pp disagreement that is 4.5x the D-2 band. A
-    thousands separator did it too, since the regex stops at the comma. Fewer
+    thousands separator did it too, since the regex stopped at the comma. Fewer
     decimals means a *wider* floor, so this direction hides conflicts, and it
     turns on the extractor's formatting rather than on the data. Every candidate
     number in the text is tried, and one that does not equal `value` is not the
     value.
+
+    Trying every token fixed the qualifier but not the separator, and the two
+    failures are not the same shape: a leading qualifier offers a *wrong* token,
+    while `125,000.50` offers *no* token equal to the value, so the scan found
+    nothing and fell back to `repr(float)` - which drops the printed trailing
+    zero and reports one decimal place where the source printed two. Under EXACT
+    there is no magnitude to mask it, and EXACT is the default rule for every
+    contract key D-2's table does not cover.
+
+    A comma cannot be resolved by picking one reading, so `_NUMBER_TOKENS` holds
+    both and every match from either is tried. Requiring the token to equal the
+    parsed value is what makes that safe.
 
     An `int` and a `Decimal` report their own precision rather than going through
     `float`: `Decimal("650")` is the natural representation of exactly the
@@ -288,12 +335,23 @@ def _decimals(candidate: ConflictCandidate) -> int:
     """
     number = _as_number(candidate.value)
     if candidate.verbatim_value is not None and number is not None:
-        for found in re.finditer(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", candidate.verbatim_value):
-            try:
-                if float(found.group()) == number:
-                    return _places(found.group())
-            except ValueError:  # pragma: no cover - the regex only matches numerals
-                continue
+        printed: int | None = None
+        for pattern in _NUMBER_TOKENS:
+            for found in pattern.finditer(candidate.verbatim_value):
+                text = found.group().replace(",", "")
+                try:
+                    matches = float(text) == number
+                except ValueError:  # pragma: no cover - the regex only matches numerals
+                    continue
+                if not matches:
+                    continue
+                # The most precise reading wins. Under-reporting is the direction
+                # that widens the floor and hides conflicts, and if any reading of
+                # this text prints n decimals then the source did print them.
+                places = _places(text)
+                printed = places if printed is None else max(printed, places)
+        if printed is not None:
+            return printed
     value = candidate.value
     if isinstance(value, bool):
         return 0

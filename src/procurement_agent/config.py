@@ -72,7 +72,10 @@ class Settings(BaseSettings):
     # Overlap reduced from the TRS's 10-20%: systematic analysis found no
     # measurable benefit, and Docling supplies real section boundaries, which is
     # most of what overlap compensated for.
-    chunk_size_tokens: int = 512
+    # Bounded like every sibling: this one was the exception, and a zero or
+    # negative size read from the environment is not a degraded setting but a
+    # chunker that cannot terminate.
+    chunk_size_tokens: int = Field(default=512, ge=1)
     chunk_overlap_ratio: float = Field(default=0.05, ge=0.0, le=0.10)
 
     # --- Concurrency ---

@@ -51,10 +51,17 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     Every optional element is `repr`'d rather than folded through `x or ""`, which
     was the same defect wearing different clothes: `None` and `""` are distinct
     candidate states, and mapping both onto the empty string tied two candidates
-    that genuinely differ. `schema.field._normalise_token` guards the condition
-    vocabularies against exactly that substitution, treating it as worth defending
-    against; nothing normalises a candidate's `unit` or `verbatim_value`, so the
-    key has to carry the distinction itself.
+    that genuinely differ.
+
+    `schema.field._normalise_token` establishes that the substitution is real -
+    it exists partly to handle an extractor emitting `""` where `None` is meant -
+    but it takes the **opposite** policy, collapsing `""` to `None` so an empty
+    token cannot read as a stated dimension. That is right there and wrong here:
+    normalising is a choice a vocabulary boundary gets to make, and this key is
+    not a boundary. It has to order faithfully whatever the model actually holds,
+    and two candidates that differ are two candidates. Nothing normalises a
+    candidate's `unit` or `verbatim_value` on the way in, so preserving the
+    distinction is the only way the order stays total.
     """
     return (
         repr(candidate.condition.grouping_key()),

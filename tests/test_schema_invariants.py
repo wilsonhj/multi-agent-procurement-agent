@@ -173,6 +173,48 @@ def test_resolution_invariant_survives_assignment() -> None:
         field.conflict_status = ConflictStatus.RESOLVED
 
 
+def test_attaching_a_resolution_then_resolving_is_allowed() -> None:
+    """The happy path, which `validate_assignment` must not have broken.
+
+    A validator tight enough to forbid every assignment would pass every test
+    that only checks rejection, and the pipeline would be unable to record a
+    decision at all. Resolution first, then status - the order the class
+    docstring prescribes, because the reverse passes through the forbidden
+    intermediate state.
+    """
+    field = CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    field.resolution = _resolution("procurement.lead")
+    field.conflict_status = ConflictStatus.RESOLVED
+    assert field.conflict_status is ConflictStatus.RESOLVED
+    assert field.resolution is not None and field.resolution.resolved_by == "procurement.lead"
+
+
+def test_a_resolved_field_cannot_have_its_resolution_cleared() -> None:
+    """The other direction of the same invariant.
+
+    `test_resolution_invariant_survives_assignment` drives `conflict_status`
+    toward RESOLVED; this drives `resolution` away from a value while the status
+    already says RESOLVED. Both reach the state FR-HITL-06 forbids - a decision
+    with no record of who made it - and a validator that checked only one field's
+    assignment would catch only one of them.
+    """
+    field = CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+        conflict_status=ConflictStatus.RESOLVED,
+        resolution=_resolution("procurement.lead"),
+    )
+    with pytest.raises(ValidationError):
+        field.resolution = None
+
+
 def test_a_recorded_resolution_cannot_be_replaced() -> None:
     """FR-HITL-06's log is immutable, and freezing `Resolution` alone does not
     deliver that: the *pointer* to it was assignable, so a second write replaced

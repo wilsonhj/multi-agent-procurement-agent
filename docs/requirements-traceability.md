@@ -82,7 +82,7 @@ Status values:
 | FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`, `component_category` is the closed vocabulary); no production path builds one | partial |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |
-| FR-HITL-06 | Immutable decision log | validator enforced at construction *and* assignment (`test_resolution_invariant_survives_assignment`); `ConflictQueueEntry` frozen, so a recorded resolution cannot be replaced (`test_a_recorded_resolution_cannot_be_replaced`); `Resolution`'s own field-level frozen-ness still never tested | partial |
+| FR-HITL-06 | Immutable decision log | `CanonicalField`'s validator enforced at construction *and* assignment, in both directions (`test_resolution_invariant_survives_assignment`, `test_a_resolved_field_cannot_have_its_resolution_cleared`); `ConflictQueueEntry` frozen, so a recorded resolution cannot be replaced (`test_a_recorded_resolution_cannot_be_replaced`). **Three routes remain open:** `CanonicalField.model_copy(update=...)` re-runs no validators and still reaches the forbidden state; the freeze is shallow, so `ConflictQueueEntry.candidates` is mutable in place; and `Resolution`'s own field-level frozen-ness is untested. Persisted, tamper-evident storage is NFR-02, still `declared` | partial |
 
 ### Output
 

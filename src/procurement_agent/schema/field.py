@@ -558,9 +558,11 @@ class ConflictQueueEntry(BaseModel):
     than editing one - the shape an append-only audit log wants anyway.
 
     Frozen is shallow, as it always is in pydantic: `candidates` is a list, and
-    nothing stops a caller mutating it in place. The guarantee this buys is
-    specifically that a recorded `resolution` cannot be silently swapped, which is
-    the one FR-HITL-06 turns on.
+    nothing stops a caller mutating it in place. So the guarantee this buys is
+    narrow and worth stating as such - a recorded `resolution` cannot be silently
+    swapped. That is one part of FR-HITL-06, not the whole of it: the requirement
+    also wants a persisted, tamper-evident log, which is NFR-02 and plan Decision
+    9 and does not exist yet.
     """
 
     model_config = ConfigDict(frozen=True)

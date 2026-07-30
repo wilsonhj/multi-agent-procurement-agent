@@ -253,9 +253,10 @@ UNIMPLEMENTED_D2_ROWS: dict[str, str] = {
         "to hang it on: the contract defines `rated_ac_power` in kVA and gives it "
         "no kW sibling, so a kW value for that field is a *unit* mismatch, not a "
         "second field. `values_conflict` already refuses to resolve it by "
-        "tolerance and raises it as UNIT_NORMALIZATION, which is the better "
-        "outcome anyway - a reviewer sees the pair instead of the pipeline "
-        "raising. Held here rather than under an invented key in NEVER_COMPARABLE."
+        "tolerance: it *returns* a verdict classed UNIT_NORMALIZATION rather than "
+        "raising `IncomparableCandidatesError`, which is the better outcome anyway "
+        "- a reviewer sees the pair, where raising would stop the pipeline on it. "
+        "Held here rather than under an invented key in NEVER_COMPARABLE."
     ),
 }
 

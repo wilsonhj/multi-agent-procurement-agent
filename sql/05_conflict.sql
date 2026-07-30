@@ -1,0 +1,114 @@
+-- public.conflict / public.conflict_candidate -- contract C1, C5
+-- (ConflictQueueEntry, schema/field.py).
+--
+-- One conflict row per queued disagreement awaiting a human decision. WP-F F.1:
+-- lease-based claiming via `SELECT ... FOR UPDATE SKIP LOCKED` and a 15-minute
+-- lease (D-12e).
+--
+-- Depends on: 04_claim.sql.
+
+CREATE TABLE public.conflict (
+    -- ConflictQueueEntry.entry_id is typed `str` in the frozen schema. This
+    -- primary key matches that name and type exactly rather than introducing a
+    -- second surrogate identity for the same concept.
+    entry_id           text PRIMARY KEY,
+
+    field_name         text NOT NULL,
+    supplier           text NOT NULL,
+    model              text NOT NULL,
+    component_category text NOT NULL CHECK (component_category IN (
+                           'pv_modules', 'inverters_pcs', 'trackers_mounting',
+                           'transformers', 'cabling_wiring', 'combiner_boxes',
+                           'bess', 'ems_scada'
+                       )),
+    conflict_class     text NOT NULL CHECK (conflict_class IN (
+                           'record_vs_web', 'inter_document', 'intra_document',
+                           'temporal', 'unit_normalization'
+                       )),
+
+    -- Severity (schema/enums.py) is an IntEnum where higher is worse (0
+    -- INFORMATIONAL .. 4 CRITICAL), stated explicitly there because "a
+    -- P1/P2/P3 reading would invert it." Repeating the direction here for the
+    -- same reason -- a reviewer of this DDL should not have to cross-reference
+    -- Python to know which end of the range is dangerous.
+    severity           smallint NOT NULL CHECK (severity BETWEEN 0 AND 4),
+
+    explanation        text NOT NULL,
+    detected_at        timestamptz NOT NULL DEFAULT now(),
+
+    -- Queue-item lifecycle -- distinct from CanonicalField.ConflictStatus,
+    -- which is a per-field flag on the canonical projection, not on this queue
+    -- row.
+    status             text NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'leased', 'resolved')),
+    lease_owner        text,
+    lease_expires_at   timestamptz,
+
+    -- FR-HITL-04's REQUEST_MORE_WEB_SEARCH reopens a conflict rather than
+    -- closing it; WP-F F.3 caps that at 3, then forces a terminal decision. The
+    -- CHECK is a backstop, not the enforcement -- the application still has to
+    -- refuse a 4th reopen itself and explain why; this only guarantees the
+    -- count cannot drift past the cap even if it forgets.
+    reopen_count       integer NOT NULL DEFAULT 0 CHECK (reopen_count BETWEEN 0 AND 3),
+
+    -- Defends against a half-set lease (owner without an expiry, or vice
+    -- versa), which would be a bug in the claiming code, not a valid state.
+    CONSTRAINT conflict_lease_fields_consistent
+        CHECK ((lease_owner IS NULL) = (lease_expires_at IS NULL))
+
+    -- D-12c: "conflicts never expire ... they age, and age is a reported
+    -- metric." Age is `now() - detected_at`; there is deliberately no TTL or
+    -- expiry column, and no DELETE path anywhere in this file.
+);
+
+COMMENT ON TABLE public.conflict IS
+    'C1 core table, matching ConflictQueueEntry (schema/field.py). '
+    'Lease-claiming pattern (WP-F F.1): '
+    'SELECT entry_id FROM conflict WHERE status = ''pending'' '
+    'ORDER BY detected_at FOR UPDATE SKIP LOCKED LIMIT n; '
+    'then UPDATE conflict SET status = ''leased'', lease_owner = $1, '
+    'lease_expires_at = now() + interval ''15 minutes'' WHERE entry_id = ANY($2).';
+
+CREATE INDEX conflict_status_idx ON public.conflict (status);
+CREATE INDEX conflict_lease_expiry_idx ON public.conflict (lease_expires_at)
+    WHERE status = 'leased';
+CREATE INDEX conflict_field_supplier_model_idx ON public.conflict (field_name, supplier, model);
+
+ALTER TABLE public.conflict OWNER TO procurement_owner;
+
+-- conflict is a mutable queue row, unlike claim/resolution/audit.event, but
+-- only the queue-management columns are ever mutable after detection: the
+-- descriptive facts a conflict was detected with (field_name, supplier, model,
+-- category, class, severity, explanation, detected_at) are set once at INSERT
+-- and never revised. Column-level UPDATE enforces that split at the privilege
+-- layer rather than relying only on application discipline.
+GRANT SELECT, INSERT ON public.conflict TO procurement_app;
+GRANT UPDATE (status, lease_owner, lease_expires_at, reopen_count) ON public.conflict TO procurement_app;
+
+-- public.conflict_candidate -- normalises ConflictQueueEntry.candidates
+-- (schema/field.py) into references onto claim, rather than a denormalised
+-- copy of ConflictCandidate. Safe because claim rows are immutable: there is
+-- no staleness risk a snapshot would have protected against, and a join
+-- reconstructs the exact ConflictCandidate shape (value, unit, verbatim_value,
+-- condition, source_tier, source_ref, confidence) at read time.
+CREATE TABLE public.conflict_candidate (
+    entry_id  text NOT NULL REFERENCES public.conflict (entry_id) ON DELETE CASCADE,
+    claim_id  bigint NOT NULL REFERENCES public.claim (claim_id) ON DELETE RESTRICT,
+    -- FR-HITL-03's candidate list has a presentation order; ordinal preserves
+    -- it deterministically rather than depending on physical row order
+    -- surviving a read.
+    ordinal   integer NOT NULL,
+    PRIMARY KEY (entry_id, claim_id),
+    CONSTRAINT conflict_candidate_ordinal_unique UNIQUE (entry_id, ordinal)
+);
+
+COMMENT ON TABLE public.conflict_candidate IS
+    'Junction table: which claim rows make up one conflict''s candidate list. '
+    'See sql/README.md''s decisions list for why this is references, not a '
+    'denormalised copy.';
+
+CREATE INDEX conflict_candidate_claim_id_idx ON public.conflict_candidate (claim_id);
+
+ALTER TABLE public.conflict_candidate OWNER TO procurement_owner;
+
+GRANT SELECT, INSERT ON public.conflict_candidate TO procurement_app;

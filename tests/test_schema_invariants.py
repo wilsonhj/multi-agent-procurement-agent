@@ -238,3 +238,90 @@ def test_a_queue_entry_category_is_the_closed_vocabulary() -> None:
     """
     with pytest.raises(ValidationError):
         _entry(component_category="PV Modules")
+
+
+def _resolved_field() -> CanonicalField:
+    return CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+
+
+def test_model_copy_update_is_refused_on_a_canonical_field() -> None:
+    """GAP closed: pydantic's `model_copy(update=...)` re-runs no validators, so
+    before this fix `field.model_copy(update={"conflict_status": RESOLVED})`
+    produced a RESOLVED field carrying no `Resolution` - exactly the state
+    `_resolution_matches_status` exists to forbid - and it serialised to the
+    audit trail with no error at all. `validate_assignment` does not touch this
+    route at all, because `model_copy` never goes through `__setattr__`.
+
+    `CanonicalField` now overrides `model_copy` to refuse the `update=` form
+    outright rather than silently reproducing that hole, and points the caller
+    at `evolve`, which does revalidate.
+    """
+    field = _resolved_field()
+    with pytest.raises(TypeError):
+        field.model_copy(update={"conflict_status": ConflictStatus.RESOLVED})
+
+
+def test_model_copy_without_update_is_unaffected() -> None:
+    """Only the validation-skipping `update=` form is refused. A bare copy (or
+    `deep=True`) changes no data - the source was already valid - so there is
+    nothing to revalidate and pydantic's own copy still works."""
+    field = _resolved_field()
+    copy = field.model_copy()
+    assert copy == field
+    assert copy is not field
+    deep_copy = field.model_copy(deep=True)
+    assert deep_copy == field
+
+
+def test_evolve_reruns_validation_and_still_forbids_the_state() -> None:
+    """`evolve` is the revalidating replacement for `model_copy(update=...)`:
+    routing the merged data back through `model_validate` reruns
+    `_resolution_matches_status`, so the same illegal state still raises here -
+    this time because the invariant was actually re-checked, not because the
+    call was refused outright.
+    """
+    field = _resolved_field()
+    with pytest.raises(ValidationError):
+        field.evolve(conflict_status=ConflictStatus.RESOLVED)
+
+
+def test_evolve_applies_a_consistent_update_without_mutating_the_original() -> None:
+    """The happy path: attaching `conflict_status` and `resolution` together in
+    one call sidesteps the assignment-order trap the class docstring warns
+    about entirely, because both land in the same validated snapshot. `evolve`
+    builds a new object rather than mutating the receiver, matching every other
+    "update" in this module (`model_copy`, `ConflictQueueEntry` resolutions)."""
+    field = _resolved_field()
+    resolved = field.evolve(
+        conflict_status=ConflictStatus.RESOLVED,
+        resolution=Resolution(
+            action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+            resolved_by="procurement.lead",
+            resolved_at=datetime.now(UTC),
+            rationale="Contract supersedes the web datasheet revision.",
+        ),
+    )
+    assert resolved.conflict_status is ConflictStatus.RESOLVED
+    assert resolved.resolution is not None
+    assert resolved.resolution.resolved_by == "procurement.lead"
+    assert field.conflict_status is ConflictStatus.NONE
+    assert field.resolution is None
+
+
+def test_resolution_fields_are_frozen() -> None:
+    """FR-HITL-06's log is immutable, but until now nothing asserted `Resolution`'s
+    own field-level frozen-ness - only the *pointer* to a `Resolution` was
+    covered, by `test_a_recorded_resolution_cannot_be_replaced`. Without this,
+    a caller with a reference to a live `Resolution` could rewrite who resolved
+    a conflict, or when, with no trace the original value ever existed - the
+    same audit-trail defect `frozen=True` on `ConflictQueueEntry` exists to
+    prevent one level up.
+    """
+    resolution = _resolution("alice")
+    with pytest.raises(ValidationError):
+        resolution.resolved_by = "mallory"

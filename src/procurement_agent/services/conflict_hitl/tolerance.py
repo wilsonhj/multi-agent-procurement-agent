@@ -218,11 +218,14 @@ FIELD_TOLERANCES: dict[str, FieldTolerance] = {
 }
 
 #: Fields whose name is shared by genuinely different physical quantities.
-NEVER_COMPARABLE: dict[str, FieldTolerance] = {
-    "inverter_power_kva_vs_kw": FieldTolerance(
-        rule=ToleranceRule.NEVER_COMPARE, basis="Different physical quantities. High"
-    ),
-}
+#:
+#: Empty, and keyed on the frozen contract when it is not. It previously held one
+#: row under `inverter_power_kva_vs_kw`, which is not a contract key - so
+#: `tolerance_for` never returned it and the guard it configures was unreachable,
+#: the same invented-name defect the table above was corrected for. That row is
+#: now in `UNIMPLEMENTED_D2_ROWS`, and
+#: `test_every_tolerance_key_is_a_contract_key` covers this dict too.
+NEVER_COMPARABLE: dict[str, FieldTolerance] = {}
 
 #: D-2 rows with no home in this table, recorded rather than dropped.
 #:
@@ -244,6 +247,33 @@ UNIMPLEMENTED_D2_ROWS: dict[str, str] = {
         "`rating_mva_by_cooling` is a `dict[str, float]`, so comparing it is a "
         "per-key comparison rather than a scalar band. `rating_mva` above carries "
         "the scalar rule; the dict needs its own comparison path."
+    ),
+    "inverter kVA vs kW": (
+        "D-2 says never compare - different physical quantities. There is no key "
+        "to hang it on: the contract defines `rated_ac_power` in kVA and gives it "
+        "no kW sibling, so a kW value for that field is a *unit* mismatch, not a "
+        "second field. `values_conflict` already refuses to resolve it by "
+        "tolerance and raises it as UNIT_NORMALIZATION, which is the better "
+        "outcome anyway - a reviewer sees the pair instead of the pipeline "
+        "raising. Held here rather than under an invented key in NEVER_COMPARABLE."
+    ),
+}
+
+
+#: Discriminators D-2 defines that no row in this table can select yet.
+#:
+#: `_magnitude_matches_rule` already refuses half a conditional row, because "one
+#: without the other is a branch that can never be selected". A
+#: `ToleranceCondition` no `FieldTolerance` names is dead the same way, one level
+#: up - so it is recorded rather than left for a reader to notice, and
+#: `test_every_tolerance_condition_is_wired_or_accounted_for` holds the two sets
+#: to a partition of the enum.
+UNWIRED_TOLERANCE_CONDITIONS: dict[ToleranceCondition, str] = {
+    ToleranceCondition.REGIME_IEEE: (
+        "Selects IEEE's +6% total-loss allowance over IEC's +10%. The row it "
+        "discriminates is `transformer total losses`, which has no contract field "
+        "to key on (see UNIMPLEMENTED_D2_ROWS), so nothing sets it. Kept because "
+        "the distinction is D-2's and returns with the field, not dropped."
     ),
 }
 

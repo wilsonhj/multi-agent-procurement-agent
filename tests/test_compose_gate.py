@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from procurement_agent.config import Settings
 from procurement_agent.orchestrator import blocking_conflicts, compose_gate_blocks
 from procurement_agent.schema import (
+    ComponentCategory,
     ConflictCandidate,
     ConflictClass,
     ConflictQueueEntry,
@@ -42,7 +43,7 @@ def _entry(severity: Severity, entry_id: str = "c-1") -> ConflictQueueEntry:
         field_name="nameplate_power_w",
         supplier="Trina Solar",
         model="TSM-NEG21C.20",
-        component_category="pv_modules",
+        component_category=ComponentCategory.PV_MODULES,
         conflict_class=ConflictClass.RECORD_VS_WEB,
         severity=severity,
         candidates=[

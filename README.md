@@ -1,235 +1,246 @@
 # Procurement Agent
 
-An agentic, human-in-the-loop RAG pipeline for **solar-plus-storage component procurement**.
+Procurement Agent is a human-in-the-loop document intelligence system for comparing
+solar and energy-storage equipment. The intended product ingests supplier files, extracts
+facts with provenance, supplements missing facts from public sources, surfaces
+disagreements for review, and renders a deterministic 13-tab Excel comparison.
 
-It ingests multi-format supplier documentation, extracts structured facts into a canonical
-component schema, supplements gaps from public web sources, detects cross-source conflicts,
-and emits a 13-tab Excel supplier comparison in which **every value traces to a source**.
+The system is designed for a 500 MW solar-plus-storage procurement in ERCOT, but its
+source-of-record, provenance, conflict, and review patterns are meant to be reusable in
+other evidence-heavy procurement workflows.
 
-Built for a 500 MW solar-plus-storage project interconnecting to **ERCOT** in Texas.
+> [!IMPORTANT]
+> This repository is a **pre-alpha implementation**, not a working end-to-end application.
+> The domain model and several policy algorithms are implemented and tested. Document
+> ingestion, extraction adapters, persistence, retrieval, web enrichment, the review UI,
+> orchestration, and workbook writing are not yet operational.
 
-> **The tool supports decisions; it does not make them.** Final procurement authority
-> remains human. The agent takes no autonomous procurement action, and it never picks a
-> winner when sources disagree — it surfaces both, with provenance, for a person to resolve.
+## Why this project exists
 
----
+Supplier evidence arrives as contracts, spreadsheets, native PDFs, scans, images, and
+Word documents. The same specification can be stated under different test conditions,
+units, product revisions, and system boundaries. A useful comparison must therefore do
+more than copy values into a table:
 
-## Status
+- keep every value tied to its source;
+- preserve the ingested documents as the system of record;
+- compare values only when their conditions are compatible;
+- expose disagreement instead of silently choosing a winner;
+- let a human make and explain the final decision; and
+- regenerate the same artifact from the same canonical state.
 
-**Scaffolding.** The canonical schema, the swap-point interfaces, the source-of-record
-guard and the acceptance-criteria tests are real and tested. The seven services are
-declared with their contracts and raise `NotImplementedError`. Nothing ingests a document
-yet. See [Build plan](#build-plan) for the staged path to a working pipeline.
+The tool supports procurement decisions. It does not place orders, negotiate, select a
+supplier, or make an autonomous procurement decision.
 
----
+## Current state
 
-## Why this exists
-
-Supplier documentation for a utility-scale project arrives as contracts, spec sheets,
-scans, photographs and spreadsheets. It is incomplete, it changes with product revisions,
-and it has to be judged against Texas/ERCOT grid rules, storage fire codes, and the 2026
-federal tax-credit regime. Comparing eight component categories across suppliers
-like-for-like is slow and error-prone by hand.
-
-This tool does the collection, normalization and cross-checking. A human does the deciding.
-
----
-
-## The hard rule
-
-Everything in the design follows from one constraint:
-
-| Tier | Source | Authority |
-|---|---|---|
-| `system_of_record` | Ingested contracts and spec sheets | Authoritative. Never overwritten. |
-| `web_supplement` | Public datasheets, certification listings | May fill an **empty** field only. |
-
-A web value may populate a gap. It may **never** overwrite a system-of-record value, and a
-disagreement between the two is **never** auto-arbitrated — it goes to a human queue.
-
-This is enforced in code at a single chokepoint, `assert_no_autonomous_overwrite`, and
-tested directly in `tests/test_source_of_record_rule.py`.
-
----
-
-## Pipeline
-
-```
-ingest → extract → index → enrich_via_web → detect_conflicts
-                                                  │
-                                                  ▼
-                              conflict queue ──► human resolution
-                                                  │
-                        compose_workbook ◄── [compose gate: severity query]
-```
-
-**The human gate does not block the pipeline.** Resolution is detached: the gate is a policy
-check at compose time — a query, not a pause. One unresolved conflict on document 7 must not
-stall documents 8–400, and "defer" is a mandated resolution action that a blocking workflow
-cannot express. Composition runs against whatever is resolved now and emits a completeness
-manifest naming everything still open.
-
-## Services
-
-Seven services coordinated by an orchestrator:
-
-| Service | Responsibility |
+| Area | State |
 |---|---|
-| **Ingestion & Extraction** | File-type detection by content signature → parsers → OCR fallback → layout-aware text/tables → schema-constrained field extraction |
-| **Indexing** | Structure-aware chunking, embeddings, exact vector search + lexical matching from the embedding model's sparse output, metadata store. FR-RAG-02 asks for an ANN index and FR-RAG-03 for BM25; plan Decisions 3a and 3b reverse both — see below |
-| **Retrieval** | Hybrid dense + sparse retrieval with reranking and metadata filtering by category, supplier, doc type and source tier |
-| **Web Search** | Gap-triggered query generation, supplement-only tagging, source-authority capture |
-| **Conflict & HITL** | Field-level reconciliation across five conflict classes, conflict queue, decision logging |
-| **Comparison / Output** | Canonical store → 13-tab workbook with per-cell provenance and conditional formatting |
-| **Orchestrator** | Workflow, state, retries, provenance and audit trail |
+| Canonical Pydantic schema, provenance, closed vocabularies | Implemented and tested |
+| Condition-aware comparison and canonical ordering | Implemented and tested |
+| Per-field conflict tolerance and declared supplier bands | Implemented and tested |
+| Source-of-record overwrite guard | Implemented and tested |
+| Compose-time severity gate | Implemented and tested |
+| Output flag calculation and deterministic XLSX archive normalization | Implemented and tested |
+| Parser, OCR, embedder, vector-store, reranker, and LLM interfaces | Declared as Protocols |
+| Ingestion, indexing, retrieval, web enrichment | Stubs; raise `NotImplementedError` |
+| PostgreSQL schema, audit log, worker runner, ACL enforcement | Designed, not implemented |
+| Conflict queue service and review UI | Data model only |
+| 13-tab workbook writer | Stub; archive normalizer exists |
+| CLI or deployable service | Not implemented |
 
----
+See [Current state](docs/current-state.md) for the code-to-spec audit and
+[Requirements traceability](docs/requirements-traceability.md) for each FR, NFR, and
+acceptance criterion.
 
-## Canonical data model
+## System design
 
-Every extracted parameter is a field object carrying its own provenance and conflict state:
+The target flow is:
 
-```python
-{
-    "value": 650,
-    "unit": "Wp",
-    "verbatim_value": "650 W",  # original text, always retained
-    "source_tier": "system_of_record",
-    "source_ref": {"document_id": "...", "page": 3},
-    "confidence": 0.95,
-    "conflict_status": "none",
-    "resolution": None,
-}
+```text
+                         append-only claims
+                                │
+documents ─► ingest ─► extract ─┼─► reduce ─► canonical store
+                    │           │                    │
+                    └─► index/retrieve               ├─► detect conflicts
+                                                     │          │
+public sources ─► gap-only web enrichment ───────────┘          ▼
+                                                        review queue
+                                                             │
+                                           compose-time severity gate
+                                                             │
+                                                             ▼
+                                                  13-tab workbook
 ```
 
-The canonical store built from these is the **single** source for Excel regeneration and
-for the audit trail, which is what makes the workbook deterministically regenerable.
+Human review is deliberately detached from pipeline execution. Workers do not pause while
+a conflict waits for a reviewer. Composition queries unresolved conflicts and refuses when
+one is above the configured severity threshold, unless a future audited override explicitly
+accepts an incomplete output.
 
----
+The planned runtime uses PostgreSQL as the single durable store for documents, claims,
+chunks, jobs, conflicts, resolutions, and an append-only audit log. Work is claimed with
+`FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned. Heavy integrations sit
+behind six synchronous Protocol interfaces so an installation can choose parsers, OCR,
+models, and storage adapters without changing the domain core.
 
-## Output workbook
+Read [Architecture](docs/architecture.md) for the component boundaries, invariants,
+storage model, and important design trade-offs.
 
-One `.xlsx`, thirteen tabs:
+## The source-of-record rule
 
-**Component categories (1–8)** — PV Modules · Inverters/PCS · Trackers & Mounting ·
-Transformers · Cabling & Wiring · Combiner Boxes · BESS · EMS/SCADA & Controls
+| Tier | Examples | Authority |
+|---|---|---|
+| `system_of_record` | Ingested contracts and supplier specifications | Authoritative; never overwritten by the web |
+| `web_supplement` | Manufacturer pages, certification lists, public datasets | May fill a gap; disagreement becomes a conflict |
 
-**Summary (9–13)** — Executive Summary · Conflicts & Open Items · Sources & Provenance ·
-Compliance Matrix (Texas/ERCOT) · Tax Incentives (BABA, ITC & domestic content)
+A public value can fill an empty field. It cannot replace an ingested value. The current
+core enforces this rule with `assert_no_autonomous_overwrite`; the planned store strengthens
+it structurally by letting workers append immutable claims while a reducer alone projects
+canonical state.
 
-Four cell states are visually flagged: unresolved conflicts, web-supplemented values,
-low-confidence values, and missing data.
+## Quick start
 
----
+Requirements:
 
-## Getting started
+- Python 3.12 or 3.13
+- [uv](https://docs.astral.sh/uv/)
 
-Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
+Clone the repository and install the development environment:
 
 ```bash
+git clone https://github.com/wilsonhj/multi-agent-procurement-agent.git
+cd multi-agent-procurement-agent
 uv sync --extra dev
 ```
 
+Run the validation suite:
+
 ```bash
 uv run pytest
+uv run ruff check .
+uv run mypy
 ```
 
-Copy `.env.example` to `.env` before wiring any endpoints. For contract and pricing
-documents the LLM and embedding endpoints must be self-hosted or enterprise, with no
-third-party training on contract data.
+The package currently exposes domain models and pure policy helpers; there is no working
+pipeline command yet. This example exercises the system-of-record guard:
 
-Optional extras keep heavy dependencies out of the core: `--extra parse` (Docling, pandas,
-PyMuPDF), `--extra extract` (Instructor, OpenAI client for a self-hosted vLLM endpoint),
-`--extra solar` (pvlib).
+```python
+from procurement_agent.schema import CanonicalField, SourceRef, SourceTier
+from procurement_agent.services.conflict_hitl import (
+    AutonomousOverwriteError,
+    assert_no_autonomous_overwrite,
+)
 
----
+contract_value = CanonicalField(
+    value=650,
+    unit="W",
+    verbatim_value="650 W",
+    source_tier=SourceTier.SYSTEM_OF_RECORD,
+    source_ref=SourceRef(document_id="supplier-spec.pdf", page=3),
+    confidence=0.98,
+)
 
-## Layout
+web_value = CanonicalField(
+    value=655,
+    unit="W",
+    verbatim_value="655 W",
+    source_tier=SourceTier.WEB_SUPPLEMENT,
+    source_ref=SourceRef(url="https://manufacturer.example/module"),
+    confidence=0.90,
+)
 
+try:
+    assert_no_autonomous_overwrite(contract_value, web_value)
+except AutonomousOverwriteError:
+    # A production reducer would create a conflict for human review.
+    pass
 ```
-src/procurement_agent/
-├── schema/          Canonical field object, component instances, closed vocabularies
-├── ports/           The six swappable interfaces: parser, OCR, embedder,
-│                    vector store, reranker, LLM
-├── services/        The seven services above, one package each
-└── orchestrator/    Pipeline stages and the compose gate
 
-docs/
-├── requirements-traceability.md   Every FR/NFR/AC mapped to where it lives
-├── agent-topology.md              Where the pipeline may fan out, and where it must not
-├── defaults.md                    Starting values for the open questions, with confidence
-└── open-questions.md              Superseded; see specs/001-procurement-agent/
+Copy `.env.example` to `.env` only when developing an adapter. Do not send contract,
+pricing, or other confidential material to an endpoint that permits third-party training.
 
-tests/              Acceptance criteria that the scaffolding can already enforce
-```
+### Optional dependency groups
 
-Nothing under `docs/source/` is committed — the source requirements documents are marked
-confidential. See `.gitignore`.
+The core remains intentionally small. Install integrations only when working on them:
 
----
-
-## Specification
-
-Full specification, researched decisions and parallel work breakdown live in
-[`specs/001-procurement-agent/`](specs/001-procurement-agent/):
-
-| Document | What it holds |
+| Extra | Purpose |
 |---|---|
-| [spec.md](specs/001-procurement-agent/spec.md) | Requirements and acceptance criteria, technology-agnostic |
-| [clarifications.md](specs/001-procurement-agent/clarifications.md) | Every ambiguity in the source documents, resolved with a researched default |
-| [plan.md](specs/001-procurement-agent/plan.md) | Stack decisions with rationale and confidence |
-| [tasks.md](specs/001-procurement-agent/tasks.md) | Contract freeze, then nine parallel work packages |
-| [analysis.md](specs/001-procurement-agent/analysis.md) | Cross-artifact consistency findings |
-| [contracts/](specs/001-procurement-agent/contracts/) | Frozen shared contracts |
+| `parse` | Docling and pandas document paths |
+| `extract` | Schema-constrained extraction client |
+| `store` | PostgreSQL and pgvector |
+| `solar` | Live, pinned CEC equipment-list processing |
+| `dev` | pytest, Ruff, mypy, and type stubs |
 
-## Design decisions and where they came from
+For example:
 
-The Technical Requirements Spec deliberately defers stack selection: *"vector DB, OCR
-engine, LLM, and framework selection are design decisions."* The ones adopted here:
+```bash
+uv sync --extra dev --extra parse
+```
 
-- **Python**, because the whole relevant ecosystem is Python — Docling, pvlib, openpyxl.
-- **PostgreSQL as the single datastore**, holding canonical records, chunks, embeddings, the
-  conflict queue and the audit log. An extraction, its provenance and a reviewer's correction
-  commit or roll back together.
-- **No workflow framework.** The audit requirement already forces canonical state into our own
-  tables, and deterministic regeneration makes composition a pure function of that store — so a
-  checkpointer would be a second copy of state we already own.
-- **No ANN index.** Measured: pgvector's filtered search silently returned 5 rows for a top-10
-  request. Exact search runs in ~4 ms at this scale with guaranteed top-k.
-- **Pydantic** for the canonical schema, so extraction, validation and per-field confidence come
-  from one place.
-- **openpyxl, pinned exactly** — the version string is embedded in the output bytes.
-- **Protocol interfaces over concrete adapters**, with heavy dependencies behind optional extras
-  so swappability is enforced by packaging rather than convention.
-- **A parser router rather than one engine**, because no single parser wins across text PDFs,
-  scans and spreadsheets.
+## Repository guide
 
-Licence posture: Apache-2.0 and MIT only. Marker, Jina v5, ParadeDB, VectorChord-bm25, MinerU,
-Surya and olmOCR were all evaluated and **rejected** on licence grounds — see the licence gate in
-[plan.md](specs/001-procurement-agent/plan.md).
+```text
+src/procurement_agent/
+├── schema/                  canonical domain objects and vocabularies
+├── ports/                   six swappable integration interfaces
+├── services/
+│   ├── ingestion/           content routing and extraction entry points
+│   ├── indexing/            chunking and index entry points
+│   ├── retrieval/           retrieval entry point
+│   ├── web_search/          gap-only public-source enrichment
+│   ├── conflict_hitl/       implemented comparison and conflict policy
+│   └── output/              flags, archive normalization, workbook stub
+└── orchestrator/            stage vocabulary and compose-time gate
 
----
+docs/                       contributor-facing explanations and traceability
+specs/001-procurement-agent/ normative requirements, decisions, and work plan
+tests/                       unit and policy regression tests
+```
 
-## Build plan
+Start with:
 
-| Stage | Scope | Exit threshold |
-|---|---|---|
-| 1 | Ingestion + OCR for all formats; lock canonical schema for PV, inverters, BESS | ≥90% field-level extraction on 20–30 real datasheets, with provenance |
-| 2 | Chunking, hybrid retrieval + reranker; Excel writer for first 3 categories | Deterministic regeneration; no unsourced cells |
-| 3 | Supplement-only web search; conflict detection; queue + resolution UI | 100% of injected web-vs-spec conflicts surfaced; zero auto-overwrites |
-| 4 | Remaining categories; Compliance Matrix and Tax Incentives tabs | All 13 tabs present |
-| 5 | Retrieval-time access control, immutable audit log, dedup, self-hosted endpoints | Audit, security and idempotency requirements verified |
+- [Current state](docs/current-state.md) — what works, what is missing, and the highest-risk gaps;
+- [Architecture](docs/architecture.md) — intended production design and its invariants;
+- [Development guide](docs/development.md) — setup, repository conventions, and change recipes;
+- [Contributing](CONTRIBUTING.md) — how to choose and submit work;
+- [Requirements traceability](docs/requirements-traceability.md) — requirement-level status; and
+- [Agent topology](docs/agent-topology.md) — safe fan-out points and required serialization;
+- [Researched defaults](docs/defaults.md) — proposed values for unresolved decisions; and
+- [Specification index](specs/001-procurement-agent/spec.md) — the normative problem definition.
 
-LLM extraction is imperfect — roughly 85–95% on clean documents, lower on poor scans.
-Human review of flagged fields is mandatory, not optional.
+The specification directory has an authority order: frozen contracts define shared shapes;
+`clarifications.md` resolves domain ambiguity; `plan.md` records technical decisions; and
+`tasks.md` turns them into work packages. Do not infer completion from a design document—use
+the current-state and traceability documents.
 
----
+## Contributing
 
-## Scope boundaries
+Contributions are welcome, especially small vertical slices that turn a declared interface
+into tested behavior. Before starting, read [CONTRIBUTING.md](CONTRIBUTING.md) and choose an
+issue whose prerequisite contracts are already settled. Changes that affect a canonical
+record, audit envelope, or workbook projection require a written contract decision first.
 
-Not in phase 1: placing orders, ERP posting, price negotiation, engineering or yield
-modeling, legal review. The tool informs these; it does not perform them.
+The project’s most important near-term milestone is to freeze the remaining shared contracts
+and land one end-to-end, fixture-backed path from document ingestion to a reviewable claim.
 
-Regulatory and tax content reflects rules as understood in mid-2026 and is reported as
-status, not advice. Confirm against primary sources and with tax and legal counsel before
-relying on any of it for filings.
+## Security and data handling
+
+The intended workload contains confidential contracts and prices. The production design
+requires:
+
+- self-hosted or enterprise inference for confidential material;
+- document-level access labels applied at ingest and enforced during retrieval;
+- a non-owner, non-superuser application database role;
+- immutable, hash-chained audit events; and
+- no secrets, source documents, or generated procurement workbooks in git.
+
+These controls are **designed but not implemented**. Do not use the current repository with
+real confidential procurement data.
+
+## License
+
+No open-source license has been selected: `pyproject.toml` currently declares
+`UNLICENSED`. The source is publicly visible, but that does not grant permission to use,
+modify, or redistribute it. A project maintainer must add an OSI-approved license before
+this can be presented or adopted as an open-source project.

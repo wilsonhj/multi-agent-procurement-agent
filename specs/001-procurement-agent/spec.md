@@ -106,8 +106,8 @@ cross-referenced against the source documents.
 | ID | Requirement |
 |---|---|
 | FR-RAG-01 | Structure-aware chunking that preserves section boundaries. Tables are kept whole where feasible. |
-| FR-RAG-02 | Every chunk is embedded and indexed with metadata: document ID, chunk ID, component category, supplier, document type, page, source URI, timestamps, source tier. |
-| FR-RAG-03 | Hybrid retrieval combining semantic and keyword search, with reranking and metadata filtering. System-of-record content must remain distinguishable from web-supplemented content at every point. |
+| FR-RAG-02 | Every chunk **shall** be embedded and stored in an **ANN vector index (HNSW/IVF, cosine)** with metadata: document ID, chunk ID, component category, supplier, document type, page, source URI, timestamps, source tier. ⚠️ **Reversed by plan Decision 3a — exact search, no ANN index.** Recorded as [A-23](analysis.md); the requirement is stated here as the TRS expresses it. |
+| FR-RAG-03 | Hybrid retrieval (**vector + BM25**), with reranking and metadata filtering. System-of-record content must remain distinguishable from web-supplemented content at every point. ⚠️ **Reversed by plan Decision 3b — lexical matching from the embedding model's sparse output, not BM25.** Recorded as [A-24](analysis.md). |
 | FR-RAG-04 | Extraction uses retrieved context only, cites document and page, and returns an explicit *insufficient evidence* result rather than fabricating a value. |
 | FR-RAG-05 | Incremental add, update and delete by stable identifier, without full re-indexing. |
 
@@ -151,7 +151,7 @@ cross-referenced against the source documents.
 |---|---|---|
 | NFR-01 | Traceability: no unsourced values | Every field in the store has a resolvable source reference |
 | NFR-02 | Auditability: web queries, extractions, conflicts and resolutions logged immutably | Log entries cannot be altered or deleted after write |
-| NFR-03 | Security: access control enforced at retrieval time; confidential documents processed on self-hosted or enterprise endpoints with no third-party training | A user without clearance cannot cause restricted content to influence a result |
+| NFR-03 | Security: access control **must** be enforced at retrieval time **via metadata filtering**; confidential documents processed on self-hosted or enterprise endpoints with no third-party training. ⚠️ **Mechanism substituted by plan Decision 3c — `FORCE ROW LEVEL SECURITY`.** Recorded as [A-25](analysis.md). | A user without clearance cannot cause restricted content to influence a result |
 | NFR-04 | Modularity: parsers, OCR, embedders, vector store, reranker and LLM swappable behind stable interfaces | Any one can be replaced without touching another |
 | NFR-05 | Idempotency: re-ingesting an unchanged document creates no duplicates | Content hash prevents re-processing |
 | NFR-06 | Scale: hundreds of datasheets and contracts, large multi-tab workbooks | Not thousands. Do not over-engineer for volume. |
@@ -190,7 +190,7 @@ or a human resolution.
 | AC-3 | The workbook contains all 13 tabs with conditional formatting for conflicts, web-supplemented values, low-confidence values and missing data. |
 | AC-4 | Every output spec cell resolves to a source. No unsourced values. |
 | AC-5 | Re-ingesting an unchanged document creates no duplicates. |
-| AC-6 | The inverter tab reports harmonic distortion against the correct voltage-class limit with a harmonic spectrum, and the tax tab reports each supplier's status across the three incentive frameworks. |
+| AC-6 | The inverter tab reports **TRD** against the correct **IEEE 2800** voltage-class limit with a harmonic spectrum, and the tax tab reports each supplier's status across the three incentive frameworks. **TRD, not TDD** — the TRS calls this "the key correction from v1", and getting it wrong produces a compliance matrix that passes suppliers it should fail. |
 | AC-7 | Generating the workbook twice from an unchanged canonical store produces byte-identical files. |
 | AC-8 | A user without clearance for a confidential document cannot cause its content to influence any retrieved result. |
 

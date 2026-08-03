@@ -257,6 +257,11 @@ found real defects, **three of them regressions introduced by round 1**.
 | A-20 | **M** | Sync vs async on the six Protocols was never decided | **Fixed** — plan Decision 10 |
 | A-21 | **M** | No concurrency limits anywhere in config | **Fixed** |
 | A-22 | **M** | C8 lacked the append-only claim invariant | **Fixed** |
+| A-23 | **H** | **FR-RAG-02's ANN mandate was edited out of spec.md rather than registered.** The TRS says every chunk *shall* be stored in an ANN vector index (HNSW/IVF, cosine); plan Decision 3a reverses it. The decision is well-supported — pgvector's filtered search was measured silently under-returning on a filtered top-k, and an HNSW index cost more than the table — but a mandatory `shall` was paraphrased away instead of recorded here. | **Fixed** — TRS wording restored in spec.md, reversal marked inline |
+| A-24 | **H** | **FR-RAG-03's BM25 clause was generalised to "keyword search".** Reversed by plan Decision 3b (no permissively licensed true-BM25 for PostgreSQL), also unregistered. | **Fixed** — TRS wording restored, reversal marked inline |
+| A-25 | **M** | **NFR-03's mechanism clause was dropped.** The TRS says access control *must* be enforced at retrieval time *via metadata filtering*; plan Decision 3c substitutes `FORCE ROW LEVEL SECURITY`. Defensible, but an unflagged change to a `must`. | **Fixed** — mechanism restored, substitution marked inline |
+| A-26 | **H** | **AC-6 was weakened on the exact point the TRS calls its key correction.** "TRD against the correct IEEE 2800 voltage-class limit" became "harmonic distortion against the correct voltage-class limit", and spec.md mentioned TRD, TDD, IEEE 2800 and IEEE 519 zero times — while the frozen contract warns at length that getting TRD-vs-TDD wrong "produces a compliance matrix that passes suppliers it should fail", and tasks.md still said "AC-6 TRD". The one normative document generalised the distinction away. | **Fixed** |
+| A-27 | **M** | **The coverage audit certified itself with the wrong count.** "All 26 FR IDs in spec.md match the TRS analysis" — spec.md contains **32** unique FR IDs (FR-ING-01..10, FR-RAG-01..05, FR-WEB-01..05, FR-HITL-01..06, FR-OUT-01..06); 26 is the count with FR-OUT-01..06 omitted. A full ID sweep found none missing and none invented, so only the arithmetic was wrong — but the claim that closes the audit was false, which left the audit unverified. | **Fixed** |
 
 ## A-15 (Critical) — the analysis claimed a fix that had not fully landed
 
@@ -363,7 +368,7 @@ failure mode. Fold its non-overlapping parts in instead.
 
 ## Consistency checks that passed
 
-- All 26 FR IDs in spec.md match the TRS analysis; none invented, none dropped.
+- All **32** FR IDs in spec.md match the TRS analysis; none invented, none dropped. (An earlier version of this line said 26, which is the count with FR-OUT-01..06 omitted — see A-27. The sweep itself was correct; the total was not.)
 - All 13 `WorkbookTab` members match FR-OUT-02, in order, and the first eight match
   `ComponentCategory` (asserted by test).
 - The five `ConflictClass` and five `ResolutionAction` members match FR-HITL-01 and FR-HITL-04

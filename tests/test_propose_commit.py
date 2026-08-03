@@ -153,6 +153,26 @@ def test_a_web_claim_contradicting_the_record_is_queued() -> None:
     assert projected[0].conflict_status is ConflictStatus.OPEN
 
 
+def test_the_record_supplies_the_value_even_when_the_web_looks_better() -> None:
+    """Mutation: deleting the source-tier term from `_preferred`'s sort key left
+    the suite green, because in every case tested the record also happened to
+    have the alphabetically-first `document_id` — the very defect this module was
+    rewritten to remove, hiding inside its own regression test.
+
+    Here the web claim wins on confidence *and* on filename, so only the
+    source-of-record rule (TRS section 1, FR-HITL-02) can produce 650.
+    """
+    projected = project(
+        [
+            _claim(650.0, doc="zzz-contract", confidence=0.5),
+            _claim(700.0, doc="aaa-web", tier=SourceTier.WEB_SUPPLEMENT, confidence=0.99),
+        ]
+    )
+    assert projected[0].value == 650.0
+    assert projected[0].source_tier is SourceTier.SYSTEM_OF_RECORD
+    assert projected[0].conflict_status is ConflictStatus.OPEN
+
+
 def test_the_canonical_value_does_not_depend_on_the_filename() -> None:
     """Review: `winners[0]` over an order led by `document_id` meant renaming a
     document changed the stored answer — and AC-7 then made it reproducibly

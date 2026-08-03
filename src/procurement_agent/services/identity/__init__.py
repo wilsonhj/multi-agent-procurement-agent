@@ -218,12 +218,11 @@ def manufacturer_key(name: str) -> str:
     # gives the single token `coltd`, which matches no legal suffix and leaves
     # the entity split D-4 names as the regression test unresolved. Splitting on
     # unicode whitespace afterwards also folds the CEC entry ending in U+2002.
-    words = _NAME_SEPARATORS.sub(" ", folded).split()
-    kept = list(words)
-    while len(kept) > 1 and kept[-1] in LEGAL_SUFFIXES:
+    kept = _NAME_SEPARATORS.sub(" ", folded).split()
+    while kept and kept[-1] in LEGAL_SUFFIXES:
         kept.pop()
     key = " ".join(kept).strip()
-    if not key or (len(kept) == 1 and kept[0] in LEGAL_SUFFIXES):
+    if not key:
         raise ValueError(f"manufacturer name {name!r} normalises to an empty key")
     return MANUFACTURER_ALIASES.get(key, key)
 
@@ -301,12 +300,13 @@ def decompose(model: str, *nameplates: float | None) -> ModelParts:
     Jinko case, whose sheet carries the range and not the per-bin number, so the
     one pairing D-4 says must work was the one that could not.
 
-    **The nameplates are tried in order and the first that matches wins**, rather
-    than any of them matching any token. Callers pass this model's own nameplate
-    first, so the other side's is consulted only when this side has no bin or the
-    string does not carry it. Matching against any of them would let `ABC-267-500`
-    at 500 W mask its `267` because the *other* product happens to be a 267 —
-    recording a bin this product does not have.
+    **Only the first nameplate given wins**; the rest are consulted only when the
+    earlier ones are `None`. Callers pass this model's own nameplate first, so a
+    product that declares its bin is decomposed against that bin and nothing
+    else. Matching against whichever nameplate happens to fit would let
+    `ABC-267-500` at 500 W mask its `267` because the *other* product is a 267,
+    and would let a 705 W listing record a bin of 700 because the other side
+    declared one — a bin the product does not claim.
     """
     folded = _PUNCT.sub(" ", unicodedata.normalize("NFKD", model).casefold())
     tokens = _TOKENS.findall(folded)
@@ -314,14 +314,13 @@ def decompose(model: str, *nameplates: float | None) -> ModelParts:
     masked: list[str] = list(tokens)
     found: float | None = None
     bin_index: int | None = None
-    for target in (n for n in nameplates if n is not None):
+    target = next((n for n in nameplates if n is not None), None)
+    if target is not None:
         for index, token in enumerate(tokens):
             if token.isdigit() and abs(float(token) - target) <= 1.0:
                 found, bin_index = float(token), index
                 masked[index] = "#"
                 break
-        if bin_index is not None:
-            break
 
     if bin_index is None:
         return ModelParts(family=" ".join(masked), bin_watts=None, verbatim=model)

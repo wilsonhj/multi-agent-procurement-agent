@@ -9,6 +9,8 @@ from procurement_agent.schema import (
     CATEGORY_TO_TAB,
     CanonicalField,
     ComponentCategory,
+    ComponentInstance,
+    Condition,
     ConflictCandidate,
     ConflictClass,
     ConflictQueueEntry,
@@ -238,3 +240,51 @@ def test_a_queue_entry_category_is_the_closed_vocabulary() -> None:
     """
     with pytest.raises(ValidationError):
         _entry(component_category="PV Modules")
+
+
+def _field(value: object, status: ConflictStatus, temp: float | None = None) -> CanonicalField:
+    return CanonicalField(
+        value=value,
+        unit="kVA",
+        condition=Condition(temperature_c=temp),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="ds-1"),
+        confidence=0.9,
+        conflict_status=status,
+    )
+
+
+def test_unresolved_conflicts_reads_every_conditioned_value() -> None:
+    """Mutation: replacing the inner iteration with `for value in [values]` — i.e.
+    treating `fields` as single-valued again — survived the whole suite, because
+    nothing called this method with a populated store at all.
+
+    FR-HITL-05 says unresolved conflicts are flagged in the output, never
+    silently omitted. `fields` is list-valued per D-1, so a conflict on the
+    *second* condition of a parameter is exactly the one a single-valued reader
+    would drop.
+    """
+    instance = ComponentInstance(
+        supplier="Sungrow",
+        model="SG350HX",
+        component_category=ComponentCategory.INVERTERS_PCS,
+        fields={
+            "rated_ac_power": [
+                _field(352.0, ConflictStatus.NONE, 30.0),
+                _field(320.0, ConflictStatus.OPEN, 40.0),
+            ],
+            "max_efficiency": [_field(99.0, ConflictStatus.NONE)],
+            "cec_efficiency": [_field(None, ConflictStatus.INSUFFICIENT_EVIDENCE)],
+        },
+    )
+    assert instance.unresolved_conflicts() == ["cec_efficiency", "rated_ac_power"]
+
+
+def test_a_clean_store_has_no_unresolved_conflicts() -> None:
+    instance = ComponentInstance(
+        supplier="Sungrow",
+        model="SG350HX",
+        component_category=ComponentCategory.INVERTERS_PCS,
+        fields={"rated_ac_power": [_field(352.0, ConflictStatus.NONE, 30.0)]},
+    )
+    assert instance.unresolved_conflicts() == []

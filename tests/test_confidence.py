@@ -73,6 +73,24 @@ def test_no_tier_a_field_is_missing_from_the_table() -> None:
     )
 
 
+def test_the_patterns_actually_recognise_the_gated_fields() -> None:
+    """Mutation: replacing `cert|listing` with a pattern matching nothing left
+    the whole suite green. The direction check asserts an *empty* set, so
+    breaking the detector makes it vacuously pass — the classic way a guard stops
+    guarding without anything going red.
+
+    Every field the table gates must also be one the patterns can find, or the
+    check is not checking.
+    """
+    gated = {key for key, tier in FIELD_TIERS.items() if tier is CriticalityTier.A}
+    assert gated, "the tier table has no Tier A fields at all"
+    unrecognised = {key for key in gated if not looks_tier_a(key)}
+    assert not unrecognised, (
+        f"gated fields the D-3 category patterns cannot find: {sorted(unrecognised)}. "
+        "The direction check silently stops covering them."
+    )
+
+
 def test_the_exclusion_list_is_not_a_way_to_lose_a_field() -> None:
     """An exclusion has to name a real contract field and give a reason, or it is
     the omission it exists to prevent with a dict around it."""
@@ -182,8 +200,10 @@ def test_ocr_confidence_is_scaled_not_thresholded() -> None:
     version that read it as `bool` would score 0.01 and 0.99 identically and stay
     green."""
     scores = [fuse(ConfidenceSignals(ocr_confidence=c)) for c in (0.0, 0.25, 0.5, 0.75, 1.0)]
-    assert scores == sorted(scores)
-    assert scores[0] < scores[-1]
+    # Strictly increasing, not merely non-decreasing. A `bool` reading gives
+    # [0, w, w, w, w], which is sorted, has the right endpoints and the right
+    # span — it survived the first version of this test on all three counts.
+    assert all(lo < hi for lo, hi in zip(scores, scores[1:], strict=False)), scores
     span = scores[-1] - scores[0]
     assert span == pytest.approx(SIGNAL_WEIGHTS["ocr_confidence"]), (
         "the full range of an OCR confidence must move the score by its full weight"

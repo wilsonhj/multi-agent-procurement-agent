@@ -96,6 +96,15 @@ def test_a_hyphen_separates_tokens() -> None:
     assert manufacturer_key("Trina–Solar") == "trina solar"
 
 
+def test_diacritics_fold() -> None:
+    """Mutation: deleting the combining-mark strip after NFKD survived the whole
+    suite. `Wärtsilä` is a real vendor in this corpus and appears both
+    precomposed and decomposed, so without the strip one company has two keys."""
+    assert manufacturer_key("Wärtsilä Corporation") == "wartsila"
+    assert manufacturer_key("Wärtsilä Oyj") == "wartsila"
+    assert same_manufacturer("Wärtsilä", "Wartsila")
+
+
 def test_the_en_space_entry_folds() -> None:
     """D-4: the `Co./Ltd` cluster has 20 distinct spellings in CEC data, one
     ending in U+2002 EN SPACE. `str.split(" ")` does not see it."""
@@ -166,6 +175,22 @@ def test_this_products_bin_is_preferred_to_the_other_sides() -> None:
     parts = decompose("ABC-267-500", 500.0, 267.0)
     assert parts.bin_watts == 500.0
     assert parts.family == "abc 267 #"
+
+
+def test_a_declared_bin_is_never_overridden_by_the_other_side() -> None:
+    """The other side's nameplate is a fallback for *no* bin, not a second guess
+    at a bin that failed to match. A 705 W listing whose string says 700 must not
+    come back claiming a 700 W bin because the product it is compared against
+    declared one."""
+    parts = decompose("TSM-700NEG21C.20", 705.0, 700.0)
+    assert parts.bin_watts is None
+    assert parts.family == "tsm 700 neg 21 c 20"
+
+
+def test_the_fallback_only_applies_when_there_is_no_bin() -> None:
+    with_own = decompose("TSM-700NEG21C.20", 700.0, 999.0)
+    without_own = decompose("TSM-700NEG21C.20", None, 700.0)
+    assert with_own.bin_watts == without_own.bin_watts == 700.0
 
 
 def test_the_bin_tolerance_is_one_watt() -> None:

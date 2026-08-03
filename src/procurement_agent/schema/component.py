@@ -66,6 +66,19 @@ class ComponentInstance(BaseModel):
             "under more than one manufacturer. See clarifications.md D-4 and D-8."
         ),
     )
+    manufacturer_key: str | None = Field(
+        default=None,
+        description=(
+            "D-4 stage 1's normalised supplier. Filled by `services.identity."
+            "identity_keys`; `schema` sits below `services` and cannot import it, "
+            "so the slot is declared here and populated from outside - the same "
+            "arrangement `surrogate_id` already used."
+        ),
+    )
+    model_family: str | None = Field(
+        default=None,
+        description="D-4 stage 2's family, i.e. the model string with the bin token masked.",
+    )
     fields: dict[str, list[CanonicalField]] = Field(
         default_factory=dict,
         description=(
@@ -93,11 +106,18 @@ class ComponentInstance(BaseModel):
         entities publish `ASB-M10-144-550` with genuinely different specs (PTC 509.9
         vs 518.2). Without the tie-break the sort is unstable exactly where the data
         is most ambiguous.
+
+        D-4 stage 5 sorts on the *normalised* keys, not the raw strings: sorting on
+        `supplier` puts `Trina Solar` and `Trina Solar Co.,Ltd` far apart, so the
+        entity split stage 1 exists to close reopens in the row order. The raw
+        strings remain the fallback for an instance nobody has run the matcher over
+        - a partially-normalised store must still have a total order, and falling
+        back is visible where raising would only move the failure.
         """
         return (
             self.component_category.value,
-            self.supplier,
-            self.model,
+            self.manufacturer_key or self.supplier,
+            self.model_family or self.model,
             self.nameplate if self.nameplate is not None else float("-inf"),
             self.surrogate_id or "",
         )

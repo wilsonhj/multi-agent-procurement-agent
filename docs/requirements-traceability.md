@@ -51,7 +51,7 @@ Status values:
 | FR-ING-07 | Schema-constrained extraction with confidence + source pointer | `ports.LLMPort.extract`, `schema.CanonicalField` | declared |
 | FR-ING-08 | Normalize units, retain verbatim | `schema.CanonicalField.verbatim_value`, `services/ingestion.normalize_unit` | declared |
 | FR-ING-09 | Stable IDs, content hash, dedup | `schema.SourceDocument.content_hash` | declared |
-| FR-ING-10 | Sub-threshold confidence routes to HITL | `config.target_precision_auto_accepted`; tiering in [D-3](../specs/001-procurement-agent/clarifications.md) | declared |
+| FR-ING-10 | Sub-threshold confidence routes to HITL | `services/confidence.fuse` produces the score and `requires_review` routes it; Tier A is a gate that no score can pass. The threshold itself is still uncalibrated — D-3 reads it off a risk-coverage curve on a labelled set that does not exist yet | partial |
 
 ### Indexing, retrieval & RAG
 

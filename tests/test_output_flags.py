@@ -9,6 +9,11 @@ from procurement_agent.schema import (
 )
 from procurement_agent.services.output import flags_for
 
+#: A local constant, not a config read. Issue #3 asked for this to read
+#: `config.hitl_confidence_threshold` so the two could not drift — D-3 then
+#: deleted that field outright, so there is nothing left to drift from. The
+#: threshold reaches `flags_for` as an argument, and who supplies it is
+#: `services.confidence.requires_review`'s business.
 THRESHOLD = 0.80
 
 

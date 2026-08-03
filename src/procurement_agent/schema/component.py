@@ -66,7 +66,20 @@ class ComponentInstance(BaseModel):
             "under more than one manufacturer. See clarifications.md D-4 and D-8."
         ),
     )
-    fields: dict[str, CanonicalField] = Field(default_factory=dict)
+    fields: dict[str, list[CanonicalField]] = Field(
+        default_factory=dict,
+        description=(
+            "Contract key -> every conditioned value for it. **List-valued, not "
+            "one entry per key.** D-1 makes `condition` part of what a value *is*, "
+            "and one datasheet routinely states one parameter several times under "
+            "different conditions - the Sungrow SG350HX prints `352 kVA @30 degC / "
+            "320 @40 degC / 295 @50 degC` for a single `rated_ac_power`. Collapsing "
+            "those to one entry either loses two real values or forces a new "
+            "contract key per condition, which is what the ad-hoc encodings "
+            "(`stc_rating` vs `nmot_rating`, `rated_ac_power_temp`) already do. "
+            "The contract keeps those; this is the general mechanism beside them."
+        ),
+    )
 
     def ordering_key(self) -> tuple[str, str, str, float, str]:
         """Canonical sort position for deterministic workbook regeneration.
@@ -98,4 +111,11 @@ class ComponentInstance(BaseModel):
         from .enums import ConflictStatus
 
         blocking = {ConflictStatus.OPEN, ConflictStatus.INSUFFICIENT_EVIDENCE}
-        return [name for name, f in self.fields.items() if f.conflict_status in blocking]
+        return sorted(
+            {
+                name
+                for name, values in self.fields.items()
+                for value in values
+                if value.conflict_status in blocking
+            }
+        )

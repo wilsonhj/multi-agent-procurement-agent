@@ -92,6 +92,17 @@ class FieldClaim(BaseModel):
             self.condition.grouping_key(),
         )
 
+    def provenance(self) -> SourceRef:
+        """This claim's `source_ref` with contract C3's fourth element stamped on.
+
+        C3 is `(document_id, page, span, extractor_version)`. The first three
+        already lived on `SourceRef`; the fourth lived only on the claim, so the
+        projection dropped it and a stored value could not be traced back to the
+        code that produced it. Stamping rather than requiring callers to set it
+        twice keeps the claim's own `extractor_version` the single authority.
+        """
+        return self.source_ref.model_copy(update={"extractor_version": self.extractor_version})
+
     def as_candidate(self) -> ConflictCandidate:
         """The queue's view of this claim (FR-HITL-03), condition included."""
         return ConflictCandidate(
@@ -100,7 +111,7 @@ class FieldClaim(BaseModel):
             verbatim_value=self.verbatim_value,
             condition=self.condition,
             source_tier=self.source_tier,
-            source_ref=self.source_ref,
+            source_ref=self.provenance(),
             confidence=self.confidence,
         )
 
@@ -246,7 +257,7 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
                 verbatim_value=chosen.verbatim_value,
                 condition=chosen.condition,
                 source_tier=chosen.source_tier,
-                source_ref=chosen.source_ref,
+                source_ref=chosen.provenance(),
                 confidence=chosen.confidence,
                 conflict_status=_status_for(group),
             )

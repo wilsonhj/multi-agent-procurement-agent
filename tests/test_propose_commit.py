@@ -332,3 +332,38 @@ def test_a_store_satisfies_the_protocol_structurally() -> None:
 def test_no_claims_is_no_value() -> None:
     assert project([]) == []
     assert commit_claims("nameplate_power", [], writer=_Store()) == []
+
+
+# --- contract C3: provenance survives the projection -----------------------------
+
+
+def test_the_extractor_version_reaches_the_store() -> None:
+    """C3 is `(document_id, page, span, extractor_version)`. The first three lived
+    on `SourceRef`; the fourth lived only on the claim, so `project` dropped it
+    and a stored value could not be traced to the code that produced it. A
+    regression is then invisible in the store while the claim recording it is
+    still sitting there."""
+    projected = project([_claim(650.0, version="extract@3", page=4)])
+    assert projected[0].source_ref.extractor_version == "extract@3"
+    assert projected[0].source_ref.page == 4
+
+
+def test_the_queue_entry_carries_it_too() -> None:
+    """A reviewer comparing two candidates needs to see which extractor produced
+    each, or 'these disagree' is missing the commonest explanation."""
+    candidate = _claim(650.0, version="extract@3").as_candidate()
+    assert candidate.source_ref.extractor_version == "extract@3"
+
+
+def test_the_claim_is_the_single_authority_for_it() -> None:
+    """Stamped from the claim rather than set twice, so the two cannot drift."""
+    claim = FieldClaim(
+        document_id="doc-a",
+        field_name="nameplate_power",
+        extractor_version="extract@3",
+        value=650.0,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-a", extractor_version="extract@1"),
+        confidence=0.9,
+    )
+    assert claim.provenance().extractor_version == "extract@3"

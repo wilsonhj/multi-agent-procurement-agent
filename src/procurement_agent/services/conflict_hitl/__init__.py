@@ -31,6 +31,7 @@ from ...schema import (
     ToleranceCondition,
     ToleranceRule,
 )
+from .severity import assign_severity as assign_severity  # re-exported: the D-3 lookup
 from .tolerance import FieldTolerance
 from .tolerance import tolerance_for as tolerance_for  # re-exported: the table's entry point
 

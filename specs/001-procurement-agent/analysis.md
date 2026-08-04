@@ -366,6 +366,70 @@ failure mode. Fold its non-overlapping parts in instead.
 
 ---
 
+---
+
+# Round 3 — findings from the Phase 0 substrate review (2026-08-04)
+
+The C1/C4 DDL, the severity lookup and the `CanonicalField` update paths were reviewed against a
+**live PostgreSQL 16 cluster with pgvector 0.6.0** — the first time anything in `sql/` had been
+executed rather than parsed. Every finding below was reproduced before being fixed and
+re-reproduced after; the commands and results are in `sql/README.md`.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-23 | **M** | `requirements-traceability.md` had no AC-7 or AC-8 row while `spec.md` defines eight acceptance criteria | **Fixed** — rows supplied on `agent/developer-documentation` (PR #22); see the note below |
+| A-24 | **H** | RLS on `document`/`chunk` only: `claim.value`, `audit.event.payload`, `conflict.explanation`, `resolution.value_before`/`value_after` and `job.payload` all returned restricted content to a role that could not see the document | **Fixed** |
+| A-25 | **H** | `INSERT ... ON CONFLICT`/`RETURNING` failed for `access_restricted = true` and succeeded for `false` — the schema penalised the safe action | **Fixed** — separate write role |
+| A-26 | **M** | `00_roles.sql` never re-asserted role attributes, so a `procurement_app` carrying `SUPERUSER BYPASSRLS` survived a clean re-run of the file that exists to prevent exactly that | **Fixed** |
+| A-27 | **M** | `08_job.sql` granted full-table `UPDATE`, including `idempotency_key` — the whole of I.2's at-least-once guarantee | **Fixed** — column-level grant |
+| A-28 | **H** | `_gross_divergence` could not fire for 105 of 124 contract keys, including 22 of 24 Tier A and all 12 CRITICAL fields, while its docstring named the decimal-comma trap as its purpose | **Fixed** — order-of-magnitude fallback |
+| A-29 | **M** | Five further routes reached the forbidden RESOLVED-with-no-`Resolution` state, and `evolve()` silently replaced a recorded `Resolution` | **Fixed**, except one undefendable route — see below |
+| A-30 | **M** | 81 of 120 one-step mutants of the `CRITICALITY` table survived the suite: membership was checked both ways, values were pinned for ~36 keys | **Fixed** — all 124 pinned |
+
+## A-23 (Medium) — the traceability table stopped at AC-6
+
+`spec.md:194-197` defines AC-7 (byte-identical regeneration) and AC-8 (an uncleared user cannot
+influence a retrieved result) as additions to the TRS's six, and `tasks.md` assigns owners for
+both. `requirements-traceability.md`'s acceptance-criteria table listed AC-1 through AC-6 and
+stopped, so the two criteria that exist *because* they "silently rot without a test" were the two
+with no row saying whether a test existed.
+
+The document's own audit note is the reason this matters more than a missing line: it promises a
+closed vocabulary a reader can trust, where `enforced` means a regression test protects the
+requirement. A criterion with no row at all is outside that vocabulary entirely — it reads as
+though the table is complete when it is not.
+
+**Fixed** — the rows landed on `agent/developer-documentation` (PR #22) while this branch was in
+review, with statuses `partial` (AC-7: `test_workbook_determinism.py` covers `normalize_archive`,
+but `write_workbook` raises `NotImplementedError` so no complete workbook is regenerated) and
+`declared` (AC-8: `VectorStorePort.search(allowed_document_ids=...)` declares the parameter and no
+adapter implements it). Both were checked against the code and left as written rather than
+duplicated here, so the two branches merge without a conflict.
+
+**AC-8's row needs one revision once both branches land**, and it is recorded here rather than
+edited into a file another branch owns: this branch adds row-level security to all seven tables
+that hold document content, with `FORCE ROW LEVEL SECURITY` and a live-verified confidentiality
+derivation, plus `tests/test_sql_schema.py`. The *Where* column citing only `ports` is no longer
+the whole story, and `declared` understates it. It is not `enforced` either — the enforcement is
+DDL that CI does not execute.
+
+## A-29 (Medium) — the forbidden state had five more doors than the count said
+
+`requirements-traceability.md`'s FR-HITL-06 row said "two routes remain open". Measured, seven
+did: `model_construct`, an instance `__dict__` write, `object.__setattr__`, `deepcopy` and
+`pickle` round trips of either, and — separately — `evolve()` and plain assignment each replacing
+a recorded `Resolution` with a different one, silently, because the resulting state is legal and
+no validator can see a transition.
+
+Six are closed at the point they occur. The route that remains is writing the instance `__dict__`
+directly; `object.__setattr__` is the same write in a different spelling, not a second route, so
+the honest count is one. No Python object can defend against it, and
+`test_the_dict_write_route_is_documented_as_open` asserts it as open on purpose, so the gap is a
+recorded fact rather than an oversight.
+
+---
+
+
 ## Consistency checks that passed
 
 - All **32** FR IDs in spec.md match the TRS analysis; none invented, none dropped. (An earlier version of this line said 26, which is the count with FR-OUT-01..06 omitted — see A-27. The sweep itself was correct; the total was not.)

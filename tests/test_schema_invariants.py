@@ -1,6 +1,7 @@
 """Invariants the canonical schema must hold regardless of implementation."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -15,13 +16,16 @@ from procurement_agent.schema import (
     ConflictClass,
     ConflictQueueEntry,
     ConflictStatus,
+    DeclaredBand,
     Resolution,
     ResolutionAction,
     Severity,
     SourceRef,
     SourceTier,
+    ToleranceKind,
     WorkbookTab,
 )
+from procurement_agent.services.output import expected_tabs
 
 
 def _resolution(resolved_by: str) -> Resolution:
@@ -156,6 +160,34 @@ def test_first_eight_tabs_are_the_category_tabs() -> None:
     assert list(WorkbookTab)[:8] == list(CATEGORY_TO_TAB.values())
 
 
+def test_expected_tabs_returns_all_thirteen_in_order() -> None:
+    """`services.output.expected_tabs()` is the sequence a writer iterates to
+    satisfy FR-OUT-02, and it had no assertion anywhere: truncating its body to
+    `list(WorkbookTab)[:3]` left all 228 tests green. A workbook with ten tabs
+    missing would have shipped while the docs called the tab order tested.
+
+    The two tests above check the *enum*; this one checks the *helper*, which is
+    a different failure. The names are pinned as literals rather than compared
+    against `list(WorkbookTab)` because that comparison is the helper's own body
+    restated - it would still pass if the enum lost or reordered a member.
+    """
+    assert [tab.value for tab in expected_tabs()] == [
+        "PV Modules",
+        "Inverters-PCS",
+        "Trackers & Mounting",
+        "Transformers",
+        "Cabling & Wiring",
+        "Combiner Boxes",
+        "BESS",
+        "EMS-SCADA & Controls",
+        "Executive Summary",
+        "Conflicts & Open Items",
+        "Sources & Provenance",
+        "Compliance Matrix",
+        "Tax Incentives",
+    ]
+
+
 def test_resolution_invariant_survives_assignment() -> None:
     """`_resolution_matches_status` ran only at construction, so the state
     FR-HITL-06 forbids was one attribute assignment away.
@@ -288,3 +320,146 @@ def test_a_clean_store_has_no_unresolved_conflicts() -> None:
         fields={"rated_ac_power": [_field(352.0, ConflictStatus.NONE, 30.0)]},
     )
     assert instance.unresolved_conflicts() == []
+def _resolved_field() -> CanonicalField:
+    return CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+
+
+def test_model_copy_update_is_refused_on_a_canonical_field() -> None:
+    """GAP closed: pydantic's `model_copy(update=...)` re-runs no validators, so
+    before this fix `field.model_copy(update={"conflict_status": RESOLVED})`
+    produced a RESOLVED field carrying no `Resolution` - exactly the state
+    `_resolution_matches_status` exists to forbid - and it serialised to the
+    audit trail with no error at all. `validate_assignment` does not touch this
+    route at all, because `model_copy` never goes through `__setattr__`.
+
+    `CanonicalField` now overrides `model_copy` to refuse the `update=` form
+    outright rather than silently reproducing that hole, and points the caller
+    at `evolve`, which does revalidate.
+    """
+    field = _resolved_field()
+    with pytest.raises(TypeError):
+        field.model_copy(update={"conflict_status": ConflictStatus.RESOLVED})
+
+
+def test_model_copy_without_update_is_unaffected() -> None:
+    """Only the validation-skipping `update=` form is refused. A bare copy (or
+    `deep=True`) changes no data - the source was already valid - so there is
+    nothing to revalidate and pydantic's own copy still works."""
+    field = _resolved_field()
+    copy = field.model_copy()
+    assert copy == field
+    assert copy is not field
+    deep_copy = field.model_copy(deep=True)
+    assert deep_copy == field
+
+
+def test_evolve_reruns_validation_and_still_forbids_the_state() -> None:
+    """`evolve` is the revalidating replacement for `model_copy(update=...)`:
+    routing the merged data back through `model_validate` reruns
+    `_resolution_matches_status`, so the same illegal state still raises here -
+    this time because the invariant was actually re-checked, not because the
+    call was refused outright.
+    """
+    field = _resolved_field()
+    with pytest.raises(ValidationError):
+        field.evolve(conflict_status=ConflictStatus.RESOLVED)
+
+
+def test_evolve_applies_a_consistent_update_without_mutating_the_original() -> None:
+    """The happy path: attaching `conflict_status` and `resolution` together in
+    one call sidesteps the assignment-order trap the class docstring warns
+    about entirely, because both land in the same validated snapshot. `evolve`
+    builds a new object rather than mutating the receiver, matching every other
+    "update" in this module (`model_copy`, `ConflictQueueEntry` resolutions)."""
+    field = _resolved_field()
+    resolved = field.evolve(
+        conflict_status=ConflictStatus.RESOLVED,
+        resolution=Resolution(
+            action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+            resolved_by="procurement.lead",
+            resolved_at=datetime.now(UTC),
+            rationale="Contract supersedes the web datasheet revision.",
+        ),
+    )
+    assert resolved.conflict_status is ConflictStatus.RESOLVED
+    assert resolved.resolution is not None
+    assert resolved.resolution.resolved_by == "procurement.lead"
+    assert field.conflict_status is ConflictStatus.NONE
+    assert field.resolution is None
+
+
+def test_resolution_fields_are_frozen() -> None:
+    """FR-HITL-06's log is immutable, but until now nothing asserted `Resolution`'s
+    own field-level frozen-ness - only the *pointer* to a `Resolution` was
+    covered, by `test_a_recorded_resolution_cannot_be_replaced`. Without this,
+    a caller with a reference to a live `Resolution` could rewrite who resolved
+    a conflict, or when, with no trace the original value ever existed - the
+    same audit-trail defect `frozen=True` on `ConflictQueueEntry` exists to
+    prevent one level up.
+    """
+    resolution = _resolution("alice")
+    with pytest.raises(ValidationError):
+        resolution.resolved_by = "mallory"
+
+
+# --- evolve() must not quietly change what a value *is* -------------------------
+
+
+def _band_field() -> CanonicalField:
+    return CanonicalField(
+        value=DeclaredBand(low=0.0, high=5.0, kind=ToleranceKind.ABSOLUTE, unit="W"),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+
+
+def test_evolve_preserves_a_model_typed_value() -> None:
+    """Review: `evolve` was `model_validate({**self.model_dump(), **changes})`.
+
+    `value` is typed `object | None`, so it has no schema to validate back
+    against - `model_dump()` serialised whatever was in it and `model_validate`
+    stored the serialised form. A `DeclaredBand` came back as a plain `dict`,
+    silently, with no warning even under `simplefilter("always")`.
+
+    Not hypothetical: the frozen contract types `power_tolerance` and
+    `bifaciality_tolerance` as `DeclaredBand`. It was also a regression against
+    the `model_copy(update=...)` that `evolve` replaces, which shallow-copied
+    `__dict__` and preserved the object.
+    """
+    evolved = _band_field().evolve(confidence=0.8)
+    assert isinstance(evolved.value, DeclaredBand)
+    assert evolved.value.resolve(650.0) == (650.0, 655.0)
+
+
+def test_evolve_still_revalidates() -> None:
+    """The property the live-attribute snapshot must not cost."""
+    with pytest.raises(ValidationError):
+        _band_field().evolve(conflict_status=ConflictStatus.RESOLVED)
+
+
+def test_evolve_preserves_decimal_precision() -> None:
+    """`_decimals` depends on `Decimal` not collapsing to `float`."""
+    field = CanonicalField(
+        value=Decimal("22.35"),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    assert field.evolve(confidence=0.8).value == Decimal("22.35")
+    assert isinstance(field.evolve(confidence=0.8).value, Decimal)
+
+
+def test_evolve_refuses_an_unknown_field() -> None:
+    """Review: `model_config` sets no `extra="forbid"`, so `model_validate` drops
+    unknown keys - `evolve(conflict_stauts=RESOLVED)` returned a field with the
+    change silently not applied. For an FR-HITL-06 audit path a no-op update is
+    the worse direction, and the route this replaces would at least have set the
+    key."""
+    with pytest.raises(ValueError, match="unknown field"):
+        _band_field().evolve(conflict_stauts=ConflictStatus.RESOLVED)

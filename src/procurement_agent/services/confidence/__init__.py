@@ -75,7 +75,11 @@ class CriticalityTier(StrEnum):
 #: has the same failure mode as the one it is checking.
 TIER_A_KEY_PATTERNS: tuple[str, ...] = (
     r"price",  # "Pricing"
-    r"warrant",  # "warranty terms"
+    # "warranty terms". `degradation_year_1` and `degradation_annual` are the
+    # guaranteed degradation curve underwriting the performance warranty - the
+    # terms of the guarantee, not performance figures - so they belong here even
+    # though neither name contains "warrant".
+    r"warrant|degradation_year_1|degradation_annual",
     r"domestic_content|country_of_origin|material_assistance|baba|feoc",  # origin and tax status
     # "certification presence *or absence*". `standards`,
     # `ride_through_standards`, `cybersecurity_standards` and
@@ -137,6 +141,8 @@ FIELD_TIERS: dict[str, CriticalityTier] = {
     # read them as performance figures; they are the terms of the guarantee, and
     # a wrong cycle count misstates a contractual position exactly as a wrong
     # warranty term does.
+    "degradation_year_1": CriticalityTier.A,
+    "degradation_annual": CriticalityTier.A,
     "degradation_warranty_years": CriticalityTier.A,
     "degradation_warranty_cycles": CriticalityTier.A,
     # --- Tier A: domestic content, BABA and FEOC ---

@@ -112,6 +112,10 @@ def test_the_exclusion_list_is_not_a_way_to_lose_a_field() -> None:
         "certifications",
         "baba_status",
         "price_per_watt_dc",
+        "ride_through_standards",
+        "standards",
+        "cybersecurity_standards",
+        "seismic_qualification",
     ],
 )
 def test_the_named_gates_hold_at_any_score(field_name: str) -> None:

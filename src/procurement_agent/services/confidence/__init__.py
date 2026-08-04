@@ -77,7 +77,25 @@ TIER_A_KEY_PATTERNS: tuple[str, ...] = (
     r"price",  # "Pricing"
     r"warrant",  # "warranty terms"
     r"domestic_content|country_of_origin|material_assistance|baba|feoc",  # origin and tax status
-    r"cert|listing",  # "certification presence *or absence*"
+    # "certification presence *or absence*". `standards`,
+    # `ride_through_standards`, `cybersecurity_standards` and
+    # `seismic_qualification` are here on the frozen contract's own definition:
+    # its preamble says "Certification fields are `list[str]` of standard
+    # identifiers; an empty list means 'we looked and found none stated', which
+    # is materially different from `None` meaning 'we have not established
+    # this'." That sentence exists precisely to make presence-vs-absence
+    # material, which is D-3's Tier A criterion word for word.
+    #
+    # `ride_through_standards` is the clearest case and the reason this was
+    # worth widening: IEEE 1547-2018, IEEE 2800-2022 and NERC PRC-029-1 are
+    # ERCOT interconnection requirements, so a silently-absent entry misstates a
+    # regulatory position - the exact cost D-3 gives for the tier.
+    #
+    # `seismic_qualification` is typed `str`, not `list[str]`, so it falls
+    # outside the preamble's literal wording. Included anyway, because the
+    # failure directions are not symmetric: Tier A costs review time, Tier B
+    # risks a wrong compliance attestation reaching the workbook unseen.
+    r"cert|listing|standards|seismic_qualification",
 )
 
 _TIER_A_RE = re.compile("|".join(TIER_A_KEY_PATTERNS))
@@ -135,6 +153,15 @@ FIELD_TIERS: dict[str, CriticalityTier] = {
     "pcs_certification": CriticalityTier.A,
     "fire_safety_certifications": CriticalityTier.A,
     "ul_listing": CriticalityTier.A,
+    # Standards compliance is certification presence or absence by the frozen
+    # contract's own definition of a certification field - see the note on
+    # TIER_A_KEY_PATTERNS. `ride_through_standards` carries IEEE 1547-2018,
+    # IEEE 2800-2022 and NERC PRC-029-1, which are ERCOT interconnection
+    # requirements for this project's own 500 MW ERCOT plant.
+    "standards": CriticalityTier.A,
+    "ride_through_standards": CriticalityTier.A,
+    "cybersecurity_standards": CriticalityTier.A,
+    "seismic_qualification": CriticalityTier.A,
     # --- Tier B: decision-driving performance ---
     "nameplate_power": CriticalityTier.B,
     "stc_rating": CriticalityTier.B,

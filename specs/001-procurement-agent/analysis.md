@@ -614,6 +614,203 @@ remained, now records the note as corrected and points here.
 
 ---
 
+---
+
+# Round 5 — orchestration scale and the determinism artifact (2026-08-04)
+
+Two revisions of the same shape, and neither rests on a new measurement: in both cases this
+repository already contained the argument, and a higher-ranked artifact had not caught up with it.
+One collapses a runner the design's own decisions had already made unnecessary; the other points
+an acceptance criterion at the artifact that can actually carry it.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
+| A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
+
+## A-45 (Medium) — the queue outlived the requirement that justified it
+
+WP-I I.1–I.5 and `sql/08_job.sql` specify a durable work queue: workers claim rows with
+`SELECT … FOR UPDATE SKIP LOCKED`, hold a 15-minute lease that a sweeper reclaims, retry on a
+persisted backoff schedule, quarantine poison messages through a job-row lifecycle, and
+deduplicate enqueues on `idempotency_key UNIQUE`. `sql/08_job.sql` is built and live-tested;
+`orchestrator.run` raises `NotImplementedError`, so nothing has been written against it yet. That
+is the cheapest moment this finding could have been made.
+
+**Three of this design's best decisions already removed what makes a durable queue necessary.**
+
+1. **Decision 2 detached the human gate.** The single thing that forces durable, resumable job
+   state is a pipeline parked for days awaiting a person, and that was deliberately designed out:
+   the gate is a compose-time query, `orchestrator.compose_gate_blocks`, not an interrupt. A-3
+   removed `AWAIT_HUMAN_RESOLUTION` from `Stage` for the same reason.
+2. **The store is already idempotent by natural key.** `document_content_hash_unique`
+   (`sql/02_document.sql:50`, NFR-05/AC-5), append-only claims under `claim_natural_key`
+   (`sql/04_claim.sql:94-96`), and composition a pure function of the store (FR-OUT-06).
+   `job.idempotency_key` is therefore a *second* idempotency mechanism layered over a store whose
+   own keys already make replay a no-op — which is the same duplication A-2 and A-3 were about,
+   reached by a different route.
+3. **Concurrency already lives elsewhere.** `Settings.max_concurrent_parse` and
+   `Settings.max_concurrent_llm` (`src/procurement_agent/config.py:86-91`) bound a process pool
+   and a thread pool, and `docs/agent-topology.md:34,40` finds the only dominant fan-out win is
+   `ingest` — a process pool, because parse is CPU-bound — and says composition **must stay
+   serial**. A `SKIP LOCKED` worker *fleet* is a second, redundant concurrency mechanism on a
+   single node.
+
+What the queue uniquely buys is crash-resume that skips completed documents. With natural-key
+idempotency, crash recovery is "re-run the batch; completed work no-ops". The scale anchors are
+all in-repo and all point the same way: NFR-06 says hundreds, "**Not thousands. Do not
+over-engineer for volume**"; plan.md's technical context says "single-node is sufficient"; the
+13-tab workbook builds in 0.10 s; exact vector search is 3.5–5.5 ms; parse averages 3.1 s/page,
+so OCR-heavy ingest is the only stage where a re-run costs real wall-clock. The tool is run
+occasionally, not continuously.
+
+**One cost the collapse may not claim.** I.2's "every stage must be independently idempotent" is
+required under *either* runner — a driver that re-runs needs it exactly as much as at-least-once
+delivery did — so it is not a saving attributable to the queue. What the queue costs, and what
+this removes, is the leases, the sweeper, the backoff scheduler and the `idempotency_key`
+grant-hardening (`sql/08_job.sql`'s column-level `UPDATE` grant, A-32).
+
+**The `job` table stays** as a progress and quarantine *ledger the driver writes*, not a queue
+workers contend on. Poison handling becomes a recorded per-document status — a `quarantined` row
+with `last_error` — which is the job-table expression of plan Decision 4's tier-3 rule that a
+page failing every engine is recorded with its page reference, never dropped. The lease pair,
+`next_attempt_at` and `idempotency_key` stay in the DDL unused, so adopting a second worker
+process later is a runner change rather than a migration. Nothing in `sql/08_job.sql` needs to
+change for this finding, which is why the collapse is cheap in both directions.
+
+**Precondition, recorded as a dependency rather than assumed.** "Re-run is free" holds *because*
+the `content_hash` UNIQUE constraint plus `INSERT … ON CONFLICT (content_hash) DO NOTHING` makes
+the database refuse the duplicate. AC-5 needs that constraint anyway, so this adds no work — but
+it **consumes** it, and if the constraint were ever relaxed the driver would become unsound
+before AC-5 visibly failed. Written into WP-I as **I.1a** so it is a task dependency and not a
+footnote. `docs/agent-topology.md:134-135` had already named transactional dedup as the prerequisite
+for "retry-is-free"; this finding is what that prerequisite is now load-bearing *for*.
+
+**Honest risk, recorded rather than argued away.** An OCR-heavy multi-hour batch that crashes
+near the end repeats more wall-clock work than a resumable queue would. It is bounded by corpus
+size, occasional, and paid only on a crash — against machinery that would otherwise be paid for
+on every run and maintained forever. I.5's NFR-06/NFR-07 measurement against a real corpus is
+also the measurement that would justify revisiting this.
+
+**Explicitly NOT the conflict-claim leases.** `sql/05_conflict.sql`'s `lease_owner` /
+`lease_expires_at` pair and tasks.md **F.1**/**F.4** (15-minute lease, D-12e) are a different
+table with genuine **multi-human** contention: two reviewers must not be handed the same
+conflict, and a reviewer who closes their laptop must not hold one forever. Every clause of the
+argument above is false there — the actors are people rather than one process, the wait is
+open-ended by design, and no natural key makes a second reviewer's work a no-op. Written out in
+plan Decision 1a's closing paragraph and in the WP-I header so nobody over-applies this.
+
+**Owed, in files this change does not own.** Registering these rather than dropping them is A-39's
+rule: a finding made in a file you cannot edit is still a finding.
+
+- `sql/08_job.sql:1-12,74-87` describes itself as the worker loop and documents the sweeper's hot
+  path; the DDL is correct and only the prose needs retargeting to "ledger".
+- Contract **C8** (tasks.md Phase 0) still reads "job states, claim/lease semantics, idempotency
+  key". C8 is a frozen-ish contract row and changing it is a contract change per `CONTRIBUTING.md`,
+  so it is named here rather than edited.
+- plan **Decision 10** argues sync ports partly from "scaling it means more worker processes,
+  which sidesteps the GIL entirely". **Its conclusion is unaffected and if anything strengthened**
+  — the driver's parse pool is a `ProcessPoolExecutor`, which sidesteps the GIL by the same
+  mechanism, and `max_concurrent_llm`'s thread pool is exactly the `ThreadPoolExecutor` overlap
+  Decision 10 already names for `LLMPort`. Only the sentence's premise needs rewording.
+- `README.md:96`, `docs/architecture.md:217`, `docs/agent-topology.md:7,89` and `docs/defaults.md:24`
+  each describe the runner as a `SKIP LOCKED` loop, and `src/procurement_agent/ports/__init__.py:15`
+  repeats it as the reason the ports are synchronous.
+
+## A-46 (High) — the acceptance criterion pointed at the artifact that cannot carry it
+
+AC-7 read: *"Generating the workbook twice from an unchanged canonical store produces
+byte-identical files."* Everything downstream read "files" as the `.xlsx` — G.5 verifies AC-7 with
+`sleep(1.1)` between two renders, and `docs/requirements-traceability.md:187` scores AC-7 on
+`normalize_archive`.
+
+Meanwhile plan Decision 8c had **already demoted the workbook hash**, in its own words: *"But hash
+the canonical projection, not the workbook. The xlsx is lossy, so its hash cannot prove what AC-7
+wants"* — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes, so the store can hold two genuinely
+different float64 values that render to an identical workbook. G.1 calls the sorted-key `repr()`
+-float JSON *"the hashed artifact of record"*. The repository held the answer at rank 4 and rank 5
+and stated something weaker at **rank 2**, which is the exact shape `README.md:271` warns about:
+"a plan-level decision ends up quietly overriding a requirement".
+
+**The amendment names both layers.** (a) The canonical projection is byte-identical across
+regenerations of an unchanged store — *this is the acceptance criterion*. (b) The rendered xlsx
+hash is pinned in CI as a **renderer-regression check** whose golden value may be deliberately and
+auditably refreshed.
+
+**It does not weaken determinism, and that is the point to check hardest.** Layer (a) is
+*stricter* than the sentence it replaces: it is the layer that catches the float collision, which
+no workbook hash can. Every line of built code is kept — `normalize_archive`'s five
+normalizations each map to a verified nondeterminism source (clock, library version, compression,
+member order, platform) with 15 tests behind them, several of which exist because a version
+missing one of the five shipped first. What the split buys is that a future openpyxl security
+patch, or a G.6 desktop-Excel failure forcing A-9's alternative entry ordering or epoch, becomes a
+**recorded hash refresh of layer (b)** instead of an acceptance-criterion crisis — and that is
+strictly better than the alternative outcome, which is a team quietly relaxing AC-7 under
+schedule pressure because the criterion as written could not absorb a renderer change.
+
+**Recorded as a deliberate amendment to a rank-2 artifact.** `docs/architecture.md:306-325` makes
+this the register's job — A-23, A-24 and A-25 are the precedents, each a normative `shall`
+reversed by a plan decision and filed here. The difference is that those three restored the TRS
+wording and marked the reversal inline, because the TRS was the source. AC-7 is **not** TRS
+wording: spec.md says so itself — "AC-7 and AC-8 are additions to the TRS's six" — so there is no
+source text to preserve, and amending the sentence is the correct move rather than annotating it.
+A-8's precedent (leave spec.md faithful, harden in the plan) does not apply for the same reason.
+
+**FR-OUT-06's latent contradiction, resolved.** FR-OUT-06 requires the workbook to carry a
+"generated-on timestamp", and `write_workbook`'s docstring repeated it. Nothing said what it is
+derived from, and the obvious reading — wall clock — makes two generations of an unchanged store
+differ *by construction*, violating AC-7 while satisfying the sentence that mandates the stamp.
+Settled in the FR-OUT-06 text as **store-derived, never `now()`**: the high-water mark of the store
+rows composition reads — `document.ingested_at`, `claim.extracted_at`, `resolution.resolved_at` —
+which moves exactly when the store changes and not otherwise. Noted as a **C6 input** (tasks.md
+T0.5, new task G.1a) because the stamp is a projection field, so freezing C6 fixes its derivation
+once and both AC-7 layers inherit it, rather than the writer picking. Left deliberately as a rule
+rather than a formula: which rows are "in scope" is a projection-scoping question C6 owns.
+
+**The superseded `ExcelWriter`-direct requirement, deleted.** Decision 8c and G.5 prescribed
+driving `ExcelWriter` directly to bypass `save_workbook`'s unconditional `modified = now()`
+re-stamp, on A-9's reasoning that it beat "post-hoc rewriting `core.xml`". The implemented,
+15-test-covered artifact does the post-hoc rewrite: `services/output.normalize_archive` regex-fixes
+`docProps/core.xml` and `docProps/app.xml`. Keeping the shipped one is right for a reason neither
+research stream had when A-9 chose: **the normalizer must rewrite the whole ZIP container
+anyway** — member mtimes, entry order, compression level, `create_system` and `external_attr`
+cannot be reached from inside openpyxl's writer at all — so the `core.xml` substitution rides
+along for one regex, while `ExcelWriter`-direct fixes one of five sources and would *still* need
+the container pass after it. Two mechanisms doing half the same job is how one of them silently
+stops being exercised.
+
+Filed inside A-46 rather than as an amendment to A-9, following A-40 and A-37: A-9 closed as
+**Resolved** and was, on the evidence then available; that one of its three sub-choices was later
+superseded by the built artifact is a new finding, and rewriting the closed entry would erase that
+the plan and the code disagreed for the interval between them. A-9's other two choices — the
+12:00 epoch and sorted-with-`[Content_Types]`-first ordering — are untouched. Only the ordering
+one keeps a usable fallback for G.6: A-9's own reasoning rules out reverting the epoch to
+midnight, because DOS timestamps are local and midnight underflows the 1980 floor in negative UTC
+offsets, so a timestamp failure in desktop Excel would need a new value rather than the other
+stream's.
+
+**Correction to the openpyxl exact-pin rationale — the pin stays.** Decision 8 justifies
+`openpyxl==3.1.5` on the grounds that `docProps/app.xml` embeds `Openpyxl 3.1.5`, and
+`pyproject.toml:15-17` repeats it. That specific rationale is now **stale**: `normalize_archive`
+rewrites both `<Application>` and `<AppVersion>`, and
+`tests/test_workbook_determinism.py::test_library_version_is_not_embedded_in_the_output` asserts
+the string is gone. The pin's real remaining job is cross-environment reproducibility against
+silent XML-serialisation drift *between* versions — element ordering, attribute defaults,
+whitespace and float formatting are outside openpyxl's compatibility promise and none of it is
+stripped by the normalizer. Recorded in Decision 8c rather than fixed in place, because
+`pyproject.toml` is outside this change's scope; the corrected wording is there for whoever next
+edits that comment, and a reader who deletes the pin on the strength of the stale reason would be
+deleting a live guarantee.
+
+**Owed, in files this change does not own.** `tasks.md`'s acceptance-criteria ownership table
+still scores AC-7 as "☐ gated on G.6"; under the amendment only layer (b) is gated on G.6, and
+layer (a) is gated on C6 and G.1 instead. `docs/requirements-traceability.md:187` and
+`docs/current-state.md:176` score AC-7 against `normalize_archive` alone and should name both
+layers. None of these change a verdict — AC-7 is `partial` either way, since `write_workbook`
+still raises `NotImplementedError` — so they are drift, not error.
+
+---
+
 
 ## Consistency checks that passed
 

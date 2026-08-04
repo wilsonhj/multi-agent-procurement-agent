@@ -141,7 +141,7 @@ cross-referenced against the source documents.
 | FR-OUT-03 | Every comparison cell traces to its source. |
 | FR-OUT-04 | Conditional formatting distinguishes four states: unresolved conflict, web-supplemented, low-confidence, missing. States can co-occur on one cell and must remain distinguishable when they do. |
 | FR-OUT-05 | Each category tab includes certification and standards columns appropriate to that category. |
-| FR-OUT-06 | Units display canonically with the verbatim original available. The workbook is deterministically regenerable from the canonical store, and carries a generated-on timestamp plus the vintage of every source. |
+| FR-OUT-06 | Units display canonically with the verbatim original available. The workbook is deterministically regenerable from the canonical store, and carries a generated-on timestamp plus the vintage of every source. ⚠️ **The generated-on timestamp is store-derived, never `now()`** — the high-water mark of the store rows composition reads (`document.ingested_at`, `claim.extracted_at`, `resolution.resolved_at`). A wall-clock stamp would make two generations of an unchanged store differ by construction and so violate AC-7 while satisfying this sentence. Recorded as [A-46](analysis.md); it is an input to contract C6. |
 
 ---
 
@@ -191,12 +191,23 @@ or a human resolution.
 | AC-4 | Every output spec cell resolves to a source. No unsourced values. |
 | AC-5 | Re-ingesting an unchanged document creates no duplicates. |
 | AC-6 | The inverter tab reports **TRD** against the correct **IEEE 2800** voltage-class limit with a harmonic spectrum, and the tax tab reports each supplier's status across the three incentive frameworks. **TRD, not TDD** — the TRS calls this "the key correction from v1", and getting it wrong produces a compliance matrix that passes suppliers it should fail. |
-| AC-7 | Generating the workbook twice from an unchanged canonical store produces byte-identical files. |
+| AC-7 | Generating the workbook twice from an unchanged canonical store produces **(a)** a byte-identical **canonical projection** — sorted-key JSON with floats via `repr()` — which is the hashed artifact of record and the criterion itself; and **(b)** a byte-identical rendered `.xlsx`, whose hash is pinned in CI as a **renderer-regression check** rather than as this criterion, and whose golden value may be refreshed by a deliberate, recorded decision (a recorded openpyxl upgrade, say). A projection-hash change against an unchanged store is always a defect; a workbook-hash change is a defect **unless** a refresh is recorded. |
 | AC-8 | A user without clearance for a confidential document cannot cause its content to influence any retrieved result. |
 
 AC-7 and AC-8 are additions to the TRS's six. They are implied by FR-OUT-06 and NFR-03
 respectively but were not stated as testable criteria, and both are the kind of property
 that silently rots without a test.
+
+⚠️ **AC-7 was amended on 2026-08-04** to name the artifact it is asserted against. It previously
+read "produces byte-identical files", universally read as the `.xlsx`, while plan Decision 8c had
+already demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical
+bytes, so a workbook hash cannot distinguish two genuinely different stored numbers. The
+amendment does **not** weaken determinism: layer (a) is *stricter* than the text it replaces,
+because it catches exactly the float collision the xlsx hash cannot. What it buys is that a
+routine renderer change — an openpyxl security patch, or the alternative entry ordering that
+task G.6 may force — becomes a recorded hash refresh rather than an acceptance-criterion crisis.
+Registered as [A-46](analysis.md); this is a deliberate amendment to a rank-2 normative artifact,
+not a silent edit.
 
 ---
 

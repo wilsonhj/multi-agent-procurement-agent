@@ -226,21 +226,40 @@ All nine run concurrently once Phase 0 lands.
 
 - **G.1** Canonical sorted-key JSON projection; floats via `repr()`. **This is the hashed artifact
   of record**, not the xlsx — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes, so a workbook
-  hash cannot distinguish two genuinely different stored numbers.
+  hash cannot distinguish two genuinely different stored numbers. → **AC-7 (a)** now says this in
+  spec.md rather than only here ([A-46](analysis.md)).
+- **G.1a** The **generated-on timestamp is store-derived, never `now()`** (FR-OUT-06): the
+  high-water mark of `document.ingested_at`, `claim.extracted_at` and `resolution.resolved_at`
+  over the rows composition reads. It is a *projection* field, so **C6 freezes its derivation**
+  (T0.5) and both layers inherit it. A wall-clock stamp violates AC-7 by construction.
 - **G.2** All 13 tabs (FR-OUT-02). → verify: **AC-3**.
 - **G.3** Hidden parallel state columns for provenance. → ⚠️ **no blank column between value and
   state blocks**, and `auto_filter.ref` **must span the hidden columns**. Both fail silently on
   first sort. Assert both in the generator.
 - **G.4** Three orthogonal visual channels — fill=origin, font=confidence, border=conflict
   (plan Decision 8b). → verify: greyscale separation and WCAG AA contrast.
-- **G.5** Deterministic render — `ExcelWriter` direct (bypassing `save_workbook`, which re-stamps
-  `modified = now()` *after* you set it), zip normalisation at epoch 1980-01-01 **12:00**.
-  → ⚠️ `ZipFile(compresslevel=)` is **silently ignored** with a hand-built `ZipInfo`; set
-  `zi._compresslevel`. → verify: **AC-7**, with `sleep(1.1)` between the two runs.
+- **G.5** Deterministic render — `workbook.save()` followed by
+  `services/output.normalize_archive()`, which is the **single normalization point**: zip
+  normalisation at epoch 1980-01-01 **12:00**, `[Content_Types].xml` first, pinned compression,
+  fixed `create_system`/`external_attr`, *and* the `docProps/core.xml` and `docProps/app.xml`
+  rewrites that undo `save_workbook`'s unconditional `modified = now()` re-stamp and its embedded
+  library version. → ⚠️ `ZipFile(compresslevel=)` is **silently ignored** with a hand-built
+  `ZipInfo`; set `zi._compresslevel`. → verify: **AC-7 (b)**, with `sleep(1.1)` between the two
+  runs; **AC-7 (a)** is verified on the G.1 projection and needs no sleep.
+  → **The `ExcelWriter`-direct requirement is deleted** ([A-46](analysis.md)): the normalizer must
+  rewrite the whole ZIP container regardless — mtimes, member order, compression, platform bits —
+  so the `core.xml` fix rides along free, while `ExcelWriter`-direct is a second mechanism doing
+  half the same job that would *still* need the container pass after it. Its five normalizations
+  are essential and none of them is being removed.
 - **G.6** ⚠️ **GATING: open the generated workbook in real desktop Excel and LibreOffice.** The
   determinism recipe was validated only by openpyxl round-trip and OPC structural checks. Test
-  `[Content_Types].xml`-first ordering and the 1980 timestamps before this ships. A verified
-  fallback exists (post-save `core.xml` rewrite) — see [analysis.md A-9](analysis.md).
+  `[Content_Types].xml`-first ordering and the 1980 timestamps before this ships. The verified
+  fallback for ordering is A-9's other stream — preserve `namelist()` order
+  ([analysis.md A-9](analysis.md)); A-9's midnight epoch is *not* a free swap, since DOS
+  timestamps are local and midnight underflows the 1980 floor in negative UTC offsets, so a
+  timestamp failure needs a new value rather than that one. → Under the amended AC-7 this gates
+  the **renderer** layer only: taking a fallback is a recorded golden-hash refresh of AC-7 (b),
+  not a failure of the criterion.
 - **G.7** Conflicts and Sources tab layouts with bidirectional `MATCH`-based navigation.
 - **G.8** Completeness manifest listing every unresolved conflict.
 
@@ -260,16 +279,57 @@ All nine run concurrently once Phase 0 lands.
   Document that `session_replication_role='replica'` bypasses triggers entirely and leaves no DDL
   trace.
 
-### WP-I · Runner & stage state machine
-**Depends:** C8
+### WP-I · Runner & stage driver
+**Depends:** C8, and on `document_content_hash_unique` (`sql/02_document.sql:50`) — see I.1a
 
-- **I.1** Job table + `FOR UPDATE SKIP LOCKED` worker loop (plan Decision 1).
-- **I.2** Per-stage retry with backoff; **every stage must be independently idempotent** — retries
-  are at-least-once and do not undo side effects.
+> **Rescoped 2026-08-04 — [A-45](analysis.md), plan Decision 1a.** This package previously
+> specified a leased job queue: a `FOR UPDATE SKIP LOCKED` worker loop, 15-minute leases plus a
+> sweeper, backoff scheduling, poison quarantine as a job-row lifecycle, and
+> `idempotency_key UNIQUE` as a second idempotency mechanism. Decision 2 detached the human gate,
+> the store is already idempotent by natural key, and concurrency already lives in
+> `Settings.max_concurrent_parse` / `max_concurrent_llm` — so the queue's remaining unique
+> purchase was crash-resume that skips completed documents, on a single-node tool run
+> occasionally over a corpus NFR-06 caps at hundreds. Leases, sweeper and backoff are **deferred
+> until a second worker process actually exists**; the `job` columns stay in the DDL so adopting
+> them later is a runner change, not a migration.
+>
+> ⚠️ **This does not touch WP-F.** F.1's and F.4's conflict-claim leases are a different table
+> with genuine multi-human contention and are unaffected — see plan Decision 1a's closing
+> paragraph.
+
+- **I.1** Single-process stage driver: for each stage, map over its units of work with the two
+  configured pools — `ProcessPoolExecutor` at `max_concurrent_parse` for parse/OCR (CPU-bound),
+  `ThreadPoolExecutor` at `max_concurrent_llm` for extraction calls. No worker fleet, no lease, no
+  scheduler. `orchestrator.run` is the entry point. The `job` table is retained as a **progress
+  and quarantine ledger the driver writes** — it answers "what has been done, what failed, and
+  why" for a re-run and for I.5 — not a queue workers contend on. Nothing SELECTs it
+  `FOR UPDATE`.
+- **I.1a** ⚠️ **Precondition, not a nicety.** "Crash recovery = re-run the batch" is sound only
+  because `document_content_hash_unique` + `INSERT … ON CONFLICT (content_hash) DO NOTHING` makes
+  the *database* refuse a duplicate. AC-5/NFR-05 require that constraint anyway; WP-I **consumes**
+  it. If it is ever relaxed, the driver becomes unsound before AC-5 visibly fails.
+- **I.2** Stage idempotency from the store's natural keys — `document.content_hash`,
+  append-only claims under `claim_natural_key` (`sql/04_claim.sql:94-96`), composition a pure
+  function of the store (FR-OUT-06). **Every stage must still be independently idempotent**: that
+  requirement is unchanged by the rescope, because a driver that re-runs needs it exactly as much
+  as at-least-once delivery did. In-stage retry for transient faults stays; the *scheduled* retry
+  with persisted backoff goes.
 - **I.3** Compose-time gate: query for unresolved conflicts above severity, overridable with a
   recorded `--accept-incomplete` decision (plan Decision 2). **No blocking interrupt.**
-- **I.4** Poison-message handling and quarantine.
-- **I.5** Observability; verify NFR-06 and NFR-07 against a real corpus.
+  → `orchestrator.compose_gate_blocks` / `blocking_conflicts` already implement the predicate.
+- **I.4** Poison handling as a recorded **per-document status**, not a job-row lifecycle: a
+  document that fails a stage after its in-stage retries is written to the `job` ledger as
+  `status = 'quarantined'` with `last_error`, and the batch continues. This is the job-table
+  expression of plan Decision 4's tier-3 rule — a page failing every engine is recorded with its
+  page reference, never silently dropped.
+- **I.5** Observability; verify NFR-06 and NFR-07 against a real corpus. → also the measurement
+  that would justify revisiting Decision 1a: if a crashed batch's re-run cost ever stops being
+  acceptable, the deferred lease columns are already in the schema.
+
+**IDs are unchanged.** I.1–I.5 keep their numbers and their subjects; I.1a is added rather than
+renumbering, because `sql/08_job.sql`, `sql/README.md`, `orchestrator/__init__.py` and
+`tests/test_sql_schema.py` all cite these IDs, and [A-36](analysis.md) is the register's standing
+lesson about what renumbering a cited ID costs.
 
 ---
 

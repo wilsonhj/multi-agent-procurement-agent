@@ -20,6 +20,7 @@ from procurement_agent.schema import (
     SourceTier,
     WorkbookTab,
 )
+from procurement_agent.services.output import expected_tabs
 
 
 def _resolution(resolved_by: str) -> Resolution:
@@ -152,6 +153,34 @@ def test_workbook_has_thirteen_tabs() -> None:
 def test_first_eight_tabs_are_the_category_tabs() -> None:
     """FR-OUT-02 orders category tabs 1-8 ahead of the five summary tabs."""
     assert list(WorkbookTab)[:8] == list(CATEGORY_TO_TAB.values())
+
+
+def test_expected_tabs_returns_all_thirteen_in_order() -> None:
+    """`services.output.expected_tabs()` is the sequence a writer iterates to
+    satisfy FR-OUT-02, and it had no assertion anywhere: truncating its body to
+    `list(WorkbookTab)[:3]` left all 228 tests green. A workbook with ten tabs
+    missing would have shipped while the docs called the tab order tested.
+
+    The two tests above check the *enum*; this one checks the *helper*, which is
+    a different failure. The names are pinned as literals rather than compared
+    against `list(WorkbookTab)` because that comparison is the helper's own body
+    restated - it would still pass if the enum lost or reordered a member.
+    """
+    assert [tab.value for tab in expected_tabs()] == [
+        "PV Modules",
+        "Inverters-PCS",
+        "Trackers & Mounting",
+        "Transformers",
+        "Cabling & Wiring",
+        "Combiner Boxes",
+        "BESS",
+        "EMS-SCADA & Controls",
+        "Executive Summary",
+        "Conflicts & Open Items",
+        "Sources & Provenance",
+        "Compliance Matrix",
+        "Tax Incentives",
+    ]
 
 
 def test_resolution_invariant_survives_assignment() -> None:

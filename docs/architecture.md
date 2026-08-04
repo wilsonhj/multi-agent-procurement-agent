@@ -51,7 +51,7 @@ input bytes ────────►│ ingest + classify           │
                              ▼
                      ┌─────────────────────────────┐
                      │ reducer                     │
-                     │ claims → canonical fields  │
+                     │ claims → canonical fields   │
                      └───────┬──────────┬──────────┘
                              │          │
               missing fields │          │ competing values
@@ -237,10 +237,37 @@ The current plan specifies:
 Exact vector search is intentional. Filtered approximate indexes were measured returning
 fewer than the requested top-k, while exact search was fast enough at the target scale.
 
-Some code docstrings and the deviation annotation beside FR-RAG-03 in `spec.md` describe lexical
-retrieval from a model’s sparse output instead of the `tsvector`/`pg_trgm` design recorded in
-`plan.md` and `tasks.md`. Treat the plan as the current implementation baseline and reconcile
-that cross-artifact inconsistency before implementing the adapter.
+### The FR-RAG-03 lexical drift, and exactly what is left of it
+
+Three different lexical designs have been written down, so name all three before citing any of
+them:
+
+| Position | Where it is stated | Status |
+|---|---|---|
+| **BM25** | `spec.md` FR-RAG-03, the requirement body — the TRS's own wording | Normative statement of the requirement; reversed by the plan, not by an edit |
+| **`tsvector` + `pg_trgm`** | `plan.md` Decision 3b, `tasks.md` task C.5 in work package C, this document | The chosen design |
+| **The embedding model's sparse output** | The ⚠️ deviation note beside FR-RAG-03 in `spec.md` | Inaccurate — see below |
+
+The requirement body still reading “vector + BM25” is deliberate and is not drift. Analysis
+[A-24](../specs/001-procurement-agent/analysis.md) restored the TRS wording on purpose and marked
+the reversal inline, so that a `shall` was recorded as overridden rather than paraphrased away.
+A-24 is therefore correctly closed as **Fixed**: the reversal is registered.
+
+What A-24 did not catch is that its inline note describes the *replacement* wrongly. Sparse
+output from the embedding model is a Decision 5 contingency — swap Qwen3-Embedding-4B for
+`bge-m3`, which emits dense, learned-sparse and ColBERT vectors in one pass — held in reserve if
+Postgres full-text search proves weak on part numbers. Decision 3b did not choose it. Three code
+docstrings repeated one or other stale position and have been corrected against Decision 3b
+(`ports/__init__.py`, `services/retrieval/__init__.py`, `services/indexing/__init__.py`); the
+`spec.md` note is what remains.
+
+Build the adapter to Decision 3b. That is not this document overruling `spec.md` — the authority
+order below puts `spec.md` two ranks above `plan.md`, and nothing here changes that. It is that
+the reversal was taken through the escape hatch: A-24 is a register entry, so the plan is the
+recorded exception rather than a silent one. Cite A-24 and Decision 3b in the code.
+
+Correcting the note itself is a `spec.md` edit and needs its own register entry, in the register
+named under [Specification authority](#specification-authority) below. Do not do it in passing.
 
 ## Parsing and extraction design
 
@@ -281,5 +308,12 @@ Use this order when artifacts disagree:
 5. work decomposition in `tasks.md`; and
 6. explanatory code comments and contributor docs.
 
-If implementing the higher-ranked artifact would violate a lower-ranked decision, update the
-deviation register rather than silently choosing one.
+If implementing the higher-ranked artifact would violate a lower-ranked decision, register the
+deviation rather than silently choosing one.
+
+The register is [`specs/001-procurement-agent/analysis.md`](../specs/001-procurement-agent/analysis.md).
+There is no separate file: it is a numbered finding list (A-1 …) with a status column, and every
+reversal of a normative `shall` in this repository is already filed there — A-23 for FR-RAG-02's
+ANN mandate, A-24 for FR-RAG-03's BM25 clause, A-25 for NFR-03's mechanism clause. Add the next
+`A-n` row, give it a severity and a status, and cite that ID from the code. A deviation that is
+only explained in a commit message is the failure mode this rule exists to prevent.

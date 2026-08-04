@@ -21,8 +21,28 @@ implementations.
 4. Search existing issues and pull requests.
 5. Open or claim an issue before changing a shared contract.
 
-Contract changes include the database schema, claim format, audit envelope, ACL model,
-condition vocabulary, conflict record, runner state, and canonical workbook projection.
+A **contract change** is anything touching the eight shared contracts that
+[`tasks.md` Phase 0](specs/001-procurement-agent/tasks.md) enumerates as C1–C8:
+
+| ID | Contract |
+|---|---|
+| C1 | Postgres schema |
+| C2 | Claim/extraction record |
+| C3 | Provenance reference — `(document_id, page, span, extractor_version)` |
+| C4 | Audit event envelope and `event_type` taxonomy |
+| C5 | Conflict record and the five resolution action shapes |
+| C6 | Canonical workbook projection |
+| C7 | Retrieval interface and ACL/labelling model |
+| C8 | Stage runner contract, including the append-only claim invariant |
+
+Changing the **condition vocabulary** counts too, even though it is not a C-item: it lives in
+[`contracts/canonical-parameters.md`](specs/001-procurement-agent/contracts/canonical-parameters.md),
+which is marked FROZEN, and rank 1 of the authority order.
+
+Note that this list is *not* the list of contracts still needing to be frozen. C5 is done and
+the other seven are not; [docs/current-state.md](docs/current-state.md) holds that status and is
+the one to check before claiming work. Changing a frozen contract is a contract change too — it
+is the case this rule most exists for.
 
 ## Good contribution shapes
 
@@ -35,6 +55,21 @@ condition vocabulary, conflict record, runner state, and canonical workbook proj
 
 Avoid combining formatting cleanup, dependency upgrades, schema changes, and new behavior in
 one pull request.
+
+> [!IMPORTANT]
+> **An adapter is only acceptable if its dependencies pass the license gate.** The project takes
+> **Apache-2.0, MIT and BSD only**; copyleft and revenue-capped licenses are disqualifying. This
+> is not a preference — a rejected license in a required dependency is unfixable after the fact.
+>
+> Several of the components most likely to be proposed have already been evaluated and rejected,
+> and are named so nobody spends a weekend on one: **Marker** (weights RAIL-M, free only under
+> $5M revenue), **Surya** (GPL-3.0), **MinerU** (AGPL-3.0), **olmOCR** (Rail-M revenue cap),
+> **PyMuPDF** (AGPL-3.0 or Artifex commercial), **ParadeDB/`pg_search`** and
+> **VectorChord-bm25** (AGPL-3.0), **Jina embeddings v5** and **NV-Embed-v2** (non-commercial).
+>
+> The full gate, with the verified license of each, is in
+> [`plan.md`](specs/001-procurement-agent/plan.md). Verify a license at the dependency's own
+> `LICENSE` file, not from a summary — that is how this list was built.
 
 ## Local validation
 
@@ -52,8 +87,9 @@ uv run ruff check .
 uv run mypy
 ```
 
-See the [development guide](docs/development.md) for optional extras, adapter conventions,
-and feature-specific test expectations.
+See the [development guide](docs/development.md) for optional extras, the adapter sequence, and
+feature-specific test expectations. Note that `uv sync` is an exact sync: name every extra you
+want in one command, or the previous ones are uninstalled.
 
 ## Branches and commits
 
@@ -70,18 +106,23 @@ files changed.
 
 ## Pull requests
 
-A pull request should include:
+This section covers what the pull request **description** should say. What the *change itself*
+must satisfy before you request review is one list, kept in
+[Definition of done](docs/development.md#definition-of-done) — do not re-derive it here.
+
+A pull request description should include:
 
 - the problem and the controlling requirement or issue;
 - the implementation approach;
 - tests added and commands run;
 - effects on provenance, determinism, access control, and human review;
-- any specification deviation; and
+- any specification deviation, with the `A-n` register ID; and
 - sanitized before/after output when behavior is visible.
 
-Update `docs/requirements-traceability.md` and `docs/current-state.md` when a requirement moves
-from open or declared to partial or enforced. “Enforced” means a test covers the actual
-behavior, not merely that a type or function signature exists.
+Documents that go stale when a requirement moves status are listed under
+[Documentation expectations](docs/development.md#documentation-expectations); there are four of
+them and the README is one, which an earlier version of this section left out. “Enforced” means
+a test covers the actual behavior, not merely that a type or function signature exists.
 
 ## Data and security
 
@@ -109,6 +150,8 @@ directly until one is published.
 - Workers append claims; a reducer projects canonical state.
 - The same canonical state produces the same ordered output.
 - Missing or incomparable evidence stays visible.
+- Every dependency clears the permissive license gate, and swappability is enforced by
+  packaging: a heavy integration goes in an optional extra, never in core.
 
 ## Documentation-only contributions
 

@@ -160,5 +160,11 @@ def write_workbook(
 
 
 def expected_tabs() -> list[WorkbookTab]:
-    """The thirteen tabs in order. AC-3 asserts against this."""
+    """The thirteen tabs in order, for a writer to iterate (FR-OUT-02).
+
+    Pinned by `test_expected_tabs_returns_all_thirteen_in_order`. AC-3 itself is
+    *not* asserted here and cannot be until `write_workbook` exists - AC-3 wants
+    thirteen tabs in a generated workbook with conditional formatting, and this
+    is only the order they go in.
+    """
     return list(WorkbookTab)

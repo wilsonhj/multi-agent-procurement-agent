@@ -51,16 +51,41 @@ use only synthetic or approved sanitized fixtures today.
 
 ## Choose dependency extras deliberately
 
+> [!WARNING]
+> `uv sync` is an **exact** sync, not an incremental install: it makes the environment match the
+> extras named in *that one command* and uninstalls everything else. Name every extra you want in
+> a single command. Running one `uv sync` per extra leaves you with only the last one, having
+> silently removed the others.
+
+Besides `dev`, there are four extras. Pick the ones the change actually needs and put them in
+one command, always alongside `dev`:
+
+| Extra | Pulls in | Needed when |
+|---|---|---|
+| `parse` | Docling, pandas | working on document parsing or OCR routing |
+| `extract` | Instructor, OpenAI client (for a self-hosted vLLM endpoint) | working on schema-constrained extraction |
+| `store` | psycopg, pgvector | working on persistence or retrieval |
+| `solar` | pvlib | working on the CEC equipment-list cross-check |
+
+So to work on parsing and extraction together:
+
 ```bash
-uv sync --extra dev --extra parse
-uv sync --extra dev --extra extract
-uv sync --extra dev --extra store
-uv sync --extra dev --extra solar
+uv sync --extra dev --extra parse --extra extract
 ```
 
+To go back to the lean environment, name only `dev`, and expect the others to be removed:
+
+```bash
+uv sync --extra dev
+```
+
+You can see what a command will do before running it — `uv sync --extra dev --extra solar
+--dry-run` prints the additions and the removals, and the removals are the part worth reading.
+
 Do not add a heavy adapter dependency to core. Swappability is a packaging property as well
-as an interface property. New dependencies must also respect the project’s permissive
-dependency-license policy recorded in `plan.md`.
+as an interface property. New dependencies must also clear the project’s permissive
+dependency-license gate — **Apache-2.0, MIT and BSD only** — recorded with each rejected
+component in [`plan.md`](../specs/001-procurement-agent/plan.md).
 
 ## Understand the specification before changing code
 
@@ -78,7 +103,9 @@ recommendations that may not all be adopted; check each decision’s status befo
 as normative.
 
 When artifacts disagree, do not silently select the easiest interpretation. Cite the
-controlling artifact in code and record the deviation.
+controlling artifact in code and register the deviation as a numbered `A-n` finding in
+`analysis.md`, which is the register. There is no separate deviation file; see
+[architecture.md § Specification authority](architecture.md#specification-authority).
 
 ## Package boundaries
 
@@ -113,13 +140,26 @@ not become a blocking stage.
 
 Use this sequence for a parser, OCR, model, or store integration:
 
-1. confirm the existing Protocol can express the adapter without vendor-specific fields;
-2. add the vendor dependency to an optional extra;
-3. implement the adapter in a provider-specific module;
-4. add a reusable Protocol contract test;
-5. add sanitized success, empty, malformed, and timeout fixtures;
-6. prove that provenance and access labels survive the boundary; and
-7. document configuration without including credentials.
+1. check the vendor's license against the gate before anything else — Apache-2.0, MIT or BSD,
+   read from its own `LICENSE` file, not from a summary. A rejected license is unfixable later,
+   and [`plan.md`](../specs/001-procurement-agent/plan.md) already names the components that
+   failed;
+2. confirm the existing Protocol can express the adapter without vendor-specific fields;
+3. add the vendor dependency to an optional extra;
+4. implement the adapter in a new module, and **decide where it goes before writing it**;
+5. add a reusable Protocol contract test;
+6. add sanitized success, empty, malformed, and timeout fixtures;
+7. prove that provenance and access labels survive the boundary; and
+8. document configuration without including credentials.
+
+> [!NOTE]
+> **There is no adapter layout convention yet, and no `adapters/` package.** No concrete adapter
+> exists, so the first one decides the layout for everyone after it. Do not assume `adapters/`:
+> `ports/__init__.py` once documented exactly that package, it did not exist, and removing the
+> claim is filed as [A-18](../specs/001-procurement-agent/analysis.md). Propose the location in
+> the issue — alongside the service that owns the port is the obvious candidate — and get it
+> agreed before the code lands, because moving every adapter afterwards is the expensive version
+> of this decision.
 
 Do not weaken a Protocol merely because one provider omits required evidence. Add a
 translation layer or reject the adapter output.
@@ -127,19 +167,72 @@ translation layer or reject the adapter output.
 ## Add a canonical field or condition
 
 Canonical parameter keys are governed by
-`specs/001-procurement-agent/contracts/canonical-parameters.md`.
+[`contracts/canonical-parameters.md`](../specs/001-procurement-agent/contracts/canonical-parameters.md),
+which is FROZEN. Additions are cheap; renames and type changes are not.
 
 For a new key:
 
 1. update or adopt the controlling contract decision;
 2. select the value type, canonical unit, condition dimensions, and tolerance rule;
-3. add the schema or vocabulary change;
-4. add table-driven validation, ordering, store-round-trip, and conflict tests;
-5. update output projection fixtures; and
+3. **write the tolerance rule down** — in `FIELD_TOLERANCES` in
+   `services/conflict_hitl/tolerance.py`, keyed on the contract's `key` exactly as spelled
+   there;
+4. add the schema or vocabulary change;
+5. add table-driven validation, ordering, and conflict tests;
 6. update requirements traceability.
 
-A condition that changes whether two measurements are comparable must be a modeled
-dimension, not free text in `note`.
+### Step 3 is the one that is easy to skip
+
+`tolerance_for()` falls back to `DEFAULT_TOLERANCE`, which is EXACT, for any key the table does
+not hold. That fallback is deliberate and safe — a field nobody has measured the spread of gets
+compared exactly, which raises a reviewable conflict rather than silently merging two values —
+and 100 of the contract's 124 keys rely on it today. Only 24 keys carry a row.
+
+So omitting the row is not a bug, and no test will fail. It is a *decision made by default*: you
+are declaring the field has no tolerance, and for a field whose sources genuinely disagree at
+the fourth decimal place, that is queue inflation — reviewers learning to ignore the queue,
+which D-1 calls the worst possible outcome for a human-in-the-loop tool. Decide it, do not
+inherit it.
+
+What the tests do guard is the shape of any row you add:
+
+- `test_every_tolerance_key_is_a_contract_key` (`tests/test_values_conflict.py`) rejects a key
+  the frozen contract does not have. This is the check that matters most, and it exists because
+  the failure already shipped: 19 of the table's 20 keys were invented names
+  (`transformer_no_load_loss_w` where the contract says `no_load_loss`), so every real field
+  silently fell through to EXACT — and it *inverted* the transformer loss rule, turning a
+  below-guarantee loss that IEC 60076-1 says is never a nonconformity into a queued conflict.
+- `test_every_table_row_is_internally_consistent` rejects a magnitude on an EXACT row, and a
+  row with no stated basis.
+- `test_an_unassigned_field_is_exact_not_permissive` pins the fallback itself.
+
+### Step 4 breaks specific, named tests
+
+A condition that changes whether two measurements are comparable must be a modeled dimension,
+not free text in `note`. Acting on that is not additive. Step 5 is not a vague “add tests”:
+these named tests will fail, and each has to be updated deliberately rather than relaxed. The
+first two apply to a new condition dimension, the third to a new field on `CanonicalField`:
+
+- `test_the_grouping_key_has_a_fixed_layout` (`tests/test_condition_grouping.py`) pins
+  `tuple(ConditionDimensions.model_fields)` and a golden ten-`None` grouping key as literals.
+  Both change. They are literals on purpose: every other assertion in that file compares one
+  `grouping_key()` to another, which is self-consistency with no anchor.
+- `test_the_table_accounts_for_every_vocabulary_member` (same file) parses the **Conditions**
+  table at the foot of `canonical-parameters.md` and fails if an enum has a member no row of
+  that table names. A new vocabulary member means editing the contract document, not just the
+  enum — `sat` shipped in exactly that state.
+- `test_canonical_field_has_the_eight_spec_keys_plus_condition`
+  (`tests/test_schema_invariants.py`) pins `CanonicalField.model_fields` to the TRS's eight keys
+  plus `condition`. A ninth field of your own needs that assertion, and A-1's reasoning,
+  extended rather than loosened.
+
+### What this recipe does not cover yet
+
+There is no output-projection step, because there is nothing to update: the canonical JSON
+projection is contract **C6**, still unfrozen, `write_workbook()` raises `NotImplementedError`,
+and there is no `tests/fixtures/` directory — the existing tests build their inputs inline. When
+C6 lands, a projection-fixture step belongs here. There is likewise no store round-trip step:
+C1 is unfrozen and no repository exists.
 
 ## Extend conflict policy
 
@@ -219,25 +312,45 @@ Use Ruff’s automatic fix only for mechanical changes you have reviewed.
 
 ## Documentation expectations
 
-A behavior change is complete when:
+Four documents make status claims about the code, and a behavior change goes stale in all four
+at once. Update every one that your change falsifies:
+
+| Document | What it claims | Update when |
+|---|---|---|
+| `docs/requirements-traceability.md` | per-requirement status: enforced / partial / declared / open | a requirement's status moves, in either direction |
+| `docs/current-state.md` | what works today, and the acceptance boundary | a feature stops being missing, or the test count changes |
+| `README.md` § Current state | the coarse summary table a reader sees first | any row of it stops being true |
+| `docs/architecture.md` | design-versus-implementation boundary, and the services table | a service stops being a stub |
+
+The README's table is a **derived summary**, not an independent claim: `docs/current-state.md`
+is the source of truth and the README must not disagree with it. It is listed here because it is
+the one that gets forgotten — it lives in a different file from the audit that governs it.
+
+Also:
 
 - public functions and non-obvious invariants have useful docstrings;
-- README claims still match runnable behavior;
-- `docs/current-state.md` no longer describes the feature as missing;
-- requirements traceability is updated; and
-- the relevant specification decision is linked.
+- the controlling specification decision is cited in the code, by ID; and
+- any deviation from it is registered as an `A-n` finding in `analysis.md`.
 
 Prefer explaining why an invariant exists and the failure it prevents. Avoid repeating a
-design as “implemented” until a test exercises the production path.
+design as “implemented” until a test exercises the production path — the repository already
+had a helper described as tested with no assertion anywhere against it.
 
 ## Definition of done
 
+This is the **one** checklist for the state of a change before review. `CONTRIBUTING.md` covers
+what the pull request *description* should say and points here for the rest; if the two ever
+disagree, this list is the one to fix.
+
 Before requesting review:
 
-- all tests pass;
-- Ruff and strict mypy pass;
-- new behavior has a failure-path test;
+- all tests pass — `uv run pytest`;
+- Ruff and strict mypy pass — `uv run ruff check .` and `uv run mypy`;
+- new behavior has a failure-path test, and the test fails if you break the behavior it names.
+  A test that passes against a deliberately broken implementation is not covering it;
 - outputs are deterministic under reordered input where required;
+- new dependencies clear the license gate and sit in an optional extra;
 - no confidential data or secrets are present;
-- traceability and current-state docs are accurate; and
+- every document listed under [Documentation expectations](#documentation-expectations) that
+  your change falsifies is updated; and
 - the change is limited to one reviewable contract or vertical slice.

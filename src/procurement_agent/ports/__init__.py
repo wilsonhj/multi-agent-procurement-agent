@@ -150,8 +150,16 @@ class RerankerPort(Protocol):
     """Reranking over hybrid retrieval candidates.
 
     FR-RAG-03 says vector + BM25; **plan Decision 3b reverses the BM25 half** -
-    there is no permissively licensed true-BM25 for PostgreSQL, so lexical
-    matching comes from the embedding model's sparse output instead.
+    there is no permissively licensed true-BM25 for PostgreSQL, so the lexical
+    leg is Postgres `tsvector`/GIN plus `pg_trgm`, fused with RRF (k=60).
+
+    Not the embedding model's sparse output, which this docstring previously
+    claimed: that is a *contingency* under Decision 5 (swap Qwen3-Embedding-4B
+    for `bge-m3`, which emits dense, learned-sparse and ColBERT vectors in one
+    pass) held in reserve if Postgres FTS proves weak on part numbers. The same
+    substitution appears in the deviation note beside FR-RAG-03 in `spec.md`,
+    which is why it is spelled out here. Reranking is what lets the design get
+    away without BM25 at all, which is this port's stake in the decision.
     """
 
     def rerank(

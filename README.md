@@ -34,6 +34,9 @@ supplier, or make an autonomous procurement decision.
 
 ## Current state
 
+This table is a summary derived from [Current state](docs/current-state.md), which is the
+source of truth. If the two disagree, that document is right and this one is stale.
+
 | Area | State |
 |---|---|
 | Canonical Pydantic schema, provenance, closed vocabularies | Implemented and tested |
@@ -73,16 +76,27 @@ public sources ─► gap-only web enrichment ───────────�
                                                   13-tab workbook
 ```
 
-Human review is deliberately detached from pipeline execution. Workers do not pause while
-a conflict waits for a reviewer. Composition queries unresolved conflicts and refuses when
-one is above the configured severity threshold, unless a future audited override explicitly
-accepts an incomplete output.
+Nothing in that diagram runs end to end yet; it is the target, and the boxes between `ingest`
+and `13-tab workbook` are stubs. Two things in it are real today and worth stating separately,
+because they are the reason the shape is what it is.
 
-The planned runtime uses PostgreSQL as the single durable store for documents, claims,
-chunks, jobs, conflicts, resolutions, and an append-only audit log. Work is claimed with
-`FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned. Heavy integrations sit
-behind six synchronous Protocol interfaces so an installation can choose parsers, OCR,
-models, and storage adapters without changing the domain core.
+Human review is deliberately detached from pipeline execution. There is no
+`await_human_resolution` stage and there will not be one: one unresolved conflict on document 7
+must not stall documents 8 to 400, and "defer" is a mandated resolution action that a blocking
+workflow cannot express. Instead the gate is a *query* at composition time — this part is
+implemented and tested, in `orchestrator.compose_gate_blocks()`. It blocks only on unresolved
+conflicts strictly above the configured severity, and the threshold cannot be set to a value
+that disables it.
+
+The source-of-record rule is the other. `assert_no_autonomous_overwrite()` is implemented and
+tested; the planned store makes it structural rather than a guard.
+
+The planned runtime — none of this exists yet — uses PostgreSQL as the single durable store for
+documents, claims, chunks, jobs, conflicts, resolutions, and an append-only audit log. Workers
+would claim jobs with `FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
+Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
+parsers, OCR, models, and storage adapters without changing the domain core. Those six
+Protocols are declared; no adapter implements any of them.
 
 Read [Architecture](docs/architecture.md) for the component boundaries, invariants,
 storage model, and important design trade-offs.
@@ -94,10 +108,12 @@ storage model, and important design trade-offs.
 | `system_of_record` | Ingested contracts and supplier specifications | Authoritative; never overwritten by the web |
 | `web_supplement` | Manufacturer pages, certification lists, public datasets | May fill a gap; disagreement becomes a conflict |
 
-A public value can fill an empty field. It cannot replace an ingested value. The current
-core enforces this rule with `assert_no_autonomous_overwrite`; the planned store strengthens
-it structurally by letting workers append immutable claims while a reducer alone projects
-canonical state.
+A public value can fill an empty field. It cannot replace an ingested value. The current core
+enforces this rule at one chokepoint, `assert_no_autonomous_overwrite`, tested directly in
+[`tests/test_source_of_record_rule.py`](tests/test_source_of_record_rule.py). The planned store
+strengthens it structurally by letting workers append immutable claims while a reducer alone
+projects canonical state — a guard can detect a bad call but cannot prevent a code path from
+bypassing it.
 
 ## Quick start
 
@@ -172,16 +188,41 @@ The core remains intentionally small. Install integrations only when working on 
 | `solar` | Live, pinned CEC equipment-list processing |
 | `dev` | pytest, Ruff, mypy, and type stubs |
 
-For example:
+Name every extra you want in one command — `uv sync` is an exact sync and removes anything not
+named:
 
 ```bash
 uv sync --extra dev --extra parse
 ```
 
+### Dependency license gate
+
+**Apache-2.0, MIT and BSD only.** Copyleft and revenue-capped licenses are disqualifying, and
+this constrains what may be proposed as an adapter, not merely what ships in core.
+
+The gate has already rejected several of the components most likely to be suggested for this
+problem, each verified at its own `LICENSE` file rather than from a summary:
+
+| Component | License | Verdict |
+|---|---|---|
+| Marker (marker-pdf) | code Apache-2.0, **weights RAIL-M**, free only under $5M revenue | rejected — revenue-capped |
+| Surya | GPL-3.0 | rejected — copyleft |
+| MinerU | AGPL-3.0 | rejected — copyleft |
+| olmOCR | AI Pubs RAIL-M, revenue cap | rejected |
+| PyMuPDF | AGPL-3.0 or Artifex commercial | rejected — was declared as an extra, then removed |
+| ParadeDB / `pg_search`, VectorChord-bm25 | AGPL-3.0 (VectorChord also ELv2) | rejected — copyleft |
+| Jina embeddings v5, NV-Embed-v2 | non-commercial | rejected |
+
+The consequence to internalize: **there is no permissively licensed true-BM25 for PostgreSQL**,
+which is why retrieval uses `tsvector` and `pg_trgm` instead, and why FR-RAG-03's BM25 clause is
+registered as a reversal rather than implemented. The full gate with rationale is in
+[plan.md](specs/001-procurement-agent/plan.md).
+
 ## Repository guide
 
 ```text
 src/procurement_agent/
+├── config.py                Settings, PROCUREMENT_ prefix, bounds enforced
 ├── schema/                  canonical domain objects and vocabularies
 ├── ports/                   six swappable integration interfaces
 ├── services/
@@ -193,7 +234,16 @@ src/procurement_agent/
 │   └── output/              flags, archive normalization, workbook stub
 └── orchestrator/            stage vocabulary and compose-time gate
 
-docs/                       contributor-facing explanations and traceability
+docs/
+├── current-state.md         what works today; the source of truth for status
+├── architecture.md          intended production design and its invariants
+├── development.md           setup, conventions, and change recipes
+├── requirements-traceability.md  every FR/NFR/AC mapped to code and tests
+├── agent-topology.md        where the pipeline may fan out, and where it must not
+├── defaults.md              proposed values for unresolved decisions
+└── open-questions.md        SUPERSEDED by clarifications.md, except for a short
+                             carried-forward list at its foot
+
 specs/001-procurement-agent/ normative requirements, decisions, and work plan
 tests/                       unit and policy regression tests
 ```
@@ -204,25 +254,68 @@ Start with:
 - [Architecture](docs/architecture.md) — intended production design and its invariants;
 - [Development guide](docs/development.md) — setup, repository conventions, and change recipes;
 - [Contributing](CONTRIBUTING.md) — how to choose and submit work;
-- [Requirements traceability](docs/requirements-traceability.md) — requirement-level status; and
+- [Requirements traceability](docs/requirements-traceability.md) — requirement-level status;
 - [Agent topology](docs/agent-topology.md) — safe fan-out points and required serialization;
 - [Researched defaults](docs/defaults.md) — proposed values for unresolved decisions; and
 - [Specification index](specs/001-procurement-agent/spec.md) — the normative problem definition.
 
-The specification directory has an authority order: frozen contracts define shared shapes;
-`clarifications.md` resolves domain ambiguity; `plan.md` records technical decisions; and
-`tasks.md` turns them into work packages. Do not infer completion from a design document—use
-the current-state and traceability documents.
+When two artifacts disagree, they are ranked. Highest first:
+
+1. frozen contracts under `specs/001-procurement-agent/contracts/`;
+2. `spec.md`, for externally visible requirements;
+3. adopted resolutions in `clarifications.md`;
+4. technical decisions in `plan.md`;
+5. work decomposition in `tasks.md`; and
+6. explanatory code comments and contributor docs — including this file.
+
+`spec.md` is rank 2 and is the artifact most often left out of an informal retelling of this
+order, which is how a plan-level decision ends up quietly overriding a requirement. If following
+the higher rank would break a lower-ranked decision, register the deviation in `analysis.md`
+rather than picking one silently; see
+[Specification authority](docs/architecture.md#specification-authority).
+
+Do not infer completion from a design document — use the current-state and traceability
+documents.
+
+## Build plan
+
+Five stages, each with the threshold that has to be met before the next one starts. Nothing
+below is done; the current position is "before Stage 1", and Phase 0 of
+[tasks.md](specs/001-procurement-agent/tasks.md) gates all of it.
+
+| Stage | Scope | Exit threshold |
+|---|---|---|
+| 1 | Ingestion + OCR for all formats; lock the canonical schema for PV, inverters, BESS | ≥90% field-level extraction on 20–30 real datasheets, with provenance |
+| 2 | Chunking, hybrid retrieval + reranker; Excel writer for the first 3 categories | deterministic regeneration; no unsourced cells |
+| 3 | Supplement-only web search; conflict detection; queue + resolution UI | 100% of injected web-vs-spec conflicts surfaced; zero auto-overwrites |
+| 4 | Remaining categories; Compliance Matrix and Tax Incentives tabs | all 13 tabs present |
+| 5 | Retrieval-time access control, immutable audit log, dedup, self-hosted endpoints | audit, security and idempotency requirements verified |
+
+These stage numbers are load-bearing: [agent-topology.md](docs/agent-topology.md) argues about
+concurrency in terms of "Stage 1", "Stage 3's exit threshold" and "Stage 4 work", and this table
+is where those resolve. It is a **different axis** from `tasks.md`, which cuts the same work into
+Phase 0 (contract freeze) and nine parallel work packages WP-A … WP-I. Stages answer *what is
+good enough to move on*; work packages answer *who can build in parallel right now*. Neither
+replaces the other, and neither is a schedule.
+
+LLM extraction is imperfect, and the Stage 1 threshold above is the only place that gets
+measured. Plan for 92–97% exact match on headline numerics from clean text-layer tables, 80–90%
+from scans, and 70–85% on conditional fields — and treat all of those as extrapolations, because
+[D-11](specs/001-procurement-agent/clarifications.md) records that no public benchmark exists
+for this task and the 30–50 document labelled gold set has not been built. Human review of
+flagged fields is mandatory, not optional.
 
 ## Contributing
 
 Contributions are welcome, especially small vertical slices that turn a declared interface
 into tested behavior. Before starting, read [CONTRIBUTING.md](CONTRIBUTING.md) and choose an
 issue whose prerequisite contracts are already settled. Changes that affect a canonical
-record, audit envelope, or workbook projection require a written contract decision first.
+record, audit envelope, or workbook projection require a written contract decision first, and
+a new dependency must clear the license gate above.
 
-The project’s most important near-term milestone is to freeze the remaining shared contracts
-and land one end-to-end, fixture-backed path from document ingestion to a reviewable claim.
+The project’s most important near-term milestone is to freeze the remaining shared contracts —
+seven of the eight are still open — and land one end-to-end, fixture-backed path from document
+ingestion to a reviewable claim.
 
 ## Security and data handling
 
@@ -237,6 +330,25 @@ requires:
 
 These controls are **designed but not implemented**. Do not use the current repository with
 real confidential procurement data.
+
+## Scope boundaries and regulatory disclaimer
+
+Out of scope: placing orders, signing contracts, committing spend, automatically choosing
+between conflicting data or recommending a winner, ERP posting, price negotiation, engineering
+or yield modelling, and legal review. The tool informs these; it does not perform them.
+
+> [!IMPORTANT]
+> **Regulatory and tax content is reported as status, not advice.** Tax, environmental and grid
+> rules are evolving through 2026. Confirm against primary sources and with tax and legal
+> counsel before relying on any of it for filings.
+>
+> This is not boilerplate. Two of the thirteen workbook tabs — **Compliance Matrix** and
+> **Tax Incentives** — exist to present exactly this material, per-supplier and in a form that
+> invites being read as a determination. AC-6 requires the compliance tab to test TRD against
+> the correct IEEE 2800 voltage-class limit, where getting the measure wrong "produces a
+> compliance matrix that passes suppliers it should fail"; BABA applicability is still recorded
+> as `unconfirmed` because it depends on project funding nobody has confirmed. The output is an
+> input to a decision made by people who are accountable for it.
 
 ## License
 

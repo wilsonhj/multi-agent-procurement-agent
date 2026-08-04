@@ -50,10 +50,20 @@ _CORE_XML_EPOCH = b"1980-01-01T12:00:00Z"
 def normalize_archive(path: Path) -> Path:
     """Strip every wall-clock, library-version and platform trace from an `.xlsx`.
 
-    Required by FR-OUT-06 and AC-7. Freezing `workbook.properties.modified` is
-    **not sufficient**: openpyxl re-stamps it unconditionally on save
+    Required by FR-OUT-06 and AC-7 (b). Freezing `workbook.properties.modified`
+    is **not sufficient**: openpyxl re-stamps it unconditionally on save
     (`openpyxl/writer/excel.py:292`, no opt-out), and each ZIP local header
     carries an mtime derived from the clock. See issue #13.
+
+    `workbook.save()` followed by this function is the **single normalization
+    point** (plan.md Decision 8c as amended, register A-46). Decision 8c and
+    tasks.md G.5 previously prescribed driving `ExcelWriter` directly to bypass
+    `save_workbook`'s re-stamp instead; that requirement is deleted. This
+    function has to rewrite the whole ZIP container regardless - points 1, 4 and
+    5 below cannot be reached from inside openpyxl's writer at all - so the
+    `core.xml` substitution in point 2 rides along for one regex, while
+    `ExcelWriter`-direct would fix only that one source and still need the
+    container pass afterwards.
 
     Five sources of run-to-run variance, all of which have to go - missing any
     one leaves the archive non-deterministic while looking fixed:
@@ -151,6 +161,18 @@ def write_workbook(
     Must be deterministically regenerable from the canonical store (FR-OUT-06),
     which means no timestamps or ordering derived from anything but the store
     itself, plus an explicit generated-on stamp and per-source data vintage.
+
+    **The generated-on stamp is store-derived, never `now()`** (FR-OUT-06 as
+    amended, register A-46): the high-water mark of the store rows composition
+    reads - `document.ingested_at`, `claim.extracted_at`,
+    `resolution.resolved_at`. A wall-clock stamp would make two generations of
+    an unchanged store differ by construction, which violates AC-7 while
+    satisfying the sentence that mandates the stamp. It is a field of the C6
+    canonical projection, so both AC-7 layers inherit one derivation.
+
+    Save with `workbook.save()` and pass the result through `normalize_archive`;
+    that pair is the single normalization point, and driving `ExcelWriter`
+    directly is no longer required (see `normalize_archive`).
 
     Every comparison cell carries provenance via cell comment, a link into the
     Sources tab, or an adjacent column (FR-OUT-03). No unsourced values

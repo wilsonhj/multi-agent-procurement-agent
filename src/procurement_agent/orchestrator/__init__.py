@@ -2,11 +2,34 @@
 
 Owns agent workflow, state, retries, and the provenance/audit trail.
 
-Implemented as a Postgres-backed stage state machine with a
-`SELECT ... FOR UPDATE SKIP LOCKED` worker loop - no workflow framework.
+Implemented as a Postgres-backed stage state machine - no workflow framework.
 NFR-02 already forces the audit trail into Postgres and FR-OUT-06 makes
 composition a pure function of the canonical store, so a workflow checkpointer
 would be a second copy of state we already own. See plan.md Decision 1.
+
+**The runner is a single-process driver, not a leased job queue** (plan.md
+Decision 1a, register A-45). Each stage maps over its units of work with the two
+pools `config.Settings` already configures - `max_concurrent_parse` for
+CPU-bound parse/OCR, `max_concurrent_llm` for extraction calls. There is no
+`SELECT ... FOR UPDATE SKIP LOCKED` worker fleet, no lease, no sweeper and no
+persisted backoff schedule: Decision 2 detached the human gate, so nothing is
+ever parked for days; the store is already idempotent by natural key
+(`document.content_hash`, append-only claims), so replay is a no-op; and
+concurrency lives in those two pools rather than in a second worker process.
+Crash recovery is therefore "re-run the batch" - which is sound *because* the
+`content_hash` UNIQUE constraint and `ON CONFLICT DO NOTHING` upsert AC-5 needs
+anyway make the database refuse the duplicate.
+
+The `job` table stays, as a progress and quarantine **ledger this driver
+writes** rather than a queue it contends on. A document that fails a stage is
+recorded `quarantined` with its error and the batch continues (tasks.md I.4,
+plan.md Decision 4 tier 3). The lease columns stay unused in the DDL so that
+adopting a second worker process later is a runner change, not a migration.
+
+None of this touches the **conflict-claim** leases in `sql/05_conflict.sql`
+(tasks.md F.1/F.4): that table has genuine multi-human contention, where two
+reviewers must not be handed the same conflict and an abandoned claim must
+expire.
 
 **The human gate does not block the pipeline.** Conflict resolution is detached:
 the gate is a policy check at compose time - a query, not an interrupt. "Defer"
@@ -87,5 +110,13 @@ def compose_gate_blocks(unresolved: Sequence[ConflictQueueEntry], *, threshold: 
 
 
 def run(*args: object, **kwargs: object) -> None:
-    """Execute the pipeline. Batch/offline per NFR-07."""
+    """Execute the pipeline. Batch/offline per NFR-07.
+
+    Single-process driver (plan.md Decision 1a, tasks.md I.1): for each `Stage`
+    in order, map over that stage's units of work with the two configured pools,
+    write progress to the `job` ledger, and continue past a quarantined
+    document. Re-running an interrupted batch is the recovery path - completed
+    work no-ops on the store's natural keys - so this takes no lease and holds
+    no scheduler state between invocations.
+    """
     raise NotImplementedError

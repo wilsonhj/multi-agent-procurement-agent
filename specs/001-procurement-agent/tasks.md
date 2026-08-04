@@ -153,11 +153,21 @@ All nine run concurrently once Phase 0 lands.
 - **C.1** Structure-aware chunking (D/plan Decision 6). **Tables are never token-chunked.**
 - **C.2** Triple table indexing — `table_full`, `table_row` (column names inlined per row),
   `table_summary`. → verify: "what is the Voc of module X" retrieves the right row.
-- **C.3** Contextual retrieval — prepend document/section context before embedding.
+- **C.3** Contextual retrieval — prepend document/section context before embedding, into
+  `chunk.context_prefix`, citing `chunk_text` verbatim. ⚠️ **Built deterministically from the
+  chunk's own metadata, never LLM-generated** (A-44, revising Decision 6):
+  `"Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): "`. The prefix is
+  baked into every embedding, so a later change of strategy is a full re-embed. `table_summary`
+  (C.2) stays generated and is the only generated text in this path.
 - **C.4** Qwen3-Embedding-4B at 1024 dims via MRL truncation + renormalisation.
-- **C.5** Hybrid retrieval: dense + `tsvector` + `pg_trgm`, fused with RRF (k=60).
+- **C.5** Hybrid retrieval: dense + `tsvector` + `pg_trgm`, as **one SQL statement** in the
+  pgvector adapter — one shared CTE carrying the metadata/ACL filter, three legs ranked over it at
+  `budget // 3` each, union and dedup by `chunk_id` in SQL (A-43). **No RRF stage**; the reranker
+  alone orders results. `VectorStorePort.search` takes `query_text` beside the vector — the lexical
+  legs match text, and without it they have no interface to reach.
   → verify: `"JKM610N-66HL4M-V"` retrieves `"JKM610N 66HL4M V"`.
-- **C.6** bge-reranker-v2-m3 over top-50 → top-5–8.
+- **C.6** bge-reranker-v2-m3 over the whole candidate union (budget 50) → top-5–8. ⚠️ If the
+  reranker is unavailable, fall back to **dense-score order** for that request — not to RRF.
 - **C.7** `FORCE ROW LEVEL SECURITY`; app connects as non-owner, non-superuser. → verify: **AC-8**.
 - **C.8** ⚠️ **No ANN index** (plan Decision 3a). Set `hnsw.iterative_scan = relaxed_order` in
   `postgresql.conf` anyway, so a future index isn't silently wrong.

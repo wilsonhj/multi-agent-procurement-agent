@@ -261,16 +261,25 @@ def criticality_for(field_name: str) -> Severity:
 # --- the coarse numeric helpers the modifiers share -----------------------------
 
 
-def _numeric_value(value: object) -> float | None:
-    """A numeric reading of a candidate value.
+def as_number(value: object) -> float | None:
+    """A numeric reading of a candidate value, or `None` if it is not a number.
 
-    Deliberately not imported from `conflict_hitl._as_number`: that name is
-    underscore-prefixed in this package's `__init__.py`, and reaching past the
-    mark that it is not for reuse - rather than adding a second, smaller
-    computation this module actually needs - is how a "helper" import quietly
-    becomes a second copy of the parent's comparison semantics. `bool` is
-    excluded for the same reason it is there: `True` would compare equal to a
-    1.0 candidate value under no tolerance at all.
+    `bool` is excluded even though it is an `int`: `True` comparing equal to a
+    1.0 candidate value - a nameplate, say - is nonsense that no tolerance
+    would catch, so `True == 1.0` must never compare clean under any band.
+
+    **The one public definition, used by this module and by `conflict_hitl`'s
+    own comparison machinery** (`_decimals`, `values_conflict`). It used to
+    exist twice - a private copy here plus `conflict_hitl.__init__._as_number`
+    - because that name was underscore-prefixed and importing past the "not
+    for reuse" mark looked worse than a second, smaller copy of the same six
+    lines. But a second copy of one decision is exactly the failure this
+    module's `TIER_A_FIELDS` comment documents elsewhere in this file: two
+    encodings of one decision, free to drift, with nothing to notice - and
+    that shape already cost this repository real time once, when two
+    independently-grown Tier A tables disagreed in both directions. A single
+    public definition closes the same gap here: the bool-is-not-a-number rule
+    can now only drift by drifting in the one place every caller reads it.
     """
     if isinstance(value, bool):
         return None
@@ -348,7 +357,7 @@ def _scaled_numbers(candidates: Sequence[ConflictCandidate]) -> list[float] | No
     """
     numbers: list[float] = []
     for candidate in candidates:
-        number = _numeric_value(candidate.value)
+        number = as_number(candidate.value)
         if number is None:
             return None
         numbers.append(number)
@@ -395,7 +404,7 @@ def _reconciles(a: ConflictCandidate, b: ConflictCandidate, tolerance: FieldTole
     base_b = _BASE_UNIT.get(b.unit.strip().casefold())
     if base_a is None or base_b is None or base_a[0] != base_b[0]:
         return False
-    number_a, number_b = _numeric_value(a.value), _numeric_value(b.value)
+    number_a, number_b = as_number(a.value), as_number(b.value)
     if number_a is None or number_b is None:
         return False
     common_a, common_b = number_a * base_a[1], number_b * base_b[1]
@@ -560,6 +569,6 @@ def assign_severity(
     value = _clamp(int(base) + modifier)
     if field_name in TIER_A_FIELDS:
         value = max(value, int(Severity.HIGH))
-    if criticality_for(field_name) is Severity.CRITICAL:
+    if base is Severity.CRITICAL:
         value = max(value, int(Severity.CRITICAL))
     return Severity(value)

@@ -246,28 +246,31 @@ them:
 |---|---|---|
 | **BM25** | `spec.md` FR-RAG-03, the requirement body — the TRS's own wording | Normative statement of the requirement; reversed by the plan, not by an edit |
 | **`tsvector` + `pg_trgm`** | `plan.md` Decision 3b, `tasks.md` task C.5 in work package C, this document | The chosen design |
-| **The embedding model's sparse output** | The ⚠️ deviation note beside FR-RAG-03 in `spec.md` | Inaccurate — see below |
+| **The embedding model's sparse output** | Nowhere, as of this fix — it was the ⚠️ deviation note beside FR-RAG-03 in `spec.md` until corrected | Rejected as the FR-RAG-03 replacement; remains live only as the Decision 5 contingency |
 
 The requirement body still reading “vector + BM25” is deliberate and is not drift. Analysis
 [A-24](../specs/001-procurement-agent/analysis.md) restored the TRS wording on purpose and marked
 the reversal inline, so that a `shall` was recorded as overridden rather than paraphrased away.
 A-24 is therefore correctly closed as **Fixed**: the reversal is registered.
 
-What A-24 did not catch is that its inline note describes the *replacement* wrongly. Sparse
-output from the embedding model is a Decision 5 contingency — swap Qwen3-Embedding-4B for
+What A-24 did not originally catch is that its inline note described the *replacement* wrongly.
+Sparse output from the embedding model is a Decision 5 contingency — swap Qwen3-Embedding-4B for
 `bge-m3`, which emits dense, learned-sparse and ColBERT vectors in one pass — held in reserve if
 Postgres full-text search proves weak on part numbers. Decision 3b did not choose it. Three code
 docstrings repeated one or other stale position and have been corrected against Decision 3b
 (`ports/__init__.py`, `services/retrieval/__init__.py`, `services/indexing/__init__.py`); the
-`spec.md` note is what remains.
+`spec.md` note has now been corrected to match, naming Postgres `tsvector`/`pg_trgm` fused with
+RRF instead.
 
 Build the adapter to Decision 3b. That is not this document overruling `spec.md` — the authority
 order below puts `spec.md` two ranks above `plan.md`, and nothing here changes that. It is that
 the reversal was taken through the escape hatch: A-24 is a register entry, so the plan is the
 recorded exception rather than a silent one. Cite A-24 and Decision 3b in the code.
 
-Correcting the note itself is a `spec.md` edit and needs its own register entry, in the register
-named under [Specification authority](#specification-authority) below. Do not do it in passing.
+Correcting the note itself was a `spec.md` edit. It is registered by updating A-24's own
+resolution in the register named under [Specification authority](#specification-authority) below,
+rather than as a new entry, because it corrects A-24's description of the reversal rather than
+filing a new deviation.
 
 ## Parsing and extraction design
 

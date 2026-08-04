@@ -616,17 +616,256 @@ remained, now records the note as corrected and points here.
 
 ---
 
-# Round 5 — orchestration scale and the determinism artifact (2026-08-04)
+# Round 5 — four parallel reviews of the unwritten half (2026-08-04)
+
+Six findings from four reviews run in parallel, each against a different seam, and the batch has a
+shape worth naming: **every one is in code or DDL that no caller has exercised yet.** The retrieval
+services raise `NotImplementedError`, `orchestrator.run` raises `NotImplementedError`, `write_workbook`
+raises `NotImplementedError`, and C4's Python half does not exist, so nothing has emitted an audit
+event. That is why five of the six cost a signature line, a constraint clause or a docstring here
+and would cost a migration, a re-embed of the corpus or a breaking interface change once the first
+real caller exists. A-41 is the exception: it is a live defect in shipped DDL.
+
+The four reviews were scoped to disjoint file sets and given pre-assigned ID ranges, because the
+register has been renumbered once already (A-23…A-27, Round 3) after parallel work collided in it.
+They still each opened a block titled *Round 5*; the three blocks are consolidated here, in ID
+order, rather than left as three rounds bearing one number.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-41 | **H** | **`claim_natural_key` omitted `condition`, so the schema rejected the multi-condition claims C2/D-1 exist to store.** `FieldClaim.claim_key()` keys on `(document_id, field_name, extractor_version, condition.grouping_key())`; the DDL keyed on everything but the condition. Two claims for one field of one document at two ambients collided | **Fixed** — `condition` added, `NULLS NOT DISTINCT` adopted, four live tests |
+| A-42 | **M** | **`audit.event.stream` was redundant with `document_id` by construction and served no requirement it did not.** A `CHECK (stream = 'doc:' \|\| document_id)` pinned its only degree of freedom to zero, and `sql/README.md` decision 8 already conceded the column bought no future capability | **Fixed** — column dropped, chain re-keyed on `document_id`, all six chain properties re-measured |
+| A-43 | **H** | **The port contract could not express Decision 3b.** `VectorStorePort.search` took only a dense vector, so the `tsvector` and `pg_trgm` legs had no interface carrying the query *text*; the decision was implementable only by putting raw SQL in the retrieval service or fusing three round-trips in Python. Fusing in Python also put the ACL filter in three places, where NFR-03/AC-8 need one | **Fixed** — `query_text` added; hybrid specified as one statement in the adapter; RRF dropped |
+| A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
+| A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
+| A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
+
+`sql/` was re-read against the contracts it stores rather than against itself. Round 4 established
+that the DDL's *behaviour* is now live-tested; this round asks the prior question — whether the
+constraints encode what the Python side means. Both findings below are in that gap, and neither was
+reachable from the SQL alone: one is a constraint that disagrees with a frozen key, the other a
+column whose justification its own documentation had already withdrawn.
+
+## A-41 (High) — the claim key and the claim contract disagree about `condition`
+
+**Artifacts:** `sql/04_claim.sql` vs `src/procurement_agent/services/claims/__init__.py`
+
+`FieldClaim.claim_key()` is frozen and its docstring states the reason in one line: "one datasheet
+stating a parameter at three ambients is three claims, not one extractor contradicting itself." The
+key is `(document_id, field_name, extractor_version, condition.grouping_key())`. `claim_natural_key`
+was `(document_id, component_category, supplier, model, nameplate, field, extractor_version)` — the
+component identity added deliberately (sql/README.md decision 2), and `condition` simply absent.
+
+The consequence runs in two directions, and only one of them was visible.
+
+**With `nameplate` set — the PV case, which is D-1's own.** Trina prints STC and NOCT nameplate
+power side by side. One document, one field, one extractor version, one bin, two conditions.
+Measured against PostgreSQL 16:
+
+```
+INSERT ... nameplate 700, field 'nameplate_power', condition '{"basis":"stc"}'
+ INSERT 0 1
+INSERT ... nameplate 700, field 'nameplate_power', condition '{"basis":"noct"}'
+ ERROR:  duplicate key value violates unique constraint "claim_natural_key"
+```
+
+**With `nameplate` NULL — inverters and BESS.** An ordinary UNIQUE treats NULLs as distinct, so the
+constraint was inert: the Sungrow SG350HX trio (352/320/295 kVA at 30/40/50 °C) inserted, and so did
+a genuine same-condition duplicate. Both halves are wrong and they hide each other — the C2 case
+survived off-PV only through the NULL gap, so a reviewer sampling inverters saw a healthy
+constraint. That NULL half *was* documented (04_claim.sql, and README decision 2). The `condition`
+omission was documented nowhere.
+
+**Nothing caught it, and that is the more interesting half.** No Python persists claims yet, so the
+projection layer never met the constraint; and `tests/test_sql_behaviour.py` inserted claims but
+never two conditions for one field, so the live suite was green against a schema that refused the
+central case of the layer above it. A test suite that seeds one row per shape cannot see a
+constraint that is wrong about the second row.
+
+**Fix.** `condition` added to the key, and `NULLS NOT DISTINCT` adopted with it. The two are one
+change rather than two: the argument for leaving NULLs distinct was that a category with no bin
+discriminator might hold more than one instance per supplier+model per document — but with
+`condition` in the key, the realistic reason two such rows differ is now represented explicitly, and
+what remains under a collapsed NULL is one document, one component identity, one field, one
+extractor version and one condition. `claim_key()` calls that one assertion outright, since it does
+not carry the component columns at all. `nameplate` is the only nullable column in the key, so the
+modifier reaches nothing else.
+
+**The DDL key stays deliberately looser than `claim_key()`, and the comment says so at length.**
+It compares `condition` as whole jsonb where the contract compares `grouping_key()`, which excludes
+`note` and `derived`; jsonb normalises key order and numeric spelling but treats `{"basis":null}`
+and `{}` as different values. So the constraint permits rows the contract counts as one claim. On an
+append-only table that is a duplicate the projection collapses, never a rejected valid claim — the
+safe direction, and the reason the DDL must not later be "tightened" into a
+`grouping_key()`-equivalent expression index.
+
+Four live tests: two conditions of one field both insert; the Sungrow trio inserts; a same-key
+same-condition duplicate is refused; the same with `nameplate` NULL is refused. Revert-checked
+individually — restoring the old constraint line turns the first and the fourth red.
+
+## A-42 (Medium) — a column whose one degree of freedom was constrained to zero
+
+**Artifacts:** `sql/07_audit_event.sql`, `sql/README.md` decision 8
+
+`audit.event` carried `stream text NOT NULL` beside a `document_id` foreign key whose own comment
+read "Redundant with `stream` by construction", the two held equal by
+`CHECK (stream = 'doc:' || document_id)`. `stream` then keyed all three UNIQUE constraints and the
+self-referential foreign key.
+
+Decision 9's requirement is that the chain be per document, "not globally, so cross-document
+concurrency stays unconstrained". That is carried entirely by document-scoped uniqueness;
+`document_id` is `NOT NULL` and a foreign key, so it is at least as strong an identity as a derived
+text literal. The column's one hypothetical value — a future non-document audit stream — was already
+foreclosed by the CHECK that kept it consistent, and `sql/README.md` decision 8 said so in as many
+words: "this table cannot be reused for any future non-document audit stream as-is." A column whose
+single degree of freedom is constrained to zero is redundancy, not capability.
+
+**Timing is the whole argument for doing it rather than filing it.** tasks.md marks C4 partial —
+"the bytes the `hash` column is computed over are still undefined; nothing may emit an event" — so
+no chain exists to migrate and no hash is computed over the column. After the first real chain, it
+is frozen in.
+
+Re-keyed to `UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)`, `UNIQUE (document_id, seq)`,
+`UNIQUE (document_id, hash)` and a self-FK `(document_id, prev_hash) → (document_id, hash)`; the
+documented advisory-lock idiom becomes `pg_advisory_xact_lock(hashtext(document_id))`.
+
+**The load-bearing test was whether any chain property depended on the column.** All six were
+re-measured against a live server after the change and all six still hold: a valid chain appends; a
+fabricated parent is refused; a second disconnected root is refused; a duplicate hash is refused; a
+fork is refused; a duplicate genesis is refused. A seventh was added rather than assumed — a second
+document must still be able to start its own genesis row, which is the property a plausible
+over-simplification (`UNIQUE NULLS NOT DISTINCT (prev_hash)` alone) would break, and which nothing
+previously asserted.
+
+**Left outstanding, deliberately.** `tasks.md` H.3 still writes per-document chaining as
+`stream = 'doc:1234'`. That file is not this change's to edit, and A-39's lesson applies in the
+same words: a finding made in a file you cannot edit is still a finding. The wording needs to follow
+the schema.
+
+---
+
+Decisions 3b and 6 were read against the interfaces that have to carry them —
+`ports/__init__.py`, `services/retrieval`, `services/indexing`, `sql/03_chunk.sql` — rather than
+against each other. Both findings are cheap here and expensive later. The retrieval services are
+`NotImplementedError` stubs, no adapter implements `VectorStorePort`, and no test imports `ports`
+(checked by grep across `src` and `tests` before the signature was touched), so A-43 costs one
+signature line today and a breaking interface change once an adapter exists; A-44 costs a
+docstring today and a full re-embed of the corpus once C.3 has run once.
+
+## A-43 (High) — a decision no declared interface could reach
+
+**Artifacts:** `src/procurement_agent/ports/__init__.py` vs [plan.md Decision 3b](plan.md) ·
+`src/procurement_agent/services/retrieval/__init__.py`
+
+Decision 3b names three legs. Two of them match text: `tsvector`/GIN over `chunk.tsv` and
+`pg_trgm` over `chunk_text`. `VectorStorePort.search` took `vector: list[float]` and a filter set,
+and `retrieve()` received `embedder`, `store` and `reranker` — the query string existed in the
+service and stopped there. So the decision as written had exactly two implementations available:
+raw SQL inside `services/retrieval`, which is a second path into the store that no adapter swap
+follows and therefore straightforwardly against NFR-04's "vector store swappable behind a stable
+interface"; or three store calls fused in Python.
+
+The second is the one worth naming, because it looks harmless. `services/retrieval` already says
+that filtering must happen **before** ranking so restricted content never influences a result
+(NFR-03, AC-8). Three legs orchestrated in Python is three call sites that each have to remember
+`allowed_document_ids`, and the failure is silent in the direction that matters — a leg that
+forgets the predicate returns *more*, and the reranker happily orders it. One shared CTE is one
+place. It also decides what C.9 is worth: `len(results) == k` on a filtered query covers all three
+legs when there is one query, and one leg out of three when there are three.
+
+**The fix is two sentences of contract.** `search` takes `query_text` beside `vector` — the same
+query in two representations, both required, so a caller cannot silently get a third of Decision
+3b. And the adapter implements the legs as *one statement*: shared filter CTE, three ranked legs
+over it, union and dedup by `chunk_id` in SQL, `LIMIT` the rerank budget.
+
+**RRF (k=60) is dropped in the same edit**, and this is the part that deserves an argument rather
+than an assertion. Decision 3b's own case for tolerating weak per-leg ranking is that the
+cross-encoder determines final order — the ranking function "barely matters" (plan.md, Decision
+3b). Grant that, and RRF's only observable effect in this pipeline is *which candidates make the
+rerank cut-off*. Size each leg at `budget // 3` and the deduped union is provably no larger than
+the budget, so the whole union reaches the reranker; a fusion step applied to a set that already
+fits can only drop members. **Union recall ≥ RRF recall by construction**, and the deleted stage
+had no other observable output, since final order and `RetrievedChunk.score` were always going to
+be the reranker's.
+
+Two things this does **not** touch, deliberately:
+
+- **The reranker stays.** FR-RAG-03's body mandates reranking, NFR-04 names it a swap point, and
+  it is the thing that licenses both the missing BM25 (A-24) and now the missing fusion. Removing
+  RRF makes the reranker more load-bearing, not less. The degraded path is written down for the
+  same reason: reranker unavailable falls back to **dense-score order**, never to RRF, which would
+  otherwise creep back as the fallback and be exercised only when nobody is looking.
+- **Neither lexical leg is trimmed.** `pg_trgm` in particular is the leg the decision exists for
+  (`JKM610N-66HL4M-V` against `JKM610N 66HL4M V`), and `tsvector` supplies recall into the
+  candidate set. The revision changes how the legs are *combined*, not how many there are.
+
+**Left open deliberately, and this branch cannot fix it.** `spec.md`'s FR-RAG-03 deviation note
+and `docs/architecture.md` both still describe the replacement as "fused with Reciprocal Rank
+Fusion (k=60)" — which was correct when A-40 corrected it and is now half-stale, naming a fusion
+stage the plan no longer has. The requirement text is untouchable here (this is a plan-level
+revision and `spec.md` is two ranks above `plan.md`), and correcting the note is itself a
+`spec.md` edit that has to be registered on its own, exactly as A-40 was. Recording it rather than
+reaching for the file is A-39's rule: a finding made in a file you do not own is still a finding.
+The remedy is one clause — "unioned and deduped in a single statement, then reranked, not BM25" —
+and it should cite A-24 and A-43 together.
+
+## A-44 (Medium) — the one string you cannot cheaply change was the generated one
+
+**Artifacts:** [plan.md Decision 6](plan.md) and [tasks.md C.3](tasks.md) vs `sql/03_chunk.sql`
+
+Decision 6 asked for 1–2 LLM-generated sentences of document/section context per chunk, prepended
+before embedding. `sql/03_chunk.sql` had already had to defuse half of that: `context_prefix` is a
+separate column from `chunk_text` precisely so a citation never shows a reviewer generated framing
+as if it were the source, and the lexical indexes run over `chunk_text` only. That split is right
+and is kept exactly as designed.
+
+What the split does not defuse is the embedding. The prefix is *inside* the vector, and the fields
+a datasheet chunk is retrieved by — supplier, model, section — are the fields a generated sentence
+is most likely to get subtly wrong. A prefix reading "Jinko JKM610N-66HL4M" on a chunk from a
+`JKM610N-66HL4M-V` sheet is not a cosmetic error; it is a wrong part number embedded into the one
+representation the dense leg searches, for exactly the row-lookup queries C.2 calls out ("what is
+the Voc of module X"). The evidence on the other side is thin by the register's own standard: the
+~67% retrieval-failure reduction is imported from large-corpus benchmarks, and D-11 states flatly
+that no public benchmark exists for PV/inverter/BESS datasheet extraction and every accuracy
+figure in the plan is extrapolated. A-9's rule applies: where two options both work, the one that
+wins is the one with the less fragile failure mode.
+
+**The chunk row already carries everything the sentence was going to say.** `supplier`, `model`,
+`document_type`, `section` and `page` are denormalised onto `public.chunk` (sql/03_chunk.sql), so
+the prefix is a join-free format string over validated metadata:
+
+    "Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): "
+
+Zero LLM calls, deterministic, reproducible from the row — a mismatch between prefix and metadata
+becomes a bug with a cause rather than a generation artefact. `services.indexing.context_prefix`
+declares it, and takes no `LLMPort`, which is what makes the decision enforceable rather than
+merely written down.
+
+**`table_summary` stays LLM-generated, and the asymmetry is the whole point.** Its case is the one
+the prefix's was borrowed from and does not hold: query vocabulary like "temperature coefficient"
+or "derating" genuinely appears nowhere in the cells, so there is real information to add, and it
+is one call per *table* rather than per chunk. After this revision it is the only generated text
+in the index path, which is a defensible resting point — one generator, one chunk kind, and it
+never touches a `table_row` or `prose` embedding.
+
+**Why now and not after the first corpus.** The prefix is baked into every embedding, so changing
+strategy later is a full re-embed of every chunk — the single operation FR-RAG-05's incremental
+add/update/delete philosophy exists to avoid, and the one thing `VectorStorePort.upsert`'s
+stable-ID contract cannot make cheap. Today it is a docstring and a column comment.
+
+**One wording left for the file's owner:** `sql/README.md` item 15, under "Design decisions made
+here that the specs did not settle", justifies the `context_prefix`/`chunk_text` split as keeping
+"a generated framing sentence" out of citations.
+The split survives this revision unchanged and so does the reasoning, but "generated" is now the
+wrong word for the prefix specifically — the honest form is that a citation shows source text and
+nothing else, generated or derived. Not edited here; `sql/README.md` is not this branch's file.
+
+---
 
 Two revisions of the same shape, and neither rests on a new measurement: in both cases this
 repository already contained the argument, and a higher-ranked artifact had not caught up with it.
 One collapses a runner the design's own decisions had already made unnecessary; the other points
 an acceptance criterion at the artifact that can actually carry it.
-
-| ID | Severity | Finding | Status |
-|---|---|---|---|
-| A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
-| A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
 
 ## A-45 (Medium) — the queue outlived the requirement that justified it
 
@@ -837,128 +1076,3 @@ still raises `NotImplementedError` — so they are drift, not error.
   scaffolding stage; assigned to WP-A.
 - **NFR-06 and NFR-07 have no verification.** Both are scale/latency properties that need a
   running system. Assigned to WP-I.
-
----
-
-# Round 5 — the retrieval pipeline, reviewed before it is written (2026-08-04)
-
-Decisions 3b and 6 were read against the interfaces that have to carry them —
-`ports/__init__.py`, `services/retrieval`, `services/indexing`, `sql/03_chunk.sql` — rather than
-against each other. Both findings are cheap here and expensive later. The retrieval services are
-`NotImplementedError` stubs, no adapter implements `VectorStorePort`, and no test imports `ports`
-(checked by grep across `src` and `tests` before the signature was touched), so A-43 costs one
-signature line today and a breaking interface change once an adapter exists; A-44 costs a
-docstring today and a full re-embed of the corpus once C.3 has run once.
-
-| ID | Severity | Finding | Status |
-|---|---|---|---|
-| A-43 | **H** | **The port contract could not express Decision 3b.** `VectorStorePort.search` took only a dense vector, so the `tsvector` and `pg_trgm` legs had no interface carrying the query *text*; the decision was implementable only by putting raw SQL in the retrieval service or fusing three round-trips in Python. Fusing in Python also put the ACL filter in three places, where NFR-03/AC-8 need one | **Fixed** — `query_text` added; hybrid specified as one statement in the adapter; RRF dropped |
-| A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
-
-## A-43 (High) — a decision no declared interface could reach
-
-**Artifacts:** `src/procurement_agent/ports/__init__.py` vs [plan.md Decision 3b](plan.md) ·
-`src/procurement_agent/services/retrieval/__init__.py`
-
-Decision 3b names three legs. Two of them match text: `tsvector`/GIN over `chunk.tsv` and
-`pg_trgm` over `chunk_text`. `VectorStorePort.search` took `vector: list[float]` and a filter set,
-and `retrieve()` received `embedder`, `store` and `reranker` — the query string existed in the
-service and stopped there. So the decision as written had exactly two implementations available:
-raw SQL inside `services/retrieval`, which is a second path into the store that no adapter swap
-follows and therefore straightforwardly against NFR-04's "vector store swappable behind a stable
-interface"; or three store calls fused in Python.
-
-The second is the one worth naming, because it looks harmless. `services/retrieval` already says
-that filtering must happen **before** ranking so restricted content never influences a result
-(NFR-03, AC-8). Three legs orchestrated in Python is three call sites that each have to remember
-`allowed_document_ids`, and the failure is silent in the direction that matters — a leg that
-forgets the predicate returns *more*, and the reranker happily orders it. One shared CTE is one
-place. It also decides what C.9 is worth: `len(results) == k` on a filtered query covers all three
-legs when there is one query, and one leg out of three when there are three.
-
-**The fix is two sentences of contract.** `search` takes `query_text` beside `vector` — the same
-query in two representations, both required, so a caller cannot silently get a third of Decision
-3b. And the adapter implements the legs as *one statement*: shared filter CTE, three ranked legs
-over it, union and dedup by `chunk_id` in SQL, `LIMIT` the rerank budget.
-
-**RRF (k=60) is dropped in the same edit**, and this is the part that deserves an argument rather
-than an assertion. Decision 3b's own case for tolerating weak per-leg ranking is that the
-cross-encoder determines final order — the ranking function "barely matters" (plan.md, Decision
-3b). Grant that, and RRF's only observable effect in this pipeline is *which candidates make the
-rerank cut-off*. Size each leg at `budget // 3` and the deduped union is provably no larger than
-the budget, so the whole union reaches the reranker; a fusion step applied to a set that already
-fits can only drop members. **Union recall ≥ RRF recall by construction**, and the deleted stage
-had no other observable output, since final order and `RetrievedChunk.score` were always going to
-be the reranker's.
-
-Two things this does **not** touch, deliberately:
-
-- **The reranker stays.** FR-RAG-03's body mandates reranking, NFR-04 names it a swap point, and
-  it is the thing that licenses both the missing BM25 (A-24) and now the missing fusion. Removing
-  RRF makes the reranker more load-bearing, not less. The degraded path is written down for the
-  same reason: reranker unavailable falls back to **dense-score order**, never to RRF, which would
-  otherwise creep back as the fallback and be exercised only when nobody is looking.
-- **Neither lexical leg is trimmed.** `pg_trgm` in particular is the leg the decision exists for
-  (`JKM610N-66HL4M-V` against `JKM610N 66HL4M V`), and `tsvector` supplies recall into the
-  candidate set. The revision changes how the legs are *combined*, not how many there are.
-
-**Left open deliberately, and this branch cannot fix it.** `spec.md`'s FR-RAG-03 deviation note
-and `docs/architecture.md` both still describe the replacement as "fused with Reciprocal Rank
-Fusion (k=60)" — which was correct when A-40 corrected it and is now half-stale, naming a fusion
-stage the plan no longer has. The requirement text is untouchable here (this is a plan-level
-revision and `spec.md` is two ranks above `plan.md`), and correcting the note is itself a
-`spec.md` edit that has to be registered on its own, exactly as A-40 was. Recording it rather than
-reaching for the file is A-39's rule: a finding made in a file you do not own is still a finding.
-The remedy is one clause — "unioned and deduped in a single statement, then reranked, not BM25" —
-and it should cite A-24 and A-43 together.
-
-## A-44 (Medium) — the one string you cannot cheaply change was the generated one
-
-**Artifacts:** [plan.md Decision 6](plan.md) and [tasks.md C.3](tasks.md) vs `sql/03_chunk.sql`
-
-Decision 6 asked for 1–2 LLM-generated sentences of document/section context per chunk, prepended
-before embedding. `sql/03_chunk.sql` had already had to defuse half of that: `context_prefix` is a
-separate column from `chunk_text` precisely so a citation never shows a reviewer generated framing
-as if it were the source, and the lexical indexes run over `chunk_text` only. That split is right
-and is kept exactly as designed.
-
-What the split does not defuse is the embedding. The prefix is *inside* the vector, and the fields
-a datasheet chunk is retrieved by — supplier, model, section — are the fields a generated sentence
-is most likely to get subtly wrong. A prefix reading "Jinko JKM610N-66HL4M" on a chunk from a
-`JKM610N-66HL4M-V` sheet is not a cosmetic error; it is a wrong part number embedded into the one
-representation the dense leg searches, for exactly the row-lookup queries C.2 calls out ("what is
-the Voc of module X"). The evidence on the other side is thin by the register's own standard: the
-~67% retrieval-failure reduction is imported from large-corpus benchmarks, and D-11 states flatly
-that no public benchmark exists for PV/inverter/BESS datasheet extraction and every accuracy
-figure in the plan is extrapolated. A-9's rule applies: where two options both work, the one that
-wins is the one with the less fragile failure mode.
-
-**The chunk row already carries everything the sentence was going to say.** `supplier`, `model`,
-`document_type`, `section` and `page` are denormalised onto `public.chunk` (sql/03_chunk.sql), so
-the prefix is a join-free format string over validated metadata:
-
-    "Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): "
-
-Zero LLM calls, deterministic, reproducible from the row — a mismatch between prefix and metadata
-becomes a bug with a cause rather than a generation artefact. `services.indexing.context_prefix`
-declares it, and takes no `LLMPort`, which is what makes the decision enforceable rather than
-merely written down.
-
-**`table_summary` stays LLM-generated, and the asymmetry is the whole point.** Its case is the one
-the prefix's was borrowed from and does not hold: query vocabulary like "temperature coefficient"
-or "derating" genuinely appears nowhere in the cells, so there is real information to add, and it
-is one call per *table* rather than per chunk. After this revision it is the only generated text
-in the index path, which is a defensible resting point — one generator, one chunk kind, and it
-never touches a `table_row` or `prose` embedding.
-
-**Why now and not after the first corpus.** The prefix is baked into every embedding, so changing
-strategy later is a full re-embed of every chunk — the single operation FR-RAG-05's incremental
-add/update/delete philosophy exists to avoid, and the one thing `VectorStorePort.upsert`'s
-stable-ID contract cannot make cheap. Today it is a docstring and a column comment.
-
-**One wording left for the file's owner:** `sql/README.md` item 15, under "Design decisions made
-here that the specs did not settle", justifies the `context_prefix`/`chunk_text` split as keeping
-"a generated framing sentence" out of citations.
-The split survives this revision unchanged and so does the reasoning, but "generated" is now the
-wrong word for the prefix specifically — the honest form is that a citation shows source text and
-nothing else, generated or derived. Not edited here; `sql/README.md` is not this branch's file.

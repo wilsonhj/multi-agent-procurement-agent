@@ -190,9 +190,13 @@ it:
 | a hash-chain fork is loud, not silent | Decision 9 | refused, `audit_event_no_fork` |
 | a duplicate *genesis* row is also refused | `NULLS NOT DISTINCT` | refused |
 | `prev_hash` naming a parent that never existed | Decision 9 | refused, FK |
-| a second disconnected root in one stream | Decision 9 | refused, FK |
-| two events in one stream sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
+| a second disconnected root in one document's chain | Decision 9 | refused, FK |
+| two events in one document's chain sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
 | a valid chain still appends, and a new document still starts one | Decision 9 | both allowed |
+| all six of the above still hold with no `stream` column | A-42 | re-measured, all six |
+| two conditions of one field/document/extractor both insert | C2, D-1, A-41 | both accepted |
+| a same-key **same-condition** duplicate is still refused | C8, A-41 | refused |
+| the same, with `nameplate` NULL | `NULLS NOT DISTINCT`, A-41 | refused |
 | duplicate `content_hash` refused | NFR-05, AC-5 | refused |
 | app cannot declassify or delete a row it cannot read | Decision 3c | `UPDATE 0`, `DELETE 0` |
 | a chunk written for a restricted document inherits the flag | NFR-03, C7 | inherited |
@@ -258,9 +262,9 @@ SET ROLE procurement_app;
 
 -- Should succeed: INSERT and SELECT are the only granted privileges.
 INSERT INTO audit.event
-    (stream, document_id, seq, prev_hash, hash, event_type, actor, payload_canonical)
+    (document_id, seq, prev_hash, hash, event_type, actor, payload_canonical)
 VALUES (
-    'doc:smoke-test', 'smoke-test', 0, NULL,
+    'smoke-test', 0, NULL,
     decode(repeat('00', 32), 'hex'), 'document_ingested', 'verification-checklist', '{}'
 );
 
@@ -384,15 +388,57 @@ can check exactly these choices rather than re-deriving the whole schema.
    `TSM-NEG21C.20` sheet spans 6 bins and 22 CEC rows per
    `schema/component.py`'s own docstring). `claim_natural_key` adds
    `(component_category, supplier, model, nameplate)` so the constraint means
-   what C8 intends. Two follow-on gaps this introduces, left open rather than
-   silently "solved":
-   - `nameplate` NULLs are not collapsed (no `NULLS NOT DISTINCT`), so a
-     category with no bin discriminator and more than one same-supplier-model
-     instance per document is not fully protected against key collision.
+   what C8 intends, and `condition`, which the frozen Python contract's own key
+   carries.
+
+   > **Correction (A-41).** `condition` was **missing** from this constraint,
+   > and that was a defect rather than an open gap.
+   > `FieldClaim.claim_key()` keys on
+   > `(document_id, field_name, extractor_version, condition.grouping_key())`
+   > and says why: "one datasheet stating a parameter at three ambients is three
+   > claims, not one extractor contradicting itself." Without `condition` the
+   > constraint rejected exactly the multi-condition claims C2/D-1 exist to
+   > store. Measured against a live server: Trina's STC and NOCT nameplate
+   > powers, one document, one field, one extractor version, one bin — the
+   > second INSERT raised
+   > `duplicate key value violates unique constraint "claim_natural_key"`.
+   > The Sungrow SG350HX trio inserted only because `nameplate` is NULL on
+   > inverters and an ordinary UNIQUE treats NULLs as distinct, i.e. the C2 case
+   > survived off-PV by accident, through the gap the next paragraph closes.
+   > `tests/test_sql_behaviour.py::test_two_conditions_of_one_field_both_insert`
+   > and `::test_the_sungrow_trio_inserts_under_one_key` are the live guards.
+
+   `nameplate` NULLs **are** now collapsed (`UNIQUE NULLS NOT DISTINCT`);
+   `nameplate` is the only nullable column in the key, so nothing else is
+   affected. This row previously listed the opposite as a deliberate narrow gap,
+   on the argument that a category with no bin discriminator might hold more
+   than one instance per supplier+model per document. That argument does not
+   survive `condition` entering the key: the realistic reason two such rows
+   differ is now represented, and what remains under a collapsed NULL is one
+   document, one component identity, one field, one extractor version and one
+   condition — which `claim_key()` calls one assertion outright, since it does
+   not carry the component columns at all.
+   `::test_a_same_condition_duplicate_is_refused_with_a_null_nameplate` measures
+   it; before the change that INSERT was accepted.
+
+   Two properties of the constraint that a later reader must not "tighten":
+   - It compares `condition` as whole jsonb, where `claim_key()` compares
+     `condition.grouping_key()` — which excludes `note` and `derived`. jsonb
+     equality is structural (key order and numeric spelling normalise away;
+     `{"basis":null}` and `{}` do not), so the DDL key is **looser** than the
+     contract's: it permits a duplicate row the projection collapses, and can
+     never reject a claim the contract calls distinct. On an append-only table
+     that asymmetry is the safe direction. A `grouping_key()`-equivalent
+     expression index would invert it and start refusing valid claims over a
+     free-text `note`.
    - The key assumes `extractor_version` is fine-grained enough to
      distinguish genuinely different extraction strategies for the same field
      (e.g. WP-B B.6's field-guided vs. document-guided cross-read) so they land
-     as distinct rows rather than colliding.
+     as distinct rows rather than colliding. Still open.
+
+   Indexing jsonb in a btree carries one operational caveat: a `condition`
+   serialising past the ~2704-byte btree tuple limit fails the INSERT. Only
+   `note` is unbounded, and the GIN index on the column is unaffected.
 
 3. **`conflict`/`resolution` reference `claim` rows through a junction table**
    (`conflict_candidate`), rather than storing a denormalised copy of
@@ -421,7 +467,8 @@ can check exactly these choices rather than re-deriving the whole schema.
 
 6. **Cross-document retrieval "queries" are out of scope for `audit.event`.**
    NFR-02 wants an audit trail of "every ... query" too, but Decision 9 fixes
-   this table's chain as strictly per-document (`stream = 'doc:<id>'`), and a
+   this table's chain as strictly per-document (one chain per
+   `document.document_id`; see decision 8), and a
    retrieval query can span many documents at once. Forcing it onto one
    document's chain would misrepresent it; giving it its own chain per query
    would not have a stable "document" identity to key on. This schema does not
@@ -434,13 +481,36 @@ can check exactly these choices rather than re-deriving the whole schema.
    implementation picks something else, these two constraints must move with
    it.
 
-8. **`stream = 'doc:' || document_id` is enforced structurally**, via a CHECK
-   tying `stream` to a real `document.document_id` through a foreign key. This
-   is the strongest possible reading of "never globally" — it makes a non-
-   document-scoped stream impossible without a migration, not just
-   discouraged. Flagged because it is a real restriction, not only a safety
-   net: this table cannot be reused for any future non-document audit stream
-   as-is.
+8. **There is no `stream` column; `document_id` is the chain identity** (A-42).
+   This row previously read "`stream = 'doc:' || document_id` is enforced
+   structurally, via a CHECK tying `stream` to a real `document.document_id`
+   through a foreign key … this table cannot be reused for any future
+   non-document audit stream as-is." Both halves were true, and together they
+   are the argument for deleting the column: a `stream` whose only legal value
+   is a function of `document_id` has one degree of freedom, constrained to
+   zero. Decision 9's requirement is that the chain be per document "not
+   globally, so cross-document concurrency stays unconstrained", and
+   document-scoped uniqueness carries that whole. The column bought a CHECK, a
+   wider key in three indexes and a second name for one thing in every caller,
+   and bought nothing else.
+
+   Re-keyed to `UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)`,
+   `UNIQUE (document_id, seq)`, `UNIQUE (document_id, hash)` and a self-FK
+   `(document_id, prev_hash) → (document_id, hash)`. The documented
+   advisory-lock idiom becomes
+   `SELECT pg_advisory_xact_lock(hashtext(document_id));`. All six chain
+   properties the behavioural suite asserts were re-measured against a live
+   server after the change and all six still hold — a valid chain appends, a
+   fabricated parent is refused, a second disconnected root is refused, a
+   duplicate hash is refused, a fork is refused, a duplicate genesis is refused.
+
+   Done now rather than later because C4's Python half does not exist —
+   tasks.md marks C4 partial, "the bytes the `hash` column is computed over are
+   still undefined; nothing may emit an event" — so there is no chain to
+   migrate. After the first real chain exists the column would be frozen into
+   it. **Left outstanding:** tasks.md H.3 still writes per-document chaining as
+   `stream = 'doc:1234'`. That file is not this change's to edit; A-42 records
+   the wording as needing to follow.
 
 9. **C7 (the ACL/labelling model) is implemented at its frozen minimum, not
    guessed at in full.** Tasks.md marks C7 "partial... undecided", and it stays

@@ -25,45 +25,64 @@
 -- it is not attempted here. The expected caller sequence (WP-H H.4), enforced
 -- by code review and by the Python client library, NOT by this schema:
 --
---   1. SELECT pg_advisory_xact_lock(hashtext(stream)::bigint);  -- own statement
+--   1. SELECT pg_advisory_xact_lock(hashtext(document_id));    -- own statement
 --   2. SELECT hash FROM audit.event
---        WHERE stream = $1 ORDER BY seq DESC LIMIT 1;           -- read the tip
+--        WHERE document_id = $1 ORDER BY seq DESC LIMIT 1;     -- read the tip
 --   3. -- in Python, per WP-H H.2: canonicalise the payload (RFC 8785, NOT
 --      -- jsonb -- jsonb normalises key order but preserves whatever numeric
 --      -- literal text it was given, so 1.0 and 1.00 stay textually distinct)
 --      -- and compute hash := sha256(prev_hash || canonical_payload || ...).
---   4. INSERT INTO audit.event (...) VALUES (...);              -- same txn
+--   4. INSERT INTO audit.event (...) VALUES (...);             -- same txn
 --
--- UNIQUE(stream, prev_hash) below turns any violation of that discipline into a
--- loud unique-violation error instead of a silent fork -- "necessary,
+-- UNIQUE(document_id, prev_hash) below turns any violation of that discipline
+-- into a loud unique-violation error instead of a silent fork -- "necessary,
 -- insufficient" per Decision 9: it catches a fork after the fact, it does not
 -- prevent the race that causes one, which is why step 1 still matters.
+--
+-- THERE IS NO `stream` COLUMN, and its absence is deliberate rather than an
+-- omission. Earlier versions carried `stream text NOT NULL` beside
+-- `document_id`, tied to it by `CHECK (stream = 'doc:' || document_id)`, and
+-- keyed all three UNIQUEs and the self-FK on it. The chain identity is
+-- `document_id`, directly. Decision 9 requires the chain be per document "not
+-- globally, so cross-document concurrency stays unconstrained", and
+-- document-scoped uniqueness carries that requirement whole -- there was nothing
+-- `stream` said that `document_id` did not already say. Its one hypothetical
+-- value, a future non-document audit stream, was structurally foreclosed by the
+-- very CHECK that kept it consistent; sql/README.md's decision 8 said so in as
+-- many words ("this table cannot be reused for any future non-document audit
+-- stream as-is"). A column whose single degree of freedom is constrained to zero
+-- is redundancy, not capability, and it cost a CHECK, a wider key in three
+-- indexes, and a second name for one thing in every caller.
+--
+-- Removed *now* because C4's Python half does not exist yet: tasks.md marks C4
+-- partial -- "the bytes the `hash` column is computed over are still undefined;
+-- nothing may emit an event". After the first real chain exists, the column is
+-- frozen into it. tasks.md H.3 still writes the chain as `stream = 'doc:1234'`;
+-- that is spec-side wording this file cannot edit, and A-42 in
+-- specs/001-procurement-agent/analysis.md records it as outstanding.
 --
 -- Depends on: 01_extensions_and_settings.sql (schema audit), 02_document.sql.
 
 CREATE TABLE audit.event (
     event_id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 
-    -- Decision 9: "chain per document ... not globally, so cross-document
-    -- concurrency stays unconstrained." The CHECK below makes "never global" a
-    -- structural property of the table, not a convention a caller could
-    -- forget: a stream literal like 'global' or an empty string fails at
-    -- INSERT time, not at some later audit.
-    stream             text NOT NULL,
-
-    -- Redundant with `stream` by construction (see the CHECK below), kept as
-    -- its own FK column rather than parsed out of `stream` at query time, so a
-    -- stream can never name a document that does not exist.
+    -- **The chain identity.** Decision 9: "chain per document ... not globally,
+    -- so cross-document concurrency stays unconstrained." Every UNIQUE and the
+    -- self-FK below lead on this column, which is what makes "never global" a
+    -- structural property of the table rather than a convention a caller could
+    -- forget -- there is no value of this column that names anything but one
+    -- real document, because it is a foreign key. See the header for why the
+    -- separate `stream` column that used to carry this was removed.
     document_id        text NOT NULL REFERENCES public.document (document_id) ON DELETE RESTRICT,
 
-    -- Ordering within a stream. A convenience for ORDER BY and for the H.5
-    -- verification CLI, which would otherwise have to walk the linked list one
+    -- Ordering within a document's chain. A convenience for ORDER BY and for
+    -- the H.5 verification CLI, which would otherwise walk the linked list one
     -- prev_hash lookup at a time; it is NOT itself the concurrency-safety
     -- mechanism -- that is the advisory-lock discipline above, plus the UNIQUE
     -- constraints below.
     seq                bigint NOT NULL CHECK (seq >= 0),
 
-    -- Hash chain. NULL prev_hash marks the one genesis event for a stream.
+    -- Hash chain. NULL prev_hash marks the one genesis event for a document.
     -- Digest algorithm is assumed to be SHA-256 (32 bytes): plan.md Decision 9
     -- measures chain performance but never pins an algorithm, so this is one
     -- of this file's flagged decisions -- see sql/README.md. If WP-H picks a
@@ -112,18 +131,17 @@ CREATE TABLE audit.event (
     -- together so a caller bug that disagrees between them fails loudly at
     -- INSERT rather than producing a chain that looks fine until someone
     -- walks it.
-    CONSTRAINT audit_event_stream_matches_document
-        CHECK (stream = 'doc:' || document_id),
     CONSTRAINT audit_event_genesis_seq_zero
         CHECK ((prev_hash IS NULL) = (seq = 0)),
 
     -- Fork detection, loud rather than silent (Decision 9's own phrase).
     -- NULLS NOT DISTINCT (PostgreSQL 15+, available under Decision 3's
-    -- PostgreSQL 18 pin) so that two genesis events for the same stream (both
+    -- PostgreSQL 18 pin) so that two genesis events for one document (both
     -- prev_hash NULL) collide too -- an ordinary UNIQUE constraint treats two
-    -- NULLs as distinct and would let one stream grow two unrelated roots.
-    CONSTRAINT audit_event_no_fork UNIQUE NULLS NOT DISTINCT (stream, prev_hash),
-    CONSTRAINT audit_event_seq_unique UNIQUE (stream, seq),
+    -- NULLs as distinct and would let one document's chain grow two unrelated
+    -- roots.
+    CONSTRAINT audit_event_no_fork UNIQUE NULLS NOT DISTINCT (document_id, prev_hash),
+    CONSTRAINT audit_event_seq_unique UNIQUE (document_id, seq),
 
     -- The chain has to be walkable, not merely fork-free.
     --
@@ -132,11 +150,11 @@ CREATE TABLE audit.event (
     -- procurement_app against the first version of this file:
     --
     --   1. a row whose prev_hash names a parent that never existed
-    --   2. a second, disconnected root in the same stream (seq 900, prev_hash
-    --      pointing at a fabricated digest) -- a fork made by starting a new
-    --      segment rather than by branching an existing one, which is precisely
-    --      what the comment above claims to prevent
-    --   3. two rows in one stream sharing a `hash`, i.e. a chain loop
+    --   2. a second, disconnected root in the same document's chain (seq 900,
+    --      prev_hash pointing at a fabricated digest) -- a fork made by starting
+    --      a new segment rather than by branching an existing one, which is
+    --      precisely what the comment above claims to prevent
+    --   3. two rows in one document's chain sharing a `hash`, i.e. a chain loop
     --
     -- Each is silent, and each produces a chain that can never be verified.
     -- Decision 9 leans on this chain as "the only mechanism that survives the
@@ -144,16 +162,16 @@ CREATE TABLE audit.event (
     -- re-verify", so a chain that was never walkable in the first place gives
     -- that argument nothing to stand on.
     --
-    -- UNIQUE (stream, hash) makes a digest identify at most one event per
-    -- stream, which is what lets the self-reference below be a foreign key at
+    -- UNIQUE (document_id, hash) makes a digest identify at most one event per
+    -- document, which is what lets the self-reference below be a foreign key at
     -- all, and independently rules out (3).
-    CONSTRAINT audit_event_hash_unique UNIQUE (stream, hash)
+    CONSTRAINT audit_event_hash_unique UNIQUE (document_id, hash)
 );
 
 -- The self-reference: every non-genesis event's parent must exist, in the same
--- stream. Added after the table rather than inline because a self-referential
--- FK cannot be declared against a unique constraint defined in the same
--- CREATE TABLE statement.
+-- document's chain. Added after the table rather than inline because a
+-- self-referential FK cannot be declared against a unique constraint defined in
+-- the same CREATE TABLE statement.
 --
 -- NOT VALID is deliberately NOT used: this file creates the table empty, so
 -- there is nothing to validate against and the constraint is enforced from the
@@ -170,8 +188,8 @@ CREATE TABLE audit.event (
 -- see it.
 ALTER TABLE audit.event
     ADD CONSTRAINT audit_event_parent_exists
-    FOREIGN KEY (stream, prev_hash)
-    REFERENCES audit.event (stream, hash)
+    FOREIGN KEY (document_id, prev_hash)
+    REFERENCES audit.event (document_id, hash)
     ON DELETE RESTRICT
     ON UPDATE RESTRICT;
 
@@ -181,6 +199,12 @@ COMMENT ON TABLE audit.event IS
     'actual boundary per plan.md Decision 9; the triggers are a free secondary '
     'tripwire that catches a mis-grant, nothing more.';
 
+-- A prefix-duplicate of `audit_event_seq_unique`'s index since the re-key, and
+-- kept anyway: `document_id` alone is the RLS policy's filter and the H.5 chain
+-- walk's filter, and a one-column index is materially smaller than the
+-- (document_id, seq) unique it would otherwise share. Recorded rather than left
+-- for a reader to wonder about, because "why are there two indexes led by the
+-- same column" is a fair question with a boring answer.
 CREATE INDEX audit_event_document_id_idx ON audit.event (document_id);
 CREATE INDEX audit_event_type_idx ON audit.event (event_type);
 
@@ -207,9 +231,9 @@ GRANT SELECT, INSERT ON audit.event TO procurement_ingest;
 --
 -- An audit log that reproduces the material it audits is a copy of that
 -- material, and NFR-03 does not carve out an exception for copies. The
--- derivation is the document this stream belongs to -- structurally exact here,
--- because `stream = 'doc:' || document_id` is a CHECK constraint on this table,
--- so an event's subject document is never ambiguous.
+-- derivation is the document the event's chain belongs to -- structurally exact
+-- here, because `document_id` IS the chain identity and a NOT NULL foreign key,
+-- so an event's subject document is never ambiguous and never absent.
 --
 -- **This does not weaken Decision 9.** RLS governs SELECT visibility; it is not
 -- and never was the immutability boundary -- that is the GRANT above (no UPDATE,
@@ -235,8 +259,8 @@ CREATE POLICY audit_event_confidentiality_select ON audit.event
 -- reads the chain tip with a SELECT, so a worker appending to a restricted
 -- document's chain must connect as procurement_ingest (00_roles.sql), which the
 -- policy below entitles. Under procurement_app that SELECT returns no rows and
--- the worker would compute a genesis event for a stream that already has one --
--- caught loudly by audit_event_no_fork, but caught late.
+-- the worker would compute a genesis event for a document whose chain already
+-- has one -- caught loudly by audit_event_no_fork, but caught late.
 CREATE POLICY audit_event_write_insert ON audit.event
     FOR INSERT
     WITH CHECK (true);

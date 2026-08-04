@@ -614,6 +614,119 @@ remained, now records the note as corrected and points here.
 
 ---
 
+---
+
+# Round 5 — the SQL substrate against the frozen Python contracts (2026-08-04)
+
+`sql/` was re-read against the contracts it stores rather than against itself. Round 4 established
+that the DDL's *behaviour* is now live-tested; this round asks the prior question — whether the
+constraints encode what the Python side means. Both findings below are in that gap, and neither was
+reachable from the SQL alone: one is a constraint that disagrees with a frozen key, the other a
+column whose justification its own documentation had already withdrawn.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-41 | **H** | **`claim_natural_key` omitted `condition`, so the schema rejected the multi-condition claims C2/D-1 exist to store.** `FieldClaim.claim_key()` keys on `(document_id, field_name, extractor_version, condition.grouping_key())`; the DDL keyed on everything but the condition. Two claims for one field of one document at two ambients collided | **Fixed** — `condition` added, `NULLS NOT DISTINCT` adopted, four live tests |
+| A-42 | **M** | **`audit.event.stream` was redundant with `document_id` by construction and served no requirement it did not.** A `CHECK (stream = 'doc:' \|\| document_id)` pinned its only degree of freedom to zero, and `sql/README.md` decision 8 already conceded the column bought no future capability | **Fixed** — column dropped, chain re-keyed on `document_id`, all six chain properties re-measured |
+
+## A-41 (High) — the claim key and the claim contract disagree about `condition`
+
+**Artifacts:** `sql/04_claim.sql` vs `src/procurement_agent/services/claims/__init__.py`
+
+`FieldClaim.claim_key()` is frozen and its docstring states the reason in one line: "one datasheet
+stating a parameter at three ambients is three claims, not one extractor contradicting itself." The
+key is `(document_id, field_name, extractor_version, condition.grouping_key())`. `claim_natural_key`
+was `(document_id, component_category, supplier, model, nameplate, field, extractor_version)` — the
+component identity added deliberately (sql/README.md decision 2), and `condition` simply absent.
+
+The consequence runs in two directions, and only one of them was visible.
+
+**With `nameplate` set — the PV case, which is D-1's own.** Trina prints STC and NOCT nameplate
+power side by side. One document, one field, one extractor version, one bin, two conditions.
+Measured against PostgreSQL 16:
+
+```
+INSERT ... nameplate 700, field 'nameplate_power', condition '{"basis":"stc"}'
+ INSERT 0 1
+INSERT ... nameplate 700, field 'nameplate_power', condition '{"basis":"noct"}'
+ ERROR:  duplicate key value violates unique constraint "claim_natural_key"
+```
+
+**With `nameplate` NULL — inverters and BESS.** An ordinary UNIQUE treats NULLs as distinct, so the
+constraint was inert: the Sungrow SG350HX trio (352/320/295 kVA at 30/40/50 °C) inserted, and so did
+a genuine same-condition duplicate. Both halves are wrong and they hide each other — the C2 case
+survived off-PV only through the NULL gap, so a reviewer sampling inverters saw a healthy
+constraint. That NULL half *was* documented (04_claim.sql, and README decision 2). The `condition`
+omission was documented nowhere.
+
+**Nothing caught it, and that is the more interesting half.** No Python persists claims yet, so the
+projection layer never met the constraint; and `tests/test_sql_behaviour.py` inserted claims but
+never two conditions for one field, so the live suite was green against a schema that refused the
+central case of the layer above it. A test suite that seeds one row per shape cannot see a
+constraint that is wrong about the second row.
+
+**Fix.** `condition` added to the key, and `NULLS NOT DISTINCT` adopted with it. The two are one
+change rather than two: the argument for leaving NULLs distinct was that a category with no bin
+discriminator might hold more than one instance per supplier+model per document — but with
+`condition` in the key, the realistic reason two such rows differ is now represented explicitly, and
+what remains under a collapsed NULL is one document, one component identity, one field, one
+extractor version and one condition. `claim_key()` calls that one assertion outright, since it does
+not carry the component columns at all. `nameplate` is the only nullable column in the key, so the
+modifier reaches nothing else.
+
+**The DDL key stays deliberately looser than `claim_key()`, and the comment says so at length.**
+It compares `condition` as whole jsonb where the contract compares `grouping_key()`, which excludes
+`note` and `derived`; jsonb normalises key order and numeric spelling but treats `{"basis":null}`
+and `{}` as different values. So the constraint permits rows the contract counts as one claim. On an
+append-only table that is a duplicate the projection collapses, never a rejected valid claim — the
+safe direction, and the reason the DDL must not later be "tightened" into a
+`grouping_key()`-equivalent expression index.
+
+Four live tests: two conditions of one field both insert; the Sungrow trio inserts; a same-key
+same-condition duplicate is refused; the same with `nameplate` NULL is refused. Revert-checked
+individually — restoring the old constraint line turns the first and the fourth red.
+
+## A-42 (Medium) — a column whose one degree of freedom was constrained to zero
+
+**Artifacts:** `sql/07_audit_event.sql`, `sql/README.md` decision 8
+
+`audit.event` carried `stream text NOT NULL` beside a `document_id` foreign key whose own comment
+read "Redundant with `stream` by construction", the two held equal by
+`CHECK (stream = 'doc:' || document_id)`. `stream` then keyed all three UNIQUE constraints and the
+self-referential foreign key.
+
+Decision 9's requirement is that the chain be per document, "not globally, so cross-document
+concurrency stays unconstrained". That is carried entirely by document-scoped uniqueness;
+`document_id` is `NOT NULL` and a foreign key, so it is at least as strong an identity as a derived
+text literal. The column's one hypothetical value — a future non-document audit stream — was already
+foreclosed by the CHECK that kept it consistent, and `sql/README.md` decision 8 said so in as many
+words: "this table cannot be reused for any future non-document audit stream as-is." A column whose
+single degree of freedom is constrained to zero is redundancy, not capability.
+
+**Timing is the whole argument for doing it rather than filing it.** tasks.md marks C4 partial —
+"the bytes the `hash` column is computed over are still undefined; nothing may emit an event" — so
+no chain exists to migrate and no hash is computed over the column. After the first real chain, it
+is frozen in.
+
+Re-keyed to `UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)`, `UNIQUE (document_id, seq)`,
+`UNIQUE (document_id, hash)` and a self-FK `(document_id, prev_hash) → (document_id, hash)`; the
+documented advisory-lock idiom becomes `pg_advisory_xact_lock(hashtext(document_id))`.
+
+**The load-bearing test was whether any chain property depended on the column.** All six were
+re-measured against a live server after the change and all six still hold: a valid chain appends; a
+fabricated parent is refused; a second disconnected root is refused; a duplicate hash is refused; a
+fork is refused; a duplicate genesis is refused. A seventh was added rather than assumed — a second
+document must still be able to start its own genesis row, which is the property a plausible
+over-simplification (`UNIQUE NULLS NOT DISTINCT (prev_hash)` alone) would break, and which nothing
+previously asserted.
+
+**Left outstanding, deliberately.** `tasks.md` H.3 still writes per-document chaining as
+`stream = 'doc:1234'`. That file is not this change's to edit, and A-39's lesson applies in the
+same words: a finding made in a file you cannot edit is still a finding. The wording needs to follow
+the schema.
+
+---
+
 
 ## Consistency checks that passed
 

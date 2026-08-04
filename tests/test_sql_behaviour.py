@@ -358,17 +358,196 @@ def test_the_row_level_tripwire_still_raises(seeded: None, verb: str) -> None:
             owner.execute(verb)
 
 
+# --- claim_natural_key must agree with FieldClaim.claim_key() -------------------
+
+#: One claim INSERT. Every column of `claim_natural_key` is a parameter or a
+#: literal here, so the tests below differ in exactly the column they are about.
+_CLAIM = """
+INSERT INTO public.claim
+    (document_id, component_category, supplier, model, nameplate, field,
+     extractor_version, value, condition, source_tier, source_ref, confidence)
+VALUES ('open-1', %s, %s, %s, %s, 'nameplate_power', 'v1', %s::jsonb, %s::jsonb,
+        'system_of_record', '{"document_id":"open-1"}'::jsonb, 0.9)
+"""
+
+
+def _claim(
+    conn: psycopg.Connection,
+    *,
+    category: str,
+    supplier: str,
+    model: str,
+    nameplate: float | None,
+    value: str,
+    condition: str,
+) -> None:
+    """One claim about `nameplate_power`, on the seeded open document.
+
+    Everything the natural key covers except `condition` is pinned by the
+    caller, so a test that varies only the condition is varying only the
+    condition — which is the whole point of the four tests below.
+    """
+    conn.execute(_CLAIM, (category, supplier, model, nameplate, value, condition))
+
+
+def test_two_conditions_of_one_field_both_insert(seeded: None) -> None:
+    """D-1's own worked case, and the defect A-41 closed.
+
+    `claim_natural_key` had no `condition` column, while the frozen contract's
+    `FieldClaim.claim_key()` keys on
+    `(document_id, field_name, extractor_version, condition.grouping_key())` and
+    says why: "one datasheet stating a parameter at three ambients is three
+    claims, not one extractor contradicting itself."
+
+    Trina prints STC and NOCT nameplate power side by side. One document, one
+    field, one extractor version, one bin — two conditions. Before the fix the
+    second INSERT raised
+    `duplicate key value violates unique constraint "claim_natural_key"`, i.e.
+    the schema refused exactly the multi-condition claims the C2/D-1 layer above
+    it exists to store.
+    """
+    with _connect() as conn:
+        _claim(
+            conn,
+            category="pv_modules",
+            supplier="Trina",
+            model="TSM-NEG21C.20",
+            nameplate=700.0,
+            value="700",
+            condition='{"basis":"stc"}',
+        )
+        _claim(
+            conn,
+            category="pv_modules",
+            supplier="Trina",
+            model="TSM-NEG21C.20",
+            nameplate=700.0,
+            value="523",
+            condition='{"basis":"noct"}',
+        )
+        stored = conn.execute(
+            """
+            SELECT condition->>'basis', value FROM public.claim
+            WHERE model = 'TSM-NEG21C.20' ORDER BY 1
+            """
+        ).fetchall()
+    assert stored == [("noct", 523), ("stc", 700)]
+
+
+def test_the_sungrow_trio_inserts_under_one_key(seeded: None) -> None:
+    """The same property on a category with no bin discriminator.
+
+    The SG350HX's `352 kVA @30 degC / 320 @40 / 295 @50` is the trio
+    `services/claims/__init__.py` names in its module docstring. It inserted
+    before the fix too — but only because `nameplate` is NULL for inverters and
+    an ordinary UNIQUE treats NULLs as distinct. It passed for a reason that had
+    nothing to do with the condition, which is why the PV half above failed while
+    this half looked healthy.
+    """
+    with _connect() as conn:
+        for temperature, kva in ((30, "352"), (40, "320"), (50, "295")):
+            _claim(
+                conn,
+                category="inverters_pcs",
+                supplier="Sungrow",
+                model="SG350HX",
+                nameplate=None,
+                value=kva,
+                condition=f'{{"temperature_c":{temperature}}}',
+            )
+        stored = conn.execute(
+            """
+            SELECT (condition->>'temperature_c')::int, value FROM public.claim
+            WHERE model = 'SG350HX' ORDER BY 1
+            """
+        ).fetchall()
+    assert stored == [(30, 352), (40, 320), (50, 295)]
+
+
+def test_a_same_condition_duplicate_is_still_refused(seeded: None) -> None:
+    """The other direction: widening the key must not stop it being a key.
+
+    Same document, component identity, field, extractor version **and**
+    condition, differing only in the value — one extractor version emitting two
+    answers for one field under one condition, which is what C8 refuses.
+    """
+    with _connect() as conn:
+        _claim(
+            conn,
+            category="pv_modules",
+            supplier="Trina",
+            model="TSM-NEG21C.20",
+            nameplate=700.0,
+            value="700",
+            condition='{"basis":"stc"}',
+        )
+        with pytest.raises(psycopg.errors.UniqueViolation, match="claim_natural_key"):
+            _claim(
+                conn,
+                category="pv_modules",
+                supplier="Trina",
+                model="TSM-NEG21C.20",
+                nameplate=700.0,
+                value="999",
+                condition='{"basis":"stc"}',
+            )
+
+
+def test_a_same_condition_duplicate_is_refused_with_a_null_nameplate(seeded: None) -> None:
+    """The `NULLS NOT DISTINCT` half, which was inert before A-41.
+
+    `nameplate` is the only nullable column in the key, and an ordinary UNIQUE
+    treats two NULLs as distinct — so on every category without a bin
+    discriminator the constraint accepted a genuine duplicate. Measured before
+    the change: this second INSERT succeeded, giving one document two different
+    `352 kVA @30 degC` answers from one extractor version.
+    """
+    with _connect() as conn:
+        _claim(
+            conn,
+            category="inverters_pcs",
+            supplier="Sungrow",
+            model="SG350HX",
+            nameplate=None,
+            value="352",
+            condition='{"temperature_c":30}',
+        )
+        with pytest.raises(psycopg.errors.UniqueViolation, match="claim_natural_key"):
+            _claim(
+                conn,
+                category="inverters_pcs",
+                supplier="Sungrow",
+                model="SG350HX",
+                nameplate=None,
+                value="999",
+                condition='{"temperature_c":30}',
+            )
+
+
 # --- the hash chain has to be walkable, not merely fork-free --------------------
 
 
-def _event(conn: psycopg.Connection, seq: int, prev: bytes | None, digest: bytes) -> None:
+def _event(
+    conn: psycopg.Connection,
+    seq: int,
+    prev: bytes | None,
+    digest: bytes,
+    *,
+    document_id: str = "open-1",
+) -> None:
+    """Append one event to `document_id`'s chain.
+
+    `document_id` **is** the chain identity; there is no `stream` column. This
+    helper used to pass one as well — the literal `'doc:open-1'`, held equal to
+    this column by a CHECK constraint — which is the redundancy A-42 removed.
+    """
     conn.execute(
         """
         INSERT INTO audit.event
-            (stream, document_id, seq, prev_hash, hash, event_type, actor, payload_canonical)
-        VALUES ('doc:open-1', 'open-1', %s, %s, %s, 'extraction', 'test', '{}')
+            (document_id, seq, prev_hash, hash, event_type, actor, payload_canonical)
+        VALUES (%s, %s, %s, %s, 'extraction', 'test', '{}')
         """,
-        (seq, prev, digest),
+        (document_id, seq, prev, digest),
     )
 
 
@@ -392,7 +571,7 @@ def test_a_valid_chain_appends(chain: None) -> None:
 
 def test_a_fabricated_parent_is_refused(chain: None) -> None:
     """Was: accepted. `prev_hash` named a digest that never existed, producing a
-    chain that can never be walked — while `UNIQUE (stream, prev_hash)` saw
+    chain that can never be walked — while `UNIQUE (document_id, prev_hash)` saw
     nothing wrong, because it only catches *two children of one parent*."""
     with _connect() as conn, pytest.raises(psycopg.errors.ForeignKeyViolation):
         _event(conn, 7, FABRICATED, bytes.fromhex("cc" * 32))
@@ -407,8 +586,8 @@ def test_a_second_disconnected_root_is_refused(chain: None) -> None:
 
 
 def test_a_chain_loop_is_refused(chain: None) -> None:
-    """Was: accepted. Two events in one stream sharing a `hash`; nothing was
-    unique on `hash` at all."""
+    """Was: accepted. Two events in one document's chain sharing a `hash`;
+    nothing was unique on `hash` at all."""
     with _connect() as conn, pytest.raises(psycopg.errors.UniqueViolation):
         _event(conn, 2, CHILD_HASH, GENESIS_HASH)
 
@@ -422,9 +601,46 @@ def test_a_fork_is_still_refused(chain: None) -> None:
 
 def test_a_duplicate_genesis_is_still_refused(chain: None) -> None:
     """Regression on `NULLS NOT DISTINCT`: an ordinary UNIQUE treats two NULLs as
-    distinct and would let one stream grow two unrelated roots."""
-    with _connect() as conn, pytest.raises(psycopg.errors.UniqueViolation):
+    distinct and would let one document's chain grow two unrelated roots.
+
+    **The constraint name is asserted, not just the error class**, and that is
+    the point of this version of the test. Two constraints can refuse this row:
+    `audit_event_no_fork`, which is what the property is about, and
+    `audit_event_seq_unique`, because `audit_event_genesis_seq_zero` forces every
+    genesis to `seq = 0` and there is already one. Measured by mutation:
+    deleting `NULLS NOT DISTINCT` from `audit_event_no_fork` left this test green
+    on the error class alone — the seq constraint covered for it, exactly the way
+    the inheritance trigger once covered for the reverted chunk write policy.
+    That is the failure `test_the_write_policy_alone_protects_an_unreadable_row`
+    exists to name one section up. A second genesis with a *different* seq is not
+    an available discriminator here: the genesis CHECK makes it unrepresentable.
+    """
+    with _connect() as conn, pytest.raises(psycopg.errors.UniqueViolation) as raised:
         _event(conn, 0, None, bytes.fromhex("88" * 32))
+    assert raised.value.diag.constraint_name == "audit_event_no_fork", (
+        "a duplicate genesis was refused, but by "
+        f"{raised.value.diag.constraint_name} rather than the fork constraint — "
+        "so this test no longer measures NULLS NOT DISTINCT"
+    )
+
+
+def test_another_documents_chain_starts_its_own_genesis(chain: None) -> None:
+    """The other half of `NULLS NOT DISTINCT (document_id, prev_hash)`, and the
+    property A-42's re-key is most able to break: Decision 9 wants the chain
+    scoped per document, "not globally, so cross-document concurrency stays
+    unconstrained."
+
+    `open-1` already has a genesis (`prev_hash` NULL, seq 0). A second document
+    must be able to start one of its own. Keyed on `prev_hash` alone — a
+    plausible over-simplification once `stream` is gone — this INSERT would be
+    refused and every document after the first would be unauditable.
+    """
+    with _connect() as conn:
+        _event(conn, 0, None, bytes.fromhex("77" * 32), document_id="secret-1")
+        roots = conn.execute(
+            "SELECT document_id FROM audit.event WHERE prev_hash IS NULL ORDER BY document_id"
+        ).fetchall()
+    assert [row[0] for row in roots] == ["open-1", "secret-1"]
 
 
 # --- ingest: making a row MORE restricted must not be the failing direction ------

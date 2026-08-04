@@ -54,6 +54,11 @@ CREATE TABLE public.claim (
     -- treats its own field set generically (ConditionDimensions.model_fields)
     -- rather than one column per dimension -- mirroring that here means a new
     -- condition dimension needs no migration to this table.
+    --
+    -- Part of `claim_natural_key` below, matching `FieldClaim.claim_key()`.
+    -- NOT NULL with an empty-object default rather than nullable, so "no
+    -- condition stated" is one value (`{}`) and not a NULL that a unique key
+    -- would have to reason about separately.
     condition          jsonb NOT NULL DEFAULT '{}'::jsonb,
     source_tier        text NOT NULL CHECK (source_tier IN ('system_of_record', 'web_supplement')),
     -- schema.field.SourceRef, serialised whole. May itself carry a document_id
@@ -80,19 +85,79 @@ CREATE TABLE public.claim (
     -- rather than what it literally says -- flagged in sql/README.md as an
     -- interpretation, not a literal reading, of a frozen contract.
     --
-    -- NULLs in `nameplate` are NOT collapsed (no NULLS NOT DISTINCT): a
-    -- category without a bin discriminator would otherwise need every claim
-    -- for one supplier+model in one document to be the sole instance, which is
-    -- not guaranteed. This is a known, narrow gap, not a solved one -- see
-    -- sql/README.md.
+    -- **`condition` is in the key, and it is not optional.** The frozen Python
+    -- contract keys a claim on
+    -- (document_id, field_name, extractor_version, condition.grouping_key())
+    -- -- services/claims/__init__.py, `FieldClaim.claim_key`, whose docstring
+    -- gives the reason: "one datasheet stating a parameter at three ambients is
+    -- three claims, not one extractor contradicting itself." Omitting it here
+    -- made this constraint reject exactly the multi-condition claims contract C2
+    -- and clarifications D-1 exist to store. Measured, before the fix:
+    --
+    --   -- Trina prints STC and NOCT side by side: one document, one field, one
+    --   -- extractor version, one nameplate bin.
+    --   INSERT ... nameplate 700, field 'nameplate_power', '{"basis":"stc"}'
+    --    INSERT 0 1
+    --   INSERT ... nameplate 700, field 'nameplate_power', '{"basis":"noct"}'
+    --    ERROR: duplicate key value violates unique constraint "claim_natural_key"
+    --
+    -- The Sungrow SG350HX trio (352/320/295 kVA at 30/40/50 degC) inserted only
+    -- because `nameplate` is NULL for inverters and an ordinary UNIQUE treats
+    -- NULLs as distinct -- i.e. the C2 case survived on the non-PV categories by
+    -- accident, through the very gap the paragraph below closes, and failed
+    -- outright on the PV category D-1's own worked example is drawn from.
+    --
+    -- **The DDL key is deliberately LOOSER than `claim_key()`, in two places,
+    -- and both loosenings are safe only because this table is append-only.**
+    -- A looser key permits more rows; it can never reject a claim the contract
+    -- calls distinct. Do not "tighten" either of them:
+    --
+    --   1. The component-instance columns (category, supplier, model,
+    --      nameplate) are not in `claim_key()` at all -- see the paragraph
+    --      above for why they are here.
+    --   2. This constraint compares `condition` as whole jsonb, where
+    --      `claim_key()` compares `condition.grouping_key()`, which excludes
+    --      `note` (free text) and `derived` (provenance). jsonb has btree
+    --      equality and it is structural: key order and numeric spelling
+    --      normalise away (`{"a":1.0}` = `{"a":1.00}`, verified on the server),
+    --      but `{"basis":null}` and `{}` are distinct jsonb while
+    --      `grouping_key()` calls them equal. So two rows the contract counts as
+    --      one claim can both be stored. On an append-only table that is a
+    --      duplicate row the projection collapses
+    --      (services/claims.canonical_claims), not a lost or corrupted value.
+    --      Narrowing this to a `grouping_key()`-equivalent expression index
+    --      would invert the direction and begin rejecting valid claims over a
+    --      `note` difference.
+    --
+    -- One practical caveat comes with indexing jsonb in a btree: a `condition`
+    -- whose serialised form exceeds the btree tuple limit (~2704 bytes) fails
+    -- the INSERT. Every dimension is a token or a number; only `note` is
+    -- unbounded free text, and a 2.7 kB note is a data-quality problem before it
+    -- is a schema one. The GIN index below is unaffected by that limit.
+    --
+    -- `NULLS NOT DISTINCT` (PostgreSQL 15+, legal under Decision 3's
+    -- PostgreSQL 18 pin; `audit.event` uses it for the same class of gap) closes
+    -- the other half. `nameplate` is the only nullable column in this key, so
+    -- the modifier reaches nothing else. It was previously omitted on the
+    -- argument that a category with no bin discriminator might hold more than
+    -- one instance per supplier+model per document, so collapsing NULLs could
+    -- reject two genuinely distinct claims. That argument dies with the fix
+    -- above: with `condition` in the key, the realistic reason two such rows
+    -- differ is now represented explicitly, and what remains under a collapsed
+    -- NULL is one document, one component identity, one field, one extractor
+    -- version and one condition -- which `claim_key()` calls the same assertion
+    -- outright, since it does not carry the component columns at all. Collapsing
+    -- therefore moves this key *towards* the frozen contract, and it stays
+    -- looser than `claim_key()` even so.
     --
     -- This also assumes extractor_version is fine-grained enough to
     -- distinguish genuinely different extraction strategies for the same
     -- field (e.g. WP-B B.6's field-guided vs document-guided cross-read), so
     -- that the two produce distinct claim rows rather than colliding under
     -- this key -- also flagged in sql/README.md.
-    CONSTRAINT claim_natural_key UNIQUE (
-        document_id, component_category, supplier, model, nameplate, field, extractor_version
+    CONSTRAINT claim_natural_key UNIQUE NULLS NOT DISTINCT (
+        document_id, component_category, supplier, model, nameplate, field,
+        extractor_version, condition
     )
 );
 

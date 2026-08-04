@@ -37,10 +37,21 @@ correct, which is a real gap the behavioural suite hit and had to be widened for
 
 from __future__ import annotations
 
+import enum
 import pathlib
 import re
 
 import pytest
+
+from procurement_agent.orchestrator import Stage
+from procurement_agent.schema import (
+    ComponentCategory,
+    ConflictClass,
+    DocumentType,
+    ResolutionAction,
+    Severity,
+    SourceTier,
+)
 
 SQL_DIR = pathlib.Path(__file__).parent.parent / "sql"
 
@@ -420,3 +431,159 @@ def test_the_job_identity_columns_are_never_updatable() -> None:
         "updated_at",
     ):
         assert column not in allowed
+
+
+# --- closed vocabularies are hand-copied into the DDL, so they can drift --------
+#
+# Every `CHECK (col IN (...))` below is a transcription of a Python `StrEnum`, or
+# a deliberate DDL-only list. Nothing checked either side against the other: this
+# file imported nothing from `procurement_agent`, so adding a ninth
+# `ComponentCategory` member (or renaming one) stayed green here and surfaced
+# only at runtime, as `new row for relation "claim" violates check constraint`,
+# on whichever table the new value first reached — and in whichever environment
+# reached it first.
+
+
+def _check_in_vocabularies(filename: str) -> dict[str, frozenset[str]]:
+    """Every `CHECK (<column> IN ('a', 'b', ...))` list in one DDL file.
+
+    Parsed from the comment-stripped text for the reason `_statements` gives:
+    these files quote their own constraints in prose, and this file's whole
+    premise is that the DDL text is the thing under test.
+
+    `[^)]*` for the literal list is safe because a value list contains no
+    parentheses; if one ever does, this returns a truncated set and the test
+    fails loudly rather than passing on a partial match.
+    """
+    without_comments = re.sub(r"--[^\n]*", "", _sql(filename))
+    found: dict[str, frozenset[str]] = {}
+    for match in re.finditer(
+        r"CHECK\s*\(\s*(\w+)\s+IN\s*\(([^)]*)\)\s*\)", without_comments, re.IGNORECASE
+    ):
+        column, body = match.group(1), match.group(2)
+        values = frozenset(re.findall(r"'([^']*)'", body))
+        assert values, f"{filename}: CHECK on {column!r} parsed to an empty value list"
+        assert column not in found, (
+            f"{filename} has two CHECK ... IN constraints on {column!r}; this map is "
+            "keyed on (file, column) and cannot represent that"
+        )
+        found[column] = values
+    return found
+
+
+#: `(file, column)` → the Python enum the DDL list is a copy of.
+_ENUM_BACKED_VOCABULARIES: dict[tuple[str, str], type[enum.Enum]] = {
+    ("02_document.sql", "document_type"): DocumentType,
+    ("03_chunk.sql", "component_category"): ComponentCategory,
+    ("03_chunk.sql", "document_type"): DocumentType,
+    ("03_chunk.sql", "source_tier"): SourceTier,
+    ("04_claim.sql", "component_category"): ComponentCategory,
+    ("04_claim.sql", "source_tier"): SourceTier,
+    ("05_conflict.sql", "component_category"): ComponentCategory,
+    ("05_conflict.sql", "conflict_class"): ConflictClass,
+    ("06_resolution.sql", "action"): ResolutionAction,
+    ("08_job.sql", "stage"): Stage,
+}
+
+#: `(file, column)` → why this vocabulary has no Python counterpart to compare
+#: against. Listed rather than skipped silently, so "no enum exists" is a
+#: recorded judgement and not an omission — and so `test_every_ddl_vocabulary_is
+#: _accounted_for` can insist every list lands in one map or the other.
+_DDL_ONLY_VOCABULARIES: dict[tuple[str, str], str] = {
+    ("03_chunk.sql", "chunk_kind"): (
+        "plan.md Decision 6 names only the three table_* kinds and `prose` is this "
+        "schema's own addition (sql/README.md decision 16). No Python enum exists; "
+        "services/indexing describes the kinds in prose."
+    ),
+    ("05_conflict.sql", "status"): (
+        "The queue-item lifecycle (pending/leased/resolved), which 05_conflict.sql's "
+        "own comment marks as *distinct from* ConflictStatus — that is a per-field "
+        "flag on the canonical projection, not on this queue row. Comparing the two "
+        "would assert a correspondence the schema explicitly denies."
+    ),
+    ("07_audit_event.sql", "event_type"): (
+        "C4's taxonomy is invented by the DDL: tasks.md marks C4 unfrozen and "
+        "sql/README.md decision 5 says the seven values are a first proposal. There "
+        "is nothing in Python to agree with yet."
+    ),
+    ("08_job.sql", "status"): (
+        "The runner's job lifecycle. orchestrator.Stage models the *stages*, which "
+        "08_job.sql's `stage` column already tracks; the status of an attempt at a "
+        "stage has no Python counterpart."
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("filename", "column"), sorted(_ENUM_BACKED_VOCABULARIES), ids=lambda p: str(p)
+)
+def test_a_ddl_vocabulary_matches_its_python_enum(filename: str, column: str) -> None:
+    """Set equality, both directions, against the enum the DDL copied.
+
+    Both directions matter and they fail differently. A value in the enum and not
+    in the DDL is a write the database refuses — loud, but at runtime and in
+    production. A value in the DDL and not in the enum is worse: the database
+    accepts a token nothing in Python can parse back, so the row is stored and
+    the failure surfaces at read time, somewhere else entirely.
+    """
+    vocabularies = _check_in_vocabularies(filename)
+    assert column in vocabularies, (
+        f"{filename} has no `CHECK ({column} IN (...))` at all; the constraint was "
+        "removed or renamed, and every value became legal"
+    )
+    member = _ENUM_BACKED_VOCABULARIES[filename, column]
+    expected = {str(m.value) for m in member}
+    assert vocabularies[column] == expected, (
+        f"{filename}'s `{column}` CHECK and {member.__name__} disagree: "
+        f"only in the DDL {sorted(vocabularies[column] - expected)}, "
+        f"only in Python {sorted(expected - vocabularies[column])}"
+    )
+
+
+def test_every_ddl_vocabulary_is_accounted_for() -> None:
+    """The guard on the two maps above, and the reason this is not just ten
+    hand-written assertions.
+
+    A new `CHECK (x IN (...))` added to any file — or an existing one moved to
+    another file — has to be classified as either enum-backed or deliberately
+    DDL-only. Without this, the parametrized test above silently stops covering
+    what it does not know about, which is the same failure it exists to prevent
+    one level down.
+    """
+    found = {
+        (filename, column) for filename in ALL_FILES for column in _check_in_vocabularies(filename)
+    }
+    classified = set(_ENUM_BACKED_VOCABULARIES) | set(_DDL_ONLY_VOCABULARIES)
+    assert found == classified, (
+        f"unclassified DDL vocabularies {sorted(found - classified)}; "
+        f"classified but no longer present {sorted(classified - found)}"
+    )
+
+
+def test_the_severity_check_spans_exactly_the_severity_enum() -> None:
+    """`Severity` is the one vocabulary copied as a *range* rather than a list.
+
+    `05_conflict.sql` writes `CHECK (severity BETWEEN 0 AND 4)`, which is a
+    transcription of `Severity`'s five members just as much as any `IN` list, and
+    the regex above cannot see it. It drifts the same way: a sixth member — the
+    enum's docstring already reasons about where the scale ends — would be
+    refused by the database and by nothing else.
+
+    Contiguity is asserted too, not just the endpoints. `Severity` is an
+    `IntEnum` whose *ordering* the compose gate compares against a threshold, so
+    a gap in the range would make `severity > threshold` skip a level while both
+    endpoints still matched.
+    """
+    without_comments = re.sub(r"--[^\n]*", "", _sql("05_conflict.sql"))
+    match = re.search(
+        r"CHECK\s*\(\s*severity\s+BETWEEN\s+(\d+)\s+AND\s+(\d+)\s*\)",
+        without_comments,
+        re.IGNORECASE,
+    )
+    assert match is not None, "05_conflict.sql no longer bounds `severity` at all"
+    low, high = int(match.group(1)), int(match.group(2))
+    values = {int(member) for member in Severity}
+    assert values == set(range(low, high + 1)), (
+        f"the DDL admits {sorted(range(low, high + 1))} for `severity` while "
+        f"Severity is {sorted(values)}"
+    )

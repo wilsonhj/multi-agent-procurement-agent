@@ -631,6 +631,10 @@ register has been renumbered once already (A-23…A-27, Round 3) after parallel 
 They still each opened a block titled *Round 5*; the three blocks are consolidated here, in ID
 order, rather than left as three rounds bearing one number.
 
+A seventh finding, **A-47**, was made at the integration of these four rather than inside any of
+them: it is the `spec.md` edit A-43 identified and correctly refused to make from a branch that did
+not own the file.
+
 | ID | Severity | Finding | Status |
 |---|---|---|---|
 | A-41 | **H** | **`claim_natural_key` omitted `condition`, so the schema rejected the multi-condition claims C2/D-1 exist to store.** `FieldClaim.claim_key()` keys on `(document_id, field_name, extractor_version, condition.grouping_key())`; the DDL keyed on everything but the condition. Two claims for one field of one document at two ambients collided | **Fixed** — `condition` added, `NULLS NOT DISTINCT` adopted, four live tests |
@@ -639,6 +643,7 @@ order, rather than left as three rounds bearing one number.
 | A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
 | A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
 | A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
+| A-47 | **L** | **The FR-RAG-03 deviation note went stale a second time in eight days.** A-43 dropped RRF as a fusion stage but could not edit `spec.md`; the note there and the narrating paragraph in `docs/architecture.md` were left naming "fused with Reciprocal Rank Fusion (k=60)". One clause, five carriers, three register entries in eight days | **Fixed** at integration — both carriers now read union-and-dedup with no fusion stage, citing A-24, A-40 and A-43 |
 
 `sql/` was re-read against the contracts it stores rather than against itself. Round 4 established
 that the DDL's *behaviour* is now live-tested; this round asks the prior question — whether the
@@ -808,6 +813,9 @@ revision and `spec.md` is two ranks above `plan.md`), and correcting the note is
 reaching for the file is A-39's rule: a finding made in a file you do not own is still a finding.
 The remedy is one clause — "unioned and deduped in a single statement, then reranked, not BM25" —
 and it should cite A-24 and A-43 together.
+
+**Closed at integration by [A-47](#a-47-low--the-fr-rag-03-note-went-stale-a-second-time) below**,
+which is the entry this paragraph asks for.
 
 ## A-44 (Medium) — the one string you cannot cheaply change was the generated one
 
@@ -1047,6 +1055,40 @@ layer (a) is gated on C6 and G.1 instead. `docs/requirements-traceability.md:187
 `docs/current-state.md:176` score AC-7 against `normalize_archive` alone and should name both
 layers. None of these change a verdict — AC-7 is `partial` either way, since `write_workbook`
 still raises `NotImplementedError` — so they are drift, not error.
+
+---
+
+## A-47 (Low) — the FR-RAG-03 note went stale a second time
+
+**Artifacts:** `specs/001-procurement-agent/spec.md:110` · `docs/architecture.md:263`
+
+Found at the integration of this round, not during it, and it is the entry A-43 asks for above.
+A-43 dropped RRF as a fusion stage but could not touch `spec.md`, so the deviation note beside
+FR-RAG-03 — and the paragraph in `docs/architecture.md` that narrates the note's own history —
+were left naming "fused with Reciprocal Rank Fusion (k=60)". Both now read as a union-and-dedup
+with no fusion stage, citing A-24, A-40 and A-43 together.
+
+**Severity Low because nothing downstream had consumed it.** Every code carrier
+(`ports/__init__.py`, `services/retrieval/__init__.py`, `services/indexing/__init__.py`) was
+already correct — A-43 wrote them — and the retrieval services are `NotImplementedError`, so no
+adapter was built against the stale clause. What it cost was the register's credibility rather
+than any behaviour: a reader checking whether FR-RAG-03 was honoured would have found the highest-
+ranked artifact describing a stage the plan had removed.
+
+**This is the same sentence going stale for the second time in eight days**, and that is the part
+worth recording. A-24 reversed the requirement, A-40 corrected which replacement the note named,
+A-47 removes the fusion stage from it. Three entries, one clause, because the clause is duplicated
+across `spec.md`, `docs/architecture.md`, and three docstrings — five carriers for one decision,
+each free to drift. The structural answer already exists and is why this one was caught: the
+"where does this decision live" table at `docs/architecture.md:246` enumerates the carriers, and
+working that table is what surfaced the second file. The remaining exposure is that the table
+lists carriers for *this* decision only. Recorded, not fixed — generalising it is a documentation
+change with no requirement behind it yet.
+
+**Process note.** A-43 was written by a review scoped to `ports`/`services/retrieval`/
+`services/indexing`, which correctly declined to edit `spec.md` and recorded the remedy instead
+(A-39's rule). That worked: the finding survived the scope boundary and was closed by the one
+party who owned both files. A-39's precedent is now load-bearing twice.
 
 ---
 

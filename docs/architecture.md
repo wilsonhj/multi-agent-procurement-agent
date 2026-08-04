@@ -259,8 +259,16 @@ Sparse output from the embedding model is a Decision 5 contingency — swap Qwen
 Postgres full-text search proves weak on part numbers. Decision 3b did not choose it. Three code
 docstrings repeated one or other stale position and have been corrected against Decision 3b
 (`ports/__init__.py`, `services/retrieval/__init__.py`, `services/indexing/__init__.py`); the
-`spec.md` note has now been corrected to match, naming Postgres `tsvector`/`pg_trgm` fused with
-RRF instead.
+`spec.md` note has now been corrected to match, naming Postgres `tsvector`/`pg_trgm` instead.
+
+That correction (A-40) named RRF (k=60) as the fusion stage, which was Decision 3b's wording at the
+time. [A-43](../specs/001-procurement-agent/analysis.md) has since removed the fusion stage
+altogether: the three legs are unioned and deduped by `chunk_id` and the cross-encoder does the
+ranking, so union recall ≥ RRF recall by construction and RRF's only observable effect was
+selecting *which* candidates reached a reranker that was going to reorder them anyway. Both the
+`spec.md` note and this paragraph were updated together, which is the whole point of listing the
+carriers in the table above — the same sentence had already gone stale twice in two different files
+before anyone noticed it lived in more than one.
 
 Build the adapter to Decision 3b. That is not this document overruling `spec.md` — the authority
 order below puts `spec.md` two ranks above `plan.md`, and nothing here changes that. It is that

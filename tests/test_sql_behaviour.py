@@ -519,3 +519,39 @@ def test_a_duplicate_content_hash_is_refused(seeded: None) -> None:
             VALUES ('open-2', 'hash-open', 'file:///again.pdf', 'spec_sheet', now())
             """
         )
+
+
+def test_no_project_role_is_a_member_of_another(schema: None) -> None:
+    """Decision 9's boundary is defeated by a membership as surely as by
+    `SUPERUSER`, and much more quietly.
+
+    `00_roles.sql` re-asserts role *attributes* on every run, which closed one
+    hole. A membership is not an attribute:
+
+        GRANT procurement_ingest TO procurement_app;
+
+    survived a clean re-run of that file with every attribute check still
+    passing, and let `procurement_app` execute `SET ROLE procurement_ingest`.
+    Measured before the fix; `current_user` came back `procurement_ingest`.
+
+    `test_the_app_role_cannot_escalate_to_the_ingest_role` next door does go red
+    in that state, but it names the *consequence*. This names the cause, so a
+    failure points at `pg_auth_members` rather than leaving a reader to work
+    backwards from a denied `SET ROLE`.
+    """
+    with _connect() as conn:
+        memberships = conn.execute(
+            """
+            SELECT g.rolname, m.rolname
+            FROM pg_auth_members am
+            JOIN pg_roles g ON am.roleid = g.oid
+            JOIN pg_roles m ON am.member = m.oid
+            WHERE g.rolname LIKE 'procurement%' OR g.rolname = 'audit_owner'
+            ORDER BY 1, 2
+            """
+        ).fetchall()
+    assert memberships == [], (
+        f"project roles are members of one another: {memberships}. A membership "
+        "hands over every privilege of the granting role for the cost of one "
+        "SET ROLE, and survives re-running 00_roles.sql."
+    )

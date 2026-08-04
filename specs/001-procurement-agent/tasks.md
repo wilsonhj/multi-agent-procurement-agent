@@ -19,14 +19,20 @@ an unfrozen contract.
 
 | ID | Contract | Gates | Status |
 |---|---|---|---|
-| **C1** | Postgres schema: `document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event` | Every WP | ☐ |
-| **C2** | Claim/extraction record — Pydantic + JSON Schema, including `condition` per D-1 | B, E, G | **partial** — `schema/` exists, needs `condition` + per-category models |
-| **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **partial** — `SourceRef` exists |
-| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | ☐ |
+| **C1** | Postgres schema: `document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event` | Every WP | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08`; both T0.1 checks recorded live-verified in `sql/README.md`, and CI reapplies all nine files each run |
+| **C2** | Claim/extraction record — Pydantic + JSON Schema, including `condition` per D-1 | B, E, G | **partial** — `condition` landed on `FieldClaim` and `CanonicalField`; per-category models still do not exist |
+| **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **done** — all four elements on `SourceRef`, stamped by `FieldClaim.provenance()` |
+| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial** — SQL half only (`audit.event`, the `event_type` CHECK, `payload_canonical`); no Python envelope and no canonicalisation library |
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
-| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ |
-| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — `VectorStorePort` exists, ACL model undecided |
-| **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | ☐ |
+| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ — `write_workbook()` raises `NotImplementedError` and no projection function exists |
+| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS now enforces the one label the schema has (`access_restricted`); the model itself is still undecided, T0.4 unwritten |
+| **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | **partial** — the append-only invariant is enforced in both halves; `job` is the DDL's own proposal and `orchestrator.run` raises `NotImplementedError` |
+
+Three of the eight are done, four are partial and one is untouched. Read the four partials
+carefully rather than by their marker: **C4 and C8 each have a finished SQL half and an unstarted
+Python half**, and they are the pair most likely to be mistaken for finished, because `sql/` is
+the visible artifact and what is missing — WP-H's canonicalisation library, WP-I's runner — is a
+file nobody has opened yet.
 
 > **C8 invariant — workers propose, they do not commit.** Each extraction writes an **immutable
 > claim row** keyed by `(document_id, field, extractor_version)`; the canonical value is a
@@ -45,14 +51,27 @@ an unfrozen contract.
 > is not reachable from worker context") becomes writable once C1 and C8 land, and should gate
 > them.
 
-**C1, C2, C3 and C7 are the expensive ones to change.** Spend the week; it buys weeks back.
+**C1, C2, C3 and C7 are the expensive ones to change.** C1 and C3 have since landed, which makes
+them *more* expensive rather than retiring the warning — there is now DDL applied to a live
+cluster, a CI suite pinning its behaviour, and a test asserting C3's fourth element survives the
+projection. C2 and C7 are the two still open, and they are where the week is best spent.
 
 > ⚠️ **C4 must ship before any stage emits events.** Changing the hashed field set later
-> invalidates every existing chain. WP-H ships its library first, even if thin.
+> invalidates every existing chain. WP-H ships its library first, even if thin. **The table
+> shipped without the library.** `sql/07_audit_event.sql` defines the envelope, the `event_type`
+> CHECK and `payload_canonical`, and its own comment says the taxonomy is that file's proposal
+> because C4 was unfrozen; H.2's RFC 8785 canonicalisation does not exist in `src/`, so the bytes
+> the `hash` column is computed over are still undefined. Nothing may emit an event until it is.
 
 > ⚠️ **C7 is a single decision constraining two work packages at opposite ends of the pipeline**
 > (labelling at ingest, enforcement at retrieval). This is the most common place this kind of
-> plan breaks.
+> plan breaks. **The enforcement mechanism has now landed ahead of the decision**: `sql/`
+> applies `FORCE ROW LEVEL SECURITY` to seven tables, keyed on the single boolean
+> `SourceDocument.access_restricted` and gated by an `app.allow_restricted` session GUC, and
+> `sql/README.md` says in as many words that this is C7 "implemented at its frozen minimum, not
+> guessed at in full". That is the right way to have built it, and it does not close T0.4 —
+> anything beyond one boolean (labels, tenants, clearances, and who populates
+> `VectorStorePort.search(allowed_document_ids=...)`) is still unchosen.
 
 ### Phase 0 tasks
 

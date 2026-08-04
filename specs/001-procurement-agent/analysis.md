@@ -375,18 +375,27 @@ The C1/C4 DDL, the severity lookup and the `CanonicalField` update paths were re
 executed rather than parsed. Every finding below was reproduced before being fixed and
 re-reproduced after; the commands and results are in `sql/README.md`.
 
+> **Renumbered 2026-08-04, A-23..A-30 → A-28..A-35.** This block originally restarted at A-23,
+> which round 2 had already used, so five IDs each named two different findings and every citation
+> of one resolved to the wrong finding half the time. Round 2 is the older block and is cited from
+> outside this file — `spec.md`, `docs/architecture.md` and `services/{indexing,retrieval}`
+> all cite A-23/A-24/A-25 for the FR-RAG-02, FR-RAG-03 and NFR-03 reversals — so it keeps its
+> numbers and this block moved. A repository-wide grep found **no** in-tree reference to a Round 3
+> ID, so nothing else needed editing; a citation made outside the tree before this date should add
+> five. Registered below as [A-36](#a-36-high--five-finding-ids-each-named-two-findings).
+
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-23 | **M** | `requirements-traceability.md` had no AC-7 or AC-8 row while `spec.md` defines eight acceptance criteria | **Fixed** — rows supplied on `agent/developer-documentation` (PR #22); see the note below |
-| A-24 | **H** | RLS on `document`/`chunk` only: `claim.value`, `audit.event.payload`, `conflict.explanation`, `resolution.value_before`/`value_after` and `job.payload` all returned restricted content to a role that could not see the document | **Fixed** |
-| A-25 | **H** | `INSERT ... ON CONFLICT`/`RETURNING` failed for `access_restricted = true` and succeeded for `false` — the schema penalised the safe action | **Fixed** — separate write role |
-| A-26 | **M** | `00_roles.sql` never re-asserted role attributes, so a `procurement_app` carrying `SUPERUSER BYPASSRLS` survived a clean re-run of the file that exists to prevent exactly that | **Fixed** |
-| A-27 | **M** | `08_job.sql` granted full-table `UPDATE`, including `idempotency_key` — the whole of I.2's at-least-once guarantee | **Fixed** — column-level grant |
-| A-28 | **H** | `_gross_divergence` could not fire for 105 of 124 contract keys, including 22 of 24 Tier A and all 12 CRITICAL fields, while its docstring named the decimal-comma trap as its purpose | **Fixed** — order-of-magnitude fallback |
-| A-29 | **M** | Five further routes reached the forbidden RESOLVED-with-no-`Resolution` state, and `evolve()` silently replaced a recorded `Resolution` | **Fixed**, except one undefendable route — see below |
-| A-30 | **M** | 81 of 120 one-step mutants of the `CRITICALITY` table survived the suite: membership was checked both ways, values were pinned for ~36 keys | **Fixed** — all 124 pinned |
+| A-28 | **M** | `requirements-traceability.md` had no AC-7 or AC-8 row while `spec.md` defines eight acceptance criteria | **Fixed** — rows supplied on `agent/developer-documentation` (PR #22); see the note below |
+| A-29 | **H** | RLS on `document`/`chunk` only: `claim.value`, `audit.event.payload`, `conflict.explanation`, `resolution.value_before`/`value_after` and `job.payload` all returned restricted content to a role that could not see the document | **Fixed** |
+| A-30 | **H** | `INSERT ... ON CONFLICT`/`RETURNING` failed for `access_restricted = true` and succeeded for `false` — the schema penalised the safe action | **Fixed** — separate write role |
+| A-31 | **M** | `00_roles.sql` never re-asserted role attributes, so a `procurement_app` carrying `SUPERUSER BYPASSRLS` survived a clean re-run of the file that exists to prevent exactly that | **Fixed** |
+| A-32 | **M** | `08_job.sql` granted full-table `UPDATE`, including `idempotency_key` — the whole of I.2's at-least-once guarantee | **Fixed** — column-level grant |
+| A-33 | **H** | `_gross_divergence` could not fire for 105 of 124 contract keys, including 22 of 24 Tier A and all 12 CRITICAL fields, while its docstring named the decimal-comma trap as its purpose | **Fixed** — order-of-magnitude fallback |
+| A-34 | **M** | Five further routes reached the forbidden RESOLVED-with-no-`Resolution` state, and `evolve()` silently replaced a recorded `Resolution` | **Fixed**, except one undefendable route — see below |
+| A-35 | **M** | 81 of 120 one-step mutants of the `CRITICALITY` table survived the suite: membership was checked both ways, values were pinned for ~36 keys | **Fixed** — all 124 pinned |
 
-## A-23 (Medium) — the traceability table stopped at AC-6
+## A-28 (Medium) — the traceability table stopped at AC-6
 
 `spec.md:194-197` defines AC-7 (byte-identical regeneration) and AC-8 (an uncleared user cannot
 influence a retrieved result) as additions to the TRS's six, and `tasks.md` assigns owners for
@@ -413,7 +422,16 @@ derivation, plus `tests/test_sql_schema.py`. The *Where* column citing only `por
 the whole story, and `declared` understates it. It is not `enforced` either — the enforcement is
 DDL that CI does not execute.
 
-## A-29 (Medium) — the forbidden state had five more doors than the count said
+**Closed 2026-08-04, and the last sentence above did not survive.** Both branches landed, and the
+row is now `partial` with the RLS citation written out. But the reason given here for withholding
+`enforced` — "DDL that CI does not execute" — expired when #25 added the `sql` job, which runs
+`tests/test_sql_behaviour.py` against a pgvector service container and fails if the suite skips.
+The conclusion stands on a different ground, recorded in the row itself: there is no retrieval
+path, so nothing yet does the thing AC-8 constrains. Worth leaving both sentences visible rather
+than editing the first away — a register entry whose *reasoning* silently changes underneath its
+*verdict* is how A-15 happened.
+
+## A-34 (Medium) — the forbidden state had five more doors than the count said
 
 `requirements-traceability.md`'s FR-HITL-06 row said "two routes remain open". Measured, seven
 did: `model_construct`, an instance `__dict__` write, `object.__setattr__`, `deepcopy` and
@@ -426,6 +444,151 @@ directly; `object.__setattr__` is the same write in a different spelling, not a 
 the honest count is one. No Python object can defend against it, and
 `test_the_dict_write_route_is_documented_as_open` asserts it as open on purpose, so the gap is a
 recorded fact rather than an oversight.
+
+---
+
+---
+
+# Round 4 — the traceability audit after CI landed (2026-08-04)
+
+`docs/requirements-traceability.md` was re-read row by row, opening each cited artifact and each
+cited test. Prompted by #25, which made the `sql/` guarantees executable, and by the three service
+modules (`claims`, `identity`, `confidence`) plus `conflict_hitl/severity.py` landing before it.
+
+**The table holds 48 requirement rows and 8 acceptance-criterion rows**, counted from the file:
+8 FRD + 10 FR-ING + 5 FR-RAG + 5 FR-WEB + 6 FR-HITL + 6 FR-OUT + 8 NFR. The brief for this audit
+said 49, and A-27 is the standing reminder that a count asserted rather than computed is how an
+audit certifies itself wrong. No ID is missing — the 48 reconcile against spec.md's 32 TRS FR IDs
+plus the 8 FRD requirements and 8 NFRs.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-36 | **H** | **Five finding IDs each named two different findings.** Round 3 restarted numbering at A-23, which round 2 had already used, so A-23..A-27 were ambiguous — and this file is the document the contributor docs tell people to cite | **Fixed** — Round 3 renumbered A-28..A-35 |
+| A-37 | **H** | **The traceability table understated merged work — A-16 with the sign reversed.** Ten rows sat below what the code and tests support, including NFR-02 reading "store not yet built" beside a nine-file schema whose tripwires run against a live server on every pull request | **Fixed** |
+| A-38 | **M** | The table had no rule for weighing a live-database test against a structural one, and the two are not interchangeable: two of four reintroduced defects were invisible to `test_sql_schema.py` | **Fixed** — rule stated once, applied uniformly |
+| A-39 | **M** | **A-31's fix covers role *attributes* and not role *memberships*.** `GRANT procurement_ingest TO procurement_app` survives a clean re-run of `00_roles.sql`, defeating the Decision 9 boundary, and no test names the cause | **Fixed** |
+
+## A-36 (High) — five finding IDs each named two findings
+
+The defect is in this file, which is what makes it high rather than tidy. `CONTRIBUTING.md` and
+`docs/architecture.md` both direct contributors here and tell them to cite a register ID when a
+plan decision reverses a normative requirement, and three of the five collided IDs are exactly
+those citations: A-23 (FR-RAG-02's ANN mandate), A-24 (FR-RAG-03's BM25 clause), A-25 (NFR-03's
+mechanism). A reader following one of those from `spec.md` had even odds of landing on a
+PostgreSQL finding about role attributes.
+
+Renumbering the *second* block is the resolution rather than a prefix scheme (`R3-1`, say),
+because the collision is only in this file: a repository-wide grep found every in-tree citation
+pointing at a round-2 ID, so moving round 3 costs nothing outside and a second ID format would be
+a permanent tax on every future reader. Both prose sections below the round 3 table moved with
+their entries.
+
+**Lesson, and it is A-15's again in a new place:** the count was asserted from the block being
+written rather than from a scan of the file it was being appended to. `grep -o '^| A-[0-9]*' |
+sort | uniq -d` takes a second and is now the check.
+
+## A-37 (High) — the register's own remedy, applied in the wrong direction only
+
+A-16 established that `enforced` must mean a test exists, and the rows that overclaimed were
+corrected downward. The vocabulary held. What did not hold is the other direction: between that
+audit and this one, `sql/` gained row-level security on seven tables, an append-only
+claim/resolution/audit trio with statement-level TRUNCATE tripwires, a separate ingest role, and —
+in #25 — a CI job that executes all of it against a pgvector container and fails if the suite
+skips rather than runs. `services/claims`, `services/confidence` and `services/identity` landed
+alongside (1,458 lines, plus 565 in `conflict_hitl/severity.py`), each with a dedicated test file.
+Ten rows should have risen and none did.
+
+The asymmetry is worth naming because it is predictable: a demotion is prompted by an audit, while
+a promotion is prompted by nothing at all — the author of a merged PR is not reading a traceability
+table. Both directions cost the same thing, which is a reader's willingness to believe the column.
+NFR-02's "store not yet built", sitting beside `sql/07_audit_event.sql` and four live tests that
+walk its hash chain, is not a smaller error than an unearned `enforced`; it is the same error.
+
+**Not raised, and deliberately.** FR-RAG-02 and FR-RAG-03 gained a genuine storage home in
+`sql/03_chunk.sql` and stayed `declared`, because the only live test touching that table asserts
+Decision 3a's *reversal* of FR-RAG-02 rather than the requirement. Counting it would be A-16's
+defect reached by a new route.
+
+## A-38 (Medium) — a structural test and a behavioural one are not the same evidence
+
+`test_sql_schema.py` asserts DDL text; `test_sql_behaviour.py` runs the attack. Both are worth
+keeping and the traceability table needs to cite them differently, which it had no rule for. The
+difference was measured rather than assumed, by reintroducing four closed defects one at a time:
+
+| defect reintroduced | `test_sql_schema.py` | `test_sql_behaviour.py` |
+|---|---|---|
+| `UNIQUE (content_hash)` dropped from `02_document.sql` | **green** | red |
+| `claim`'s confidentiality policy widened to `USING (true)` | red | red |
+| `resolution`'s statement-level TRUNCATE tripwire deleted | red | red |
+| `GRANT procurement_ingest TO procurement_app` added | **green** | red |
+
+Two of four are invisible to the structural suite — including the privilege-separation boundary
+that Decision 9 rests on, where nothing in the DDL text changes at all and the grant is simply
+added. So a `sql/` row cites the behavioural test where one exists and says so where only the
+structural one does.
+
+The second half of the rule is what a live test is *not* worth. It skips silently without
+`PROCUREMENT_TEST_DSN` and runs only in CI's `sql` job, and — more importantly — it proves the
+schema behaves, not that any Python path uses the schema. Every row in this position still has an
+unimplemented application half, so each is `partial` and names which half is live-tested. `AC-5`
+is the clearest case: the store refuses a duplicate `content_hash` under test, and
+`services/ingestion.ingest` still raises `NotImplementedError`, so nothing re-ingests.
+
+## A-39 (Medium) — A-31 normalises role attributes, not role memberships
+
+> **Fixed 2026-08-04.** `00_roles.sql` now revokes every membership among the
+> four project roles on each run, beside the `ALTER ROLE`s that normalise
+> attributes, and `tests/test_sql_behaviour.py::test_no_project_role_is_a_member_of_another`
+> asserts `pg_auth_members` is empty for them — naming the cause where
+> `test_the_app_role_cannot_escalate_to_the_ingest_role` names the consequence.
+>
+> Verified by the discriminating case rather than by a plain revert: with a
+> stray `GRANT procurement_ingest TO procurement_app` already in the cluster,
+> the suite is **24 passed** with the revoke loop and **9 failed** without it.
+> A plain revert cannot show this — the session fixture rebuilds the schema from
+> scratch, so there is no pre-existing grant to revoke, which is exactly the
+> state the fix exists for.
+
+Found by accident, which is the only reason it is here: the fourth mutation above
+(`GRANT procurement_ingest TO procurement_app`) was reverted in the *file* and the suite stayed
+red, because the grant had been made in the *cluster* and nothing takes it back.
+
+Reproduced deliberately afterwards, against PostgreSQL 16:
+
+```
+GRANT procurement_ingest TO procurement_app;   -- the stray grant
+psql -f sql/00_roles.sql                       -- a clean re-run of the unmodified file
+SELECT ... FROM pg_auth_members ...            -- procurement_app IS MEMBER OF procurement_ingest
+```
+
+The membership survives. Every attribute assertion passes at the same time — `rolsuper`,
+`rolbypassrls`, `rolcanlogin` are all correct — because A-31 fixed exactly those, with
+unconditional top-level `ALTER ROLE ... NOSUPERUSER NOBYPASSRLS ...` statements and a `pg_roles`
+assertion block. `ALTER ROLE` does not touch `pg_auth_members`, and nothing else in the file does
+either.
+
+**This is A-31's own finding in the one form its fix does not reach**, stated in A-31's words: a
+pre-existing over-privileged `procurement_app` survives a clean re-run of the file that exists to
+prevent exactly that. The consequence is Decision 9's boundary: with the membership in place
+`procurement_app` can `SET ROLE procurement_ingest` and read every restricted row through the
+ingest read-back policy that `test_the_write_role_can_read_back_what_it_writes` requires. Eight of
+the 23 live tests go red, so the *consequence* is caught loudly — but
+`test_owner_roles_cannot_log_in_and_the_app_is_unprivileged` reads `rolsuper` and `rolbypassrls`
+and not `pg_auth_members`, so nothing names the *cause*, and a reader sees eight confidentiality
+failures rather than one role grant.
+
+**Not a defect in the committed DDL**, which never issues that grant — it is a hardening gap, and
+the same one A-31 judged worth closing. The remedy is symmetric with A-31's: an unconditional
+`REVOKE` of the memberships the design forbids, plus a `pg_auth_members` clause in the existing
+assertion block so a bootstrap identity that cannot revoke fails loudly instead of silently. A
+matching assertion in `test_owner_roles_cannot_log_in_and_the_app_is_unprivileged` would name the
+cause.
+
+**Left open deliberately.** The fix is in `sql/00_roles.sql` and `tests/test_sql_behaviour.py`,
+neither of which this branch owns. Registering it is the whole point of the register: A-15's
+lesson was that a fix asserted from the edits made rather than from a search across the repository
+is not a fix, and the converse holds too — a finding made in a file you cannot edit is still a
+finding, and dropping it because it is inconvenient to fix is how it stays lost.
 
 ---
 
@@ -446,8 +609,11 @@ recorded fact rather than an oversight.
 
 ## Coverage gaps that are real but intentional
 
-- **AC-1, AC-5, AC-6 have no tests.** They need the ingestion path and a labelled corpus, which
+- **AC-1 and AC-6 have no tests.** They need the ingestion path and a labelled corpus, which
   is WP-B and D-11 work. Recorded as open in the traceability doc rather than papered over.
+  (**AC-5 left this group on 2026-08-04** — see A-37. Its store-level invariant is live-tested by
+  `test_a_duplicate_content_hash_is_refused`; only the ingest path that would exercise it is
+  missing, so it is `partial` rather than `open`.)
 - **FR-ING-02 and FR-ING-05 have no home in code yet** beyond `ParserPort`. Correct at
   scaffolding stage; assigned to WP-A.
 - **NFR-06 and NFR-07 have no verification.** Both are scale/latency properties that need a

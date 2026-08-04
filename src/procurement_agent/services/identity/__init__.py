@@ -583,12 +583,14 @@ def score(left: Candidate, right: Candidate) -> MatchScore:
             "no electrical corroboration available; D-4 forbids auto-merge on "
             "manufacturer and model alone"
         )
-    elif all(_corroborates(k, a, b) for k, (a, b) in measured.items()):
-        signals["electrical"] = WEIGHTS["electrical"]
     else:
-        signals["electrical"] = 0.0
-        disagreeing = sorted(k for k, (a, b) in measured.items() if not _corroborates(k, a, b))
-        notes.append(f"electrical disagreement beyond tolerance: {', '.join(disagreeing)}")
+        corroboration = {k: _corroborates(k, a, b) for k, (a, b) in measured.items()}
+        if all(corroboration.values()):
+            signals["electrical"] = WEIGHTS["electrical"]
+        else:
+            signals["electrical"] = 0.0
+            disagreeing = sorted(k for k, agrees in corroboration.items() if not agrees)
+            notes.append(f"electrical disagreement beyond tolerance: {', '.join(disagreeing)}")
 
     total = round(sum(signals.values()), 10)
     corroborated = signals["electrical"] > 0.0

@@ -466,7 +466,7 @@ plus the 8 FRD requirements and 8 NFRs.
 | A-36 | **H** | **Five finding IDs each named two different findings.** Round 3 restarted numbering at A-23, which round 2 had already used, so A-23..A-27 were ambiguous — and this file is the document the contributor docs tell people to cite | **Fixed** — Round 3 renumbered A-28..A-35 |
 | A-37 | **H** | **The traceability table understated merged work — A-16 with the sign reversed.** Ten rows sat below what the code and tests support, including NFR-02 reading "store not yet built" beside a nine-file schema whose tripwires run against a live server on every pull request | **Fixed** |
 | A-38 | **M** | The table had no rule for weighing a live-database test against a structural one, and the two are not interchangeable: two of four reintroduced defects were invisible to `test_sql_schema.py` | **Fixed** — rule stated once, applied uniformly |
-| A-39 | **M** | **A-31's fix covers role *attributes* and not role *memberships*.** `GRANT procurement_ingest TO procurement_app` survives a clean re-run of `00_roles.sql`, defeating the Decision 9 boundary, and no test names the cause | **Open** — needs `sql/00_roles.sql`, which this branch does not own |
+| A-39 | **M** | **A-31's fix covers role *attributes* and not role *memberships*.** `GRANT procurement_ingest TO procurement_app` survives a clean re-run of `00_roles.sql`, defeating the Decision 9 boundary, and no test names the cause | **Fixed** |
 
 ## A-36 (High) — five finding IDs each named two findings
 
@@ -535,6 +535,19 @@ is the clearest case: the store refuses a duplicate `content_hash` under test, a
 `services/ingestion.ingest` still raises `NotImplementedError`, so nothing re-ingests.
 
 ## A-39 (Medium) — A-31 normalises role attributes, not role memberships
+
+> **Fixed 2026-08-04.** `00_roles.sql` now revokes every membership among the
+> four project roles on each run, beside the `ALTER ROLE`s that normalise
+> attributes, and `tests/test_sql_behaviour.py::test_no_project_role_is_a_member_of_another`
+> asserts `pg_auth_members` is empty for them — naming the cause where
+> `test_the_app_role_cannot_escalate_to_the_ingest_role` names the consequence.
+>
+> Verified by the discriminating case rather than by a plain revert: with a
+> stray `GRANT procurement_ingest TO procurement_app` already in the cluster,
+> the suite is **24 passed** with the revoke loop and **9 failed** without it.
+> A plain revert cannot show this — the session fixture rebuilds the schema from
+> scratch, so there is no pre-existing grant to revoke, which is exactly the
+> state the fix exists for.
 
 Found by accident, which is the only reason it is here: the fourth mutation above
 (`GRANT procurement_ingest TO procurement_app`) was reverted in the *file* and the suite stayed

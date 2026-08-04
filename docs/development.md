@@ -233,7 +233,9 @@ There is no output-projection step, because there is nothing to update: the cano
 projection is contract **C6**, still unfrozen, `write_workbook()` raises `NotImplementedError`,
 and there is no `tests/fixtures/` directory — the existing tests build their inputs inline. When
 C6 lands, a projection-fixture step belongs here. There is likewise no store round-trip step:
-C1 is unfrozen and no repository exists.
+C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no
+repository layer, so there is no round trip to exercise. Adding one is the step that turns
+`sql/` from a schema into a store.
 
 ## Extend conflict policy
 

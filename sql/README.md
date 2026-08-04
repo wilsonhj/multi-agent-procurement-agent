@@ -411,7 +411,9 @@ can check exactly these choices rather than re-deriving the whole schema.
    comment, not a constraint.
 
 5. **`audit.event`'s `event_type` taxonomy is invented outright.** Tasks.md
-   marks C4 as unfrozen. The seven values chosen
+   marks C4 **partial** — this SQL half exists, the Python envelope and the
+   RFC 8785 canonicalisation rule do not, so the bytes `hash` is computed over
+   are still undefined and nothing may emit an event yet. The seven values chosen
    (`document_ingested`, `parse_failure`, `extraction`, `web_search`,
    `conflict_detected`, `resolution`, `attempt_failed`) are a first proposal
    covering NFR-02's "every extraction, query, conflict and resolution," minus
@@ -441,9 +443,14 @@ can check exactly these choices rather than re-deriving the whole schema.
    as-is.
 
 9. **C7 (the ACL/labelling model) is implemented at its frozen minimum, not
-   guessed at in full.** Tasks.md marks C7 "partial... undecided." Rather than
-   inventing a labels/tenant model with no contract behind it, RLS on
-   `document` and `chunk` enforces only the one ACL primitive the frozen
+   guessed at in full.** Tasks.md marks C7 "partial... undecided", and it stays
+   undecided: what landed here is enforcement of one boolean, not a model, and
+   T0.4's written ACL decision does not exist in `clarifications.md` or
+   `open-decisions.md`. The enforcement mechanism arrived ahead of the decision
+   it is supposed to implement. Rather than inventing a labels/tenant model with
+   no contract behind it, RLS on all seven content tables — `document`, `chunk`,
+   `claim`, `conflict`, `resolution`, `job` and `audit.event` — enforces only the
+   one ACL primitive the frozen
    Pydantic schema already commits to — `SourceDocument.access_restricted` — 
    gated by a session boolean GUC (`app.allow_restricted`) the application must
    `SET LOCAL` per transaction based on the caller's real authorization.

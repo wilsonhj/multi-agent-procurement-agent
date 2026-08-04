@@ -191,6 +191,46 @@ ALTER ROLE audit_owner        NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPL
 ALTER ROLE procurement_app    LOGIN   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE procurement_ingest LOGIN   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
+-- Role *memberships*, which the ALTERs above do not touch.
+--
+-- Re-asserting attributes closed one hole and left its twin open. A membership
+-- is not an attribute, so
+--
+--     GRANT procurement_ingest TO procurement_app;   -- however this happened
+--
+-- survives a clean re-run of this file with every attribute check still
+-- passing, and hands the application role the ingest boundary for the cost of
+-- one `SET ROLE`. Measured, not theorised: with that grant in place,
+-- `procurement_app` executes `SET ROLE procurement_ingest` and `current_user`
+-- comes back `procurement_ingest`; re-running this file leaves the membership
+-- in `pg_auth_members` untouched.
+--
+-- That defeats Decision 9 exactly as `SUPERUSER` would, and it is quieter,
+-- because every role attribute still reads correctly afterwards.
+--
+-- REVOKE is unconditional and safe: none of these four roles is ever a
+-- legitimate member of another. If a future deployment needs one, this is the
+-- line that has to be edited, which is the point - the grant becomes a visible
+-- decision instead of ambient state.
+DO $$
+DECLARE
+    granter text;
+    grantee text;
+BEGIN
+    FOREACH granter IN ARRAY ARRAY['procurement_owner', 'audit_owner',
+                                   'procurement_app', 'procurement_ingest']
+    LOOP
+        FOREACH grantee IN ARRAY ARRAY['procurement_owner', 'audit_owner',
+                                       'procurement_app', 'procurement_ingest']
+        LOOP
+            IF granter <> grantee THEN
+                EXECUTE format('REVOKE %I FROM %I', granter, grantee);
+            END IF;
+        END LOOP;
+    END LOOP;
+END
+$$;
+
 -- The assertion, separate from the ALTERs above on purpose: reading pg_roles
 -- needs no privilege at all, so this check holds even where the ALTERs could not
 -- run, and it names what is wrong instead of leaving a reader to infer it from

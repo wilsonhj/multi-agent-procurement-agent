@@ -49,7 +49,44 @@ CREATE INDEX resolution_entry_id_idx ON public.resolution (entry_id);
 
 ALTER TABLE public.resolution OWNER TO procurement_owner;
 
+-- Confidentiality (NFR-03, AC-8). `value_before` and `value_after` are the
+-- disputed values themselves, and `rationale` is a human's prose about them, so
+-- a resolution is exactly as confidential as the conflict it settles. Measured
+-- as procurement_app against a document that role could not see:
+--
+--     SELECT entry_id, value_before, value_after FROM public.resolution;
+--      cf-1 | 0.35 | 0.19
+--
+-- Keyed on `conflict_is_restricted(entry_id)` (05_conflict.sql) rather than on a
+-- document_id this table does not have -- and correctly so, since the conflict
+-- being resolved may span several documents.
+ALTER TABLE public.resolution ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.resolution FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY resolution_confidentiality_select ON public.resolution
+    FOR SELECT
+    USING (
+        NOT public.conflict_is_restricted(entry_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
+
+CREATE POLICY resolution_write_insert ON public.resolution
+    FOR INSERT
+    WITH CHECK (true);
+
+-- Permissive UPDATE/DELETE policies on an append-only table, for the reason
+-- given at length in 04_claim.sql: RLS removes rows before a FOR EACH ROW
+-- trigger runs, so omitting these turns the append-only tripwire from a raised
+-- exception into a silent `UPDATE 0`. Neither verb is granted to any role below;
+-- these policies exist only so the mis-grant case is audible.
+CREATE POLICY resolution_tripwire_update ON public.resolution FOR UPDATE USING (true);
+CREATE POLICY resolution_tripwire_delete ON public.resolution FOR DELETE USING (true);
+
+CREATE POLICY resolution_ingest_select ON public.resolution
+    FOR SELECT TO procurement_ingest USING (true);
+
 GRANT SELECT, INSERT ON public.resolution TO procurement_app;
+GRANT SELECT, INSERT ON public.resolution TO procurement_ingest;
 
 CREATE TRIGGER resolution_no_mutation
     BEFORE UPDATE OR DELETE ON public.resolution

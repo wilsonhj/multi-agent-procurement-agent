@@ -108,9 +108,83 @@ CREATE TRIGGER job_set_updated_at
 ALTER TABLE public.job OWNER TO procurement_owner;
 ALTER FUNCTION public.job_touch_updated_at() OWNER TO procurement_owner;
 
+-- Confidentiality (NFR-03, AC-8). `job.payload` is the stage's own input -- for
+-- `extract` or `enrich_via_web` that is document content, and it was readable as
+-- procurement_app for a document that role could not see:
+--
+--     SELECT job_id, document_id, payload FROM public.job;
+--      1 | doc-secret | {"secret": "0.19"}
+--
+-- `last_error` is the same hazard by a different route: an exception message
+-- routinely quotes the value that failed to parse.
+--
+-- `document_id` is nullable here (compose_workbook is a whole-store stage with
+-- no single subject), and public.document_is_restricted returns false for NULL,
+-- so those rows stay visible -- correct, since a whole-store job's payload names
+-- no document.
+ALTER TABLE public.job ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.job FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY job_confidentiality_select ON public.job
+    FOR SELECT
+    USING (
+        NOT public.document_is_restricted(document_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
+
+CREATE POLICY job_write_insert ON public.job
+    FOR INSERT
+    WITH CHECK (true);
+
+-- The confidentiality predicate is in USING, not `true`, for the reason
+-- 03_chunk.sql sets out: an UPDATE needs no SELECT, so a permissive USING would
+-- let a role quarantine, re-lease or fail a restricted document's job blind --
+-- a denial-of-service on exactly the pipeline NFR-03 is protecting.
+CREATE POLICY job_write_update ON public.job
+    FOR UPDATE
+    USING (
+        NOT public.document_is_restricted(document_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    )
+    WITH CHECK (true);
+
+CREATE POLICY job_ingest_select ON public.job
+    FOR SELECT TO procurement_ingest USING (true);
+CREATE POLICY job_ingest_update ON public.job
+    FOR UPDATE TO procurement_ingest USING (true) WITH CHECK (true);
+
 -- job is the mutable state machine itself -- unlike claim/resolution/
--- audit.event, full UPDATE is granted rather than withheld, since state
--- transitions are the table's entire purpose. No DELETE: nothing in the spec
--- ever removes a job row -- a poison message is quarantined (status =
--- 'quarantined', I.4), never deleted.
-GRANT SELECT, INSERT, UPDATE ON public.job TO procurement_app;
+-- audit.event, UPDATE is granted rather than withheld, since state transitions
+-- are the table's entire purpose. No DELETE: nothing in the spec ever removes a
+-- job row -- a poison message is quarantined (status = 'quarantined', I.4),
+-- never deleted.
+--
+-- **Column-level, not full-table.** The first version granted plain
+-- `UPDATE ON public.job`, which is every column, and `document`/`conflict` in
+-- this same file set had already established the opposite discipline for the
+-- same reason. What that cost, measured as procurement_app:
+--
+--     UPDATE public.job SET idempotency_key = 'HIJACKED';   -- UPDATE 1
+--     UPDATE public.job SET stage = 'ingest', document_id = 'doc-open',
+--                          created_at = now();              -- UPDATE 1
+--
+-- `idempotency_key` is the whole of I.2's at-least-once guarantee: rewriting it
+-- makes `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` stop deduplicating,
+-- so the retry it exists to absorb becomes a second live job racing the first --
+-- and the same buggy worker that corrupts the key is the one whose retries the
+-- key was protecting against. `stage`, `document_id` and `payload` define which
+-- unit of work this row *is*, not how far it has got; `created_at` is the
+-- worker loop's FIFO ordering key; `updated_at` is the trigger's to write, and
+-- withholding it from the grant does not stop the trigger, because column
+-- privileges are checked against the statement's target list and not against
+-- what a BEFORE trigger assigns to NEW (verified against a live server).
+--
+-- What remains is exactly the state machine: status, the retry counter and its
+-- backoff, the lease pair, and the error text.
+GRANT SELECT, INSERT ON public.job TO procurement_app;
+GRANT UPDATE (status, attempt, next_attempt_at, lease_owner, lease_expires_at, last_error)
+    ON public.job TO procurement_app;
+
+GRANT SELECT, INSERT ON public.job TO procurement_ingest;
+GRANT UPDATE (status, attempt, next_attempt_at, lease_owner, lease_expires_at, last_error)
+    ON public.job TO procurement_ingest;

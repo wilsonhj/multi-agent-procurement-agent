@@ -112,3 +112,95 @@ CREATE INDEX conflict_candidate_claim_id_idx ON public.conflict_candidate (claim
 ALTER TABLE public.conflict_candidate OWNER TO procurement_owner;
 
 GRANT SELECT, INSERT ON public.conflict_candidate TO procurement_app;
+GRANT SELECT, INSERT ON public.conflict_candidate TO procurement_ingest;
+
+-- ---------------------------------------------------------------------------
+-- Confidentiality for the queue (NFR-03, AC-8).
+--
+-- `conflict.explanation` is free text written to be read by a human -- "record
+-- says 0.19 USD/W, web says 0.35" -- so it carries the disputed values
+-- themselves, not a reference to them. Measured as procurement_app against a
+-- document that role could not see:
+--
+--     SELECT entry_id, explanation FROM public.conflict;
+--      cf-1 | CONFIDENTIAL: record says 0.19, web says 0.35
+--
+-- **Why this needs its own function rather than reusing document_is_restricted.**
+-- `conflict` has no document_id, and cannot: an INTER_DOCUMENT conflict is by
+-- definition about two or more documents. Its confidentiality is therefore the
+-- OR over the documents of its candidate claims -- restricted if ANY candidate
+-- comes from a restricted document, because the explanation quotes all of them.
+--
+-- That derivation cannot be a stored column filled at INSERT: `conflict` rows
+-- are inserted before their `conflict_candidate` rows exist (the FK runs that
+-- way round), so at INSERT time there is nothing to derive from. Computing it on
+-- read is what makes it correct rather than merely convenient.
+--
+-- SECURITY DEFINER for the same reason as document_is_restricted: this walk
+-- crosses `claim`, which is itself FORCE ROW LEVEL SECURITY as of 04_claim.sql,
+-- and a lookup that cannot see restricted claims would report every conflict as
+-- unrestricted -- failing open, in the one function whose job is to fail closed.
+--
+-- Deliberately NOT applied to `conflict_candidate` itself: that table holds only
+-- (entry_id, claim_id, ordinal), no content, and a policy on it calling this
+-- function -- which reads it -- is a genuine infinite recursion, which
+-- PostgreSQL rejects at query time rather than at CREATE POLICY. The residual
+-- exposure is that an unentitled role can see that some conflict has some number
+-- of candidates; it recovers no value, unit, verbatim text or document id,
+-- because claim and conflict are both gated. Recorded in sql/README.md.
+CREATE FUNCTION public.conflict_is_restricted(p_entry_id text)
+    RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.conflict_candidate cc
+        JOIN public.claim c ON c.claim_id = cc.claim_id
+        WHERE cc.entry_id = p_entry_id
+          AND public.document_is_restricted(c.document_id)
+    );
+$$ SECURITY DEFINER
+   SET search_path = public, pg_temp
+   SET app.allow_restricted = 'true';
+
+ALTER FUNCTION public.conflict_is_restricted(text) OWNER TO procurement_owner;
+REVOKE EXECUTE ON FUNCTION public.conflict_is_restricted(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.conflict_is_restricted(text)
+    TO procurement_app, procurement_ingest, procurement_owner, audit_owner;
+
+ALTER TABLE public.conflict ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conflict FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY conflict_confidentiality_select ON public.conflict
+    FOR SELECT
+    USING (
+        NOT public.conflict_is_restricted(entry_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
+
+CREATE POLICY conflict_write_insert ON public.conflict
+    FOR INSERT
+    WITH CHECK (true);
+
+-- The UPDATE policy carries the confidentiality predicate, for the reason set
+-- out at length in 03_chunk.sql: a permissive `USING (true)` plus an UPDATE that
+-- needs no SELECT lets a role rewrite the lease and status of a queue item it
+-- cannot read -- stealing or closing another reviewer's confidential conflict
+-- blind. An entitled session claims it normally.
+CREATE POLICY conflict_write_update ON public.conflict
+    FOR UPDATE
+    USING (
+        NOT public.conflict_is_restricted(entry_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    )
+    WITH CHECK (true);
+
+CREATE POLICY conflict_ingest_select ON public.conflict
+    FOR SELECT TO procurement_ingest USING (true);
+CREATE POLICY conflict_ingest_update ON public.conflict
+    FOR UPDATE TO procurement_ingest USING (true) WITH CHECK (true);
+
+GRANT SELECT, INSERT ON public.conflict TO procurement_ingest;
+GRANT UPDATE (status, lease_owner, lease_expires_at, reopen_count)
+    ON public.conflict TO procurement_ingest;

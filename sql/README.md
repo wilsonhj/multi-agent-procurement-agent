@@ -5,13 +5,18 @@ freeze) and the C1/C4/C8 contracts it gates. No Python, no ORM. Everything here
 implements plan.md Decisions 1, 3, 3a, 3b, 3c and 9, and tasks.md WP-H (audit
 log) and WP-I (runner) at the schema layer.
 
-**No live PostgreSQL was available while writing this.** Nothing here has been
-applied against a running server, executed, or round-tripped through `psql`
-against a real database. It has, however, been parsed against the actual
-PostgreSQL 18 grammar with an offline tool — see "Syntax verification actually
-performed" below — which is a meaningfully stronger claim than "carefully
-read." See "What remains unverified" at the end of this file before treating
-any of it as load-bearing without a first real run.
+**This has now been applied to a live server**, twice, on different builds: a
+PostgreSQL 17.10 cluster with pgvector 0.8.6, and a PostgreSQL 16 cluster with
+pgvector **0.6.0** — the older pgvector matters, because
+`01_extensions_and_settings.sql` guards `hnsw.iterative_scan` (a 0.8.0 GUC) and
+that guard had never been exercised on a build that lacks it. See "Live
+verification actually performed" below for the checklist that was run, and "What
+remains unverified" at the end for what a live run still could not reach.
+
+Decision 3 pins PostgreSQL 18. Neither run was on 18, so anything genuinely
+18-specific is still unproven; nothing in these files depends on an 18-only
+feature, and the newest syntax used (`UNIQUE NULLS NOT DISTINCT`, PostgreSQL 15+)
+executed correctly on both.
 
 ## Apply order
 
@@ -20,15 +25,21 @@ gets the dependency order right automatically:
 
 | File | Contents | Depends on |
 |---|---|---|
-| `00_roles.sql` | `procurement_owner`, `audit_owner` (both NOLOGIN), `procurement_app` (LOGIN, non-superuser) | — |
+| `00_roles.sql` | `procurement_owner`, `audit_owner` (both NOLOGIN), `procurement_app` and `procurement_ingest` (LOGIN, non-superuser); unconditional attribute re-assertion | — |
 | `01_extensions_and_settings.sql` | `vector`, `pg_trgm`; `audit` schema; `hnsw.iterative_scan = relaxed_order` | `00_roles.sql` |
 | `02_document.sql` | `document` + RLS | `00`, `01` |
 | `03_chunk.sql` | `chunk` + RLS + tsvector/trgm indexes | `01`, `02` |
-| `04_claim.sql` | `claim`, plus the shared `public.reject_mutation()` trigger function | `02` |
-| `05_conflict.sql` | `conflict`, `conflict_candidate` | `04` |
-| `06_resolution.sql` | `resolution` | `04`, `05` |
-| `07_audit_event.sql` | `audit.event`, hash-chain columns, both trigger tripwires | `01`, `02` |
-| `08_job.sql` | `job` (stage state machine) | `02` |
+| `04_claim.sql` | `claim` + RLS, plus the shared `public.reject_mutation()` trigger function | `02` |
+| `05_conflict.sql` | `conflict` + RLS, `conflict_candidate` (no RLS — see below), `public.conflict_is_restricted()` | `04` |
+| `06_resolution.sql` | `resolution` + RLS | `04`, `05` |
+| `07_audit_event.sql` | `audit.event` + RLS, hash-chain columns, both trigger tripwires | `01`, `02` |
+| `08_job.sql` | `job` (stage state machine) + RLS | `02` |
+
+Two shared helpers cross file boundaries: `02_document.sql` defines
+`public.document_is_restricted(text)`, the confidentiality derivation every table
+carrying a `document_id` keys on, and `05_conflict.sql` defines
+`public.conflict_is_restricted(text)` for the two tables that do not have one.
+Both are `SECURITY DEFINER`; decision 10 below says why.
 
 Apply with, e.g.:
 
@@ -43,15 +54,26 @@ statement and a broken migration can look like it "applied."
 
 **Who runs this.** Every file assumes it executes as a bootstrap identity with
 enough privilege to `CREATE ROLE`, `CREATE EXTENSION`, `ALTER DATABASE`, and
-`ALTER TABLE ... OWNER TO` — in practice the cluster's initial superuser, or a
-CI/CD service account granted `CREATEROLE` for provisioning. This identity is
-**not** `procurement_owner`, `audit_owner`, or `procurement_app`, is not
-defined by any file here, and should not be used for anything once migrations
-are applied.
+`ALTER TABLE ... OWNER TO`. This identity is **not** `procurement_owner`,
+`audit_owner`, `procurement_app` or `procurement_ingest`, is not defined by any
+file here, and should not be used for anything once migrations are applied.
+
+`00_roles.sql` specifically requires a **superuser**: it clears `SUPERUSER`,
+`BYPASSRLS` and `REPLICATION` unconditionally on every run, and only a superuser
+may clear those — a `CREATEROLE` service account is refused with "permission
+denied to alter role" even when the attribute is already unset. See section 1 of
+the verification checklist for why that is the right trade. Files `01`–`08` run
+under a CI/CD service account with `CREATEDB`/`CREATEROLE` and the ability to
+create extensions.
 
 **Idempotency is asymmetric on purpose.** `00_roles.sql`'s `CREATE ROLE`
 statements are guarded (`DO $$ ... IF NOT EXISTS ...`) so the file is safe to
-re-run — roles are cluster-global and may legitimately already exist. Every
+re-run — roles are cluster-global and may legitimately already exist. The
+*attributes*, by contrast, are re-asserted unconditionally on every run, because
+guarding those behind the same `IF NOT EXISTS` meant a `procurement_app` that had
+somehow acquired `SUPERUSER BYPASSRLS` survived a clean re-run of the one file
+whose purpose is to prevent that — measured, with the migration printing no
+errors. Every
 `CREATE TABLE` in `02` through `08` is **not** guarded with `IF NOT EXISTS`,
 and re-running this file set against a database that already has these tables
 is expected to fail loudly (`relation already exists`) rather than silently
@@ -111,44 +133,68 @@ here rather than folded silently into "syntax verified."
 
 ## Live verification actually performed
 
-The checklist below was subsequently **run**, against a throwaway cluster:
-PostgreSQL 17.10 with pgvector 0.8.6 and pg_trgm 1.6. Note the version gap —
-Decision 3 pins PostgreSQL 18, so everything here holds on 17.10 and the
-18-specific behaviour is still unproven on 18 itself.
+Run twice, against throwaway clusters:
 
-All nine files applied in order under `ON_ERROR_STOP=1` with no errors. Then:
+- **PostgreSQL 17.10, pgvector 0.8.6, pg_trgm 1.6** — the original run.
+- **PostgreSQL 16, pgvector 0.6.0** — re-run in full after the review fixes
+  below. pgvector 0.6.0 predates `hnsw.iterative_scan` (0.8.0), so this run is
+  the one that actually exercises `01_extensions_and_settings.sql`'s version
+  guard; it emits its `NOTICE` and skips, and all nine files apply with no error
+  under `ON_ERROR_STOP=1`.
 
-| Property | Source | Result |
-|---|---|---|
-| `procurement_app` may `INSERT`/`SELECT` on `audit.event` | Decision 9 | passes |
-| `procurement_app` cannot `UPDATE`/`DELETE`/`TRUNCATE` it | Decision 9, T0.1 | all three refused |
-| the trigger tripwire stops even a superuser `UPDATE` | Decision 9 | refused |
-| a hash-chain fork is loud, not silent | Decision 9 | refused, `audit_event_no_fork` |
-| a duplicate *genesis* row is also refused | `NULLS NOT DISTINCT` | refused |
-| chains on different documents stay independent | Decision 9 | allowed, as intended |
-| `claim` rejects `UPDATE`/`DELETE`/`TRUNCATE` with a row present | C8 | all three refused |
-| `resolution` rejects `TRUNCATE` | C8 | refused |
-| app cannot declassify a row it cannot read | Decision 3c | `UPDATE 0`, `DELETE 0` |
-| a chunk written for a restricted document inherits the flag | NFR-03, C7 | inherited |
-| `prev_hash` naming a parent that never existed | Decision 9 | refused, FK |
-| a second disconnected root in one stream | Decision 9 | refused, FK |
-| two events in one stream sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
-| duplicate `content_hash` refused | NFR-05, AC-5 | refused |
-| no `hnsw`/`ivfflat` index exists | Decision 3a | 0 found |
-| `FORCE ROW LEVEL SECURITY` on `document` and `chunk` | Decision 3c | both forced |
-| both owner roles `NOLOGIN`, app non-superuser | Decision 9 | confirmed |
-| `payload` jsonb derives from `payload_canonical` text | Decision 9 | confirmed |
-
-Two notes on how easily this kind of check fools you, both hit while running it:
+**Every mutation check below was re-run with real rows present.** This is not a
+formality. Two ways this kind of checklist lies to you, both hit while running
+it:
 
 - A `FOR EACH ROW` trigger on an **empty table never fires**, so
   `UPDATE claim SET ...` against zero rows *succeeds* and reads as "append-only
-  is not enforced". Every mutation check above was re-run with a real row
-  present. A checklist that seeds no data proves nothing here.
-- `UNIQUE (stream, prev_hash)` **without** `NULLS NOT DISTINCT` would permit
-  unlimited genesis rows per stream, since SQL NULLs are distinct by default —
-  a fork at exactly the point a chain is least able to detect one. The
-  constraint carries `NULLS NOT DISTINCT`, and that is now covered above.
+  is not enforced." A checklist that seeds no data proves nothing here.
+- **RLS filters rows out before a row-level trigger runs**, which is the same
+  trap wearing a different hat. Enabling row-level security on `claim`,
+  `resolution` and `audit.event` turned `UPDATE public.claim SET confidence = 0.1`
+  as `procurement_owner` from a raised exception into a silent `UPDATE 0` — the
+  data survived, but Decision 9's attack matrix lists that cell as
+  "Trigger: blocked", and a silent no-op is not blocked, it is unmeasured. Each
+  of those three tables therefore carries a permissive `FOR UPDATE`/`FOR DELETE`
+  policy whose only purpose is to keep rows eligible so the tripwire still
+  speaks. No role is granted either verb.
+
+| Property | Source | Result |
+|---|---|---|
+| all nine files apply under `ON_ERROR_STOP=1`, on pgvector 0.6.0 | T0.1 | applied |
+| `01`'s pgvector version guard skips cleanly below 0.8.0 | Decision 3a | `NOTICE`, no error |
+| `procurement_app` may `INSERT`/`SELECT` on `audit.event` | Decision 9 | passes |
+| `procurement_app` cannot `UPDATE`/`DELETE`/`TRUNCATE` it | Decision 9, T0.1 | all three refused |
+| the trigger tripwire stops `UPDATE`/`DELETE` as the table owner | Decision 9 | refused, with rows present |
+| the trigger tripwire stops even a superuser `UPDATE` | Decision 9 | refused |
+| `claim`/`resolution` reject `UPDATE`/`DELETE`/`TRUNCATE` with rows present | C8 | all refused |
+| `TRUNCATE ... CASCADE` on `claim` is refused | C8 | refused |
+| a hash-chain fork is loud, not silent | Decision 9 | refused, `audit_event_no_fork` |
+| a duplicate *genesis* row is also refused | `NULLS NOT DISTINCT` | refused |
+| `prev_hash` naming a parent that never existed | Decision 9 | refused, FK |
+| a second disconnected root in one stream | Decision 9 | refused, FK |
+| two events in one stream sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
+| a valid chain still appends, and a new document still starts one | Decision 9 | both allowed |
+| duplicate `content_hash` refused | NFR-05, AC-5 | refused |
+| app cannot declassify or delete a row it cannot read | Decision 3c | `UPDATE 0`, `DELETE 0` |
+| a chunk written for a restricted document inherits the flag | NFR-03, C7 | inherited |
+| no `hnsw`/`ivfflat` index exists | Decision 3a | 0 found |
+| `FORCE ROW LEVEL SECURITY` on all seven content tables | Decision 3c, NFR-03 | all forced |
+| restricted `claim`/`conflict`/`resolution`/`job`/`audit.event` hidden from `procurement_app` | NFR-03, AC-8 | 0 rows each |
+| unrestricted rows in those tables stay visible | — | visible |
+| an entitled session (`app.allow_restricted`) sees them again | Decision 3c | visible |
+| reclassifying a document takes effect immediately, no backfill | — | confirmed |
+| `procurement_ingest` can `INSERT ... ON CONFLICT`/`RETURNING` a restricted row | NFR-05 | allowed |
+| `procurement_app` cannot rewrite `job.idempotency_key`/`stage`/`payload`/`created_at` | I.2 | refused |
+| `procurement_app` can still perform a job state transition | I.2 | allowed, `updated_at` stamped |
+| re-running `00_roles.sql` clears a `SUPERUSER BYPASSRLS` on `procurement_app` | Decision 3c | cleared |
+| re-running `02`–`08` fails loudly | forward-only migrations | `relation already exists` |
+| both owner roles `NOLOGIN`, app roles non-superuser | Decision 9 | confirmed |
+| `payload` jsonb derives from `payload_canonical` text | Decision 9 | confirmed |
+
+`tests/test_sql_schema.py` is the CI-side companion: it cannot execute SQL, so it
+asserts the *structure* each of these properties rests on, and fails if a fix
+above is reverted. The behaviour is proven here; the regression guard is there.
 
 ### Still unproven by the above
 
@@ -156,21 +202,34 @@ Concurrency. Decision 9's measured failure — 8 concurrent writers producing 42
 silent forks — is a property of the *caller's* advisory-lock discipline, not of
 this DDL, and nothing here exercises it. `audit_event_no_fork` converts such a
 fork from silent to loud, which is necessary and explicitly not sufficient. The
-pre-INSERT advisory lock still has to be written in Python, as its own
-statement before the INSERT, and load-tested.
+pre-INSERT advisory lock still has to be written in Python, as its own statement
+before the INSERT, and load-tested.
+
+Performance of the confidentiality derivation. `document_is_restricted` and
+`conflict_is_restricted` are `STABLE` SQL functions called from RLS policies, so
+the planner may call them once per distinct argument per statement rather than
+once per row — but that was not measured, and neither was the join in
+`conflict_is_restricted` at queue scale. Correctness was the goal here; if the
+queue view becomes slow, the answer is a materialised restriction column on
+`conflict` maintained by a trigger on `conflict_candidate`, not a weaker policy.
 
 ## Verification checklist (T0.1)
 
 ### 1. Migrations apply cleanly
 
-Statement-level syntax is verified per above. What is **not** verified is
-semantic acceptance by a real server — that `CREATE EXTENSION vector`
-succeeds with the privileges assumed, that every referenced type/operator
-class (`vector`, `gin_trgm_ops`, `jsonb_path_ops`) resolves, that no
-name collides with something already in the target cluster, and so on. Run
-the apply loop above against an empty database, as the bootstrap identity
-described above, with `ON_ERROR_STOP=1`, to close this gap. Success is nine
-files with no error output.
+Done — see "Live verification actually performed" above. Nine files, no error
+output, on PostgreSQL 17.10/pgvector 0.8.6 and PostgreSQL 16/pgvector 0.6.0. Re-run
+the apply loop against an empty database as the bootstrap identity, with
+`ON_ERROR_STOP=1`, whenever these files change.
+
+Note that `00_roles.sql` now needs a **superuser** bootstrap identity: it clears
+`SUPERUSER`, `BYPASSRLS` and `REPLICATION` unconditionally, and only a superuser
+may clear those — a `CREATEROLE` service account is refused with "permission
+denied to alter role" even when the attribute is already unset. That is the
+correct trade, because an identity that cannot clear `BYPASSRLS` cannot honestly
+promise it is unset; the file's assertion block reads `pg_roles` back (which needs
+no privilege) and raises if anything forbidden survived. Files `01`–`08` still
+apply under the weaker CI identity described under "Who runs this".
 
 ### 2. `procurement_app` cannot `UPDATE`/`DELETE`/`TRUNCATE` `audit.event`
 
@@ -216,76 +275,76 @@ applies the same reasoning to both, beyond the literal T0.1 ask — see decision
 
 ### 3. RLS spot check (Decision 3c, AC-8)
 
+Seed a restricted document **and at least one dependent row in every content
+table** first. Checking only `document` is how the original review passed while
+`claim`, `conflict`, `resolution`, `job` and `audit.event` were all returning the
+same document's content in full.
+
 ```sql
 SET ROLE procurement_app;
--- No app.allow_restricted set: only unrestricted rows should be visible.
-SELECT count(*) FROM document WHERE access_restricted;   -- expect 0
+-- No app.allow_restricted set: only unrestricted rows should be visible,
+-- in every one of these.
+SELECT count(*) FROM document      WHERE access_restricted;          -- expect 0
+SELECT count(*) FROM chunk         WHERE access_restricted;          -- expect 0
+SELECT count(*) FROM claim         WHERE document_id = 'doc-secret'; -- expect 0
+SELECT count(*) FROM job           WHERE document_id = 'doc-secret'; -- expect 0
+SELECT count(*) FROM audit.event   WHERE document_id = 'doc-secret'; -- expect 0
+SELECT count(*) FROM conflict;     -- expect 0 for a restricted conflict
+SELECT count(*) FROM resolution;   -- expect 0 for a restricted conflict
+
 SET LOCAL app.allow_restricted = 'true';
-SELECT count(*) FROM document WHERE access_restricted;   -- expect the real count
+SELECT count(*) FROM claim WHERE document_id = 'doc-secret';         -- the real count
+RESET ROLE;
+```
+
+The write path is a separate check, and the one that regressed silently before:
+
+```sql
+SET ROLE procurement_ingest;
+-- Must succeed. Under procurement_app this raises "new row violates row-level
+-- security policy", because RLS applies the SELECT policy to the read-back.
+INSERT INTO document (document_id, content_hash, source_uri, document_type,
+                      access_restricted)
+VALUES ('d1', 'h1', 'file:///x', 'pricing', true)
+ON CONFLICT (content_hash) DO NOTHING
+RETURNING document_id;
 RESET ROLE;
 ```
 
 ## What remains unverified
 
-Nothing in this directory has been applied to a running PostgreSQL — that
-part of the constraint this work was done under was honoured throughout.
-Grammar-level syntax was checked with a real PostgreSQL 18 parser (see
-"Syntax verification actually performed" above); what follows is what that
-check could not reach.
+Everything under "Live verification actually performed" above was executed. What
+follows is what a live run on 16 and 17 still could not reach.
 
-- Semantic acceptance by a real server: that `CREATE EXTENSION vector`
-  succeeds with the assumed privileges, that `vector`, `gin_trgm_ops`,
-  `jsonb_path_ops` and every other referenced type/operator class actually
-  exist in the target installation, that no identifier collides with
-  something already in the cluster, and so on — a parser confirms the
-  statements are well-formed, not that they succeed against a live catalog.
-- `UNIQUE NULLS NOT DISTINCT` (used on `audit.event`) parsed correctly under
-  the PostgreSQL 18 grammar, confirming the syntax is accepted at that version
-  — but its runtime behaviour (that two genesis rows for one stream really do
-  collide) was not exercised against a live server.
-- Whether `CREATE EXTENSION vector` at 0.8.5 requires superuser, or is
-  installable by a plain database-owning role (i.e. whether pgvector's control
-  file marks itself `trusted`) — not checked against the actual 0.8.5
-  packaging; this is a privilege/packaging question a parser cannot answer.
-- That `ALTER DATABASE ... SET hnsw.iterative_scan = 'relaxed_order'` behaves
-  as described (accepted as a placeholder GUC without a
-  `shared_preload_libraries` change, and takes effect for new sessions) — this
-  is standard documented PostgreSQL/pgvector GUC-registration behaviour, but it
-  was reasoned about, not executed.
-- That the RLS policy split (a `FOR SELECT` policy carrying the actual
-  confidentiality check, plus separate permissive `FOR INSERT`/`FOR
-  UPDATE`/`FOR DELETE` policies so the write path is not accidentally starved
-  by RLS's per-command default-deny under `FORCE`) produces the intended
-  behaviour end to end. The reasoning is written into the comments in
-  `02_document.sql` and `03_chunk.sql`, and the statements parse; whether
-  PostgreSQL actually evaluates them the way this reasoning expects has not
-  been exercised.
-- That the generated columns (`chunk.tsv`, `audit.event.payload`) accept
-  the exact expressions written at *execution* time (they parse correctly),
-  in particular `payload_canonical::jsonb` as a `STORED` generation
-  expression. `chunk.tsv` specifically routes through a
-  small `IMMUTABLE` wrapper function (`chunk_text_to_tsvector`) rather than
-  calling `to_tsvector('english', ...)` directly, because the two-argument
-  `to_tsvector(regconfig, text)` is `STABLE` in PostgreSQL's own catalog and a
-  `GENERATED ALWAYS AS ... STORED` column requires an `IMMUTABLE` expression —
-  used directly it would fail table creation outright with "generation
-  expression is not immutable." This is a well-documented, standard PostgreSQL
-  workaround, but it has not been executed here either.
-- That column-level `GRANT UPDATE (col1, col2)` composes correctly with the
-  RLS policies on the same table (they are independent mechanisms by design,
-  but that independence has not been demonstrated against a real server).
-- All three `plpgsql` trigger functions (`reject_mutation`, `reject_truncate`,
-  `job_touch_updated_at`) never compiled against a real backend. Their bodies
-  were spot-checked by parsing byte-identical `RAISE EXCEPTION`/assignment
-  logic in a non-trigger function (where `pglast`'s plpgsql parser does work —
-  see above), which confirmed the string concatenation, the `%`/`TG_OP`
-  substitution, the doubled-quote escaping, and the `NEW.column := ...;`
-  assignment are all valid plpgsql. What that spot check cannot confirm is
-  anything specific to the trigger context itself: that `TG_OP` really is
-  bound and reads `'UPDATE'`/`'DELETE'` as expected, that a `BEFORE TRUNCATE`
-  `FOR EACH STATEMENT` trigger is accepted by `CREATE TRIGGER` the way this
-  schema assumes, and that raising inside `BEFORE UPDATE OR DELETE`/`BEFORE
-  TRUNCATE` actually aborts the statement. Those need a real server.
+- **PostgreSQL 18 itself.** Decision 3 pins 18; the runs were on 17.10 and 16.
+  Nothing here uses an 18-only feature and the newest syntax
+  (`UNIQUE NULLS NOT DISTINCT`, PostgreSQL 15+) executed correctly on both, but
+  "verified on 18" is not a claim this file makes.
+- **pgvector 0.8.5's packaging.** Whether `CREATE EXTENSION vector` at 0.8.5
+  requires superuser or is installable by a plain database-owning role (i.e.
+  whether pgvector's control file marks itself `trusted`) — the runs installed it
+  as superuser, so the weaker-privilege path is still untested.
+- **`ALTER DATABASE ... SET hnsw.iterative_scan = 'relaxed_order'`.** On 0.6.0
+  the version guard skips it, which is the branch that was exercised. That it is
+  accepted as a placeholder GUC on 0.8.x without a `shared_preload_libraries`
+  change, and takes effect for new sessions, was reasoned about rather than run.
+- **Concurrency**, in full — see "Still unproven by the above".
+- **Query performance under the confidentiality derivation** — see the same
+  section.
+- **Whether `procurement_app` and `procurement_ingest` are actually deployed as
+  separate connections.** The schema now depends on that split: `procurement_ingest`
+  may read every restricted row, and a deployment that pointed the retrieval path
+  at it would have no confidentiality control at all while every policy in this
+  directory still looked correct. Nothing in DDL can check this; it is a
+  deployment property, and it is the single most important thing to get right
+  when wiring the application up.
+- **`conflict_candidate` has no RLS**, deliberately. A policy on it calling
+  `conflict_is_restricted` — which reads it — is a genuine infinite recursion,
+  which PostgreSQL rejects at query time rather than at `CREATE POLICY`. The
+  residual exposure is that an unentitled role can see that some conflict has
+  some number of candidate rows; it recovers no value, unit, verbatim text or
+  document id, because `claim` and `conflict` are both gated. Small, real, and
+  recorded rather than closed.
 
 ## Design decisions made here that the specs did not settle
 
@@ -374,13 +433,53 @@ can check exactly these choices rather than re-deriving the whole schema.
    remains a WHERE-clause concern in the store adapter, not RLS, because RLS
    is a poor mechanism for a large, dynamic, per-request ID set.
 
-10. **RLS is applied only to `document` and `chunk`** — the two tables on the
-    actual retrieval path Decision 3c is about. It is deliberately not extended
-    to `claim`/`conflict`/`resolution`/`job`/`audit.event`; none of those are
-    part of the measured retrieval-time access-control concern, and adding RLS
-    to them would be inventing scope Decision 3c never asked for.
+10. **RLS is applied to all seven tables that hold document content**, not only
+    to `document` and `chunk`. An earlier version of this row argued the
+    opposite — that the other five are "not part of the measured retrieval-time
+    access-control concern, and adding RLS to them would be inventing scope
+    Decision 3c never asked for." Measured against a live server, that reading
+    was wrong, and expensively so. As `procurement_app`, against a document that
+    role could not see:
 
-11. **RLS policies are not scoped `TO procurement_app`.** With
+    ```
+    SELECT document_id FROM document WHERE document_id = 'doc-secret';  -- (0 rows)
+    SELECT field, value, verbatim_value FROM claim
+      WHERE document_id = 'doc-secret';
+    --  price_per_watt_dc | 0.19 | CONFIDENTIAL 0.19 USD/W
+    SELECT payload FROM audit.event WHERE document_id = 'doc-secret';
+    --  {"price_per_watt_dc": 0.19}
+    SELECT explanation FROM conflict;
+    --  CONFIDENTIAL: record says 0.19, web says 0.35
+    SELECT value_before, value_after FROM resolution;   --  0.35 | 0.19
+    SELECT payload FROM job;                            --  {"secret": "0.19"}
+    ```
+
+    The distinction the old row rested on — retrieval path versus not — is a
+    distinction about *tables*, and AC-8 is a claim about *content*: "a user
+    without clearance for a confidential document cannot cause its content to
+    influence any retrieved result." `claim.value` is not a reference to the
+    document's content, it *is* the document's content, extracted. So is
+    `audit.event.payload`, and `conflict.explanation` quotes the disputed values
+    verbatim because it is written for a human to read.
+
+    Nor did this need C7 to be unfrozen. The derivation is the document each row
+    already names — `public.document_is_restricted(document_id)`, a `STABLE`
+    `SECURITY DEFINER` helper in `02_document.sql` — with no new column, no
+    labels model, and no guess about the ACL scheme. `conflict` and `resolution`
+    have no `document_id` and cannot (an inter-document conflict spans several),
+    so they key on `public.conflict_is_restricted(entry_id)`, which ORs over the
+    documents of the conflict's candidate claims. That is computed on read rather
+    than stored, because a `conflict` row is inserted *before* its
+    `conflict_candidate` rows exist, so there is nothing to derive from at INSERT
+    time — and deriving on read means a reclassification takes effect immediately
+    across every dependent table, with no backfill to forget.
+
+    `conflict_candidate` is the one table left out, and for a mechanical reason
+    rather than a judgement — see "What remains unverified".
+
+11. **RLS policies are not scoped `TO procurement_app`** — with one deliberate
+    exception, the `procurement_ingest` policies added under decision 22 below,
+    where the scoping *is* the control. With
     `FORCE ROW LEVEL SECURITY`, every non-superuser role — including
     `procurement_owner` if anyone ever `SET ROLE`s into it for maintenance —
     is subject to RLS. A policy scoped only to `procurement_app` would leave
@@ -465,13 +564,56 @@ can check exactly these choices rather than re-deriving the whole schema.
     written, but this schema does not attempt to create or constrain that
     identity.
 
-21. **`chunk.tsv` goes through a small wrapper function
-    (`chunk_text_to_tsvector`), not `to_tsvector('english', ...)` directly.**
-    Not a design decision so much as a required fix: PostgreSQL's two-argument
-    `to_tsvector(regconfig, text)` is `STABLE`, and `GENERATED ALWAYS AS ...
-    STORED` requires an `IMMUTABLE` expression, so the direct form fails table
-    creation outright. The wrapper pins the configuration to the literal
-    `'english'` and is declared `IMMUTABLE`, which is correct as long as the
-    `'english'` text search configuration itself is never redefined — noted
-    here because it is exactly the kind of thing that looks like an arbitrary
-    stylistic choice without the explanation.
+21. **`chunk.tsv` calls `to_tsvector('english', chunk_text)` directly**, with no
+    wrapper function. An earlier version of this row described a
+    `chunk_text_to_tsvector()` wrapper as a "required fix", on the mistaken
+    belief that the two-argument `to_tsvector(regconfig, text)` is `STABLE` and
+    therefore illegal in a `GENERATED ALWAYS AS ... STORED` column. That is
+    backwards: PostgreSQL's own catalog marks the two-argument form **IMMUTABLE**
+    (`pg_proc.provolatile = 'i'`), and it is the *one*-argument `to_tsvector(text)`
+    that is `STABLE`, because it reads `default_text_search_config` at runtime.
+    Verified by the table creating successfully on a live server. The wrapper was
+    removed; this row is kept rather than deleted because wrapping a genuinely
+    `STABLE` function and declaring the wrapper `IMMUTABLE` is not a harmless
+    workaround — it lies to the planner and can silently corrupt any index built
+    on it.
+
+22. **`procurement_ingest` is a fourth role, and the write path connects as it.**
+    RLS applies a table's `FOR SELECT` policy as a `WITH CHECK` against the
+    proposed row whenever an INSERT carries `RETURNING` or `ON CONFLICT`, so the
+    idempotent-ingest idiom this schema documents failed for exactly the
+    confidential documents NFR-03 exists to protect:
+
+    ```
+    INSERT INTO document (..., access_restricted) VALUES (..., true)
+      ON CONFLICT (content_hash) DO NOTHING;
+    -- ERROR: new row violates row-level security policy for table "document"
+    ```
+
+    while the identical statement with `false` succeeded. Writing a *more*
+    confidential row failed and writing a *less* confidential one worked.
+
+    Two alternatives were measured before choosing a role. An `xmin =
+    pg_current_xact_id_if_assigned()::xid` read-back policy ("let a session read
+    rows it wrote itself") does **not** work — the policy is evaluated against the
+    in-memory proposed tuple, whose system columns are not yet set — and it fails
+    in the direction of looking correct, which is why it is recorded here.
+    Reusing `app.allow_restricted` on the ingest path does work, and was rejected:
+    it makes the writer assert full retrieval entitlement to every restricted
+    document, on the same role and connection pool that serves user queries, and
+    `SET` without `LOCAL` persists for the life of a pooled session. A separate
+    role makes the entitlement a static, auditable property of a principal no
+    user request is served by — which is the same argument Decision 9 already
+    rests on: "the boundary that actually holds ... is privilege separation."
+
+    The cost is real and is called out under "What remains unverified": the
+    schema now depends on a deployment property no DDL can check.
+
+23. **Append-only tables carry permissive `FOR UPDATE`/`FOR DELETE` policies.**
+    Counter-intuitive, and the reason is measured rather than theoretical: RLS
+    removes rows from consideration *before* a `FOR EACH ROW` trigger runs, so
+    enabling RLS on `claim`/`resolution`/`audit.event` turned their append-only
+    tripwires from a raised exception into a silent `UPDATE 0`. Neither verb is
+    granted to any role, so these policies are reachable only in the mis-grant
+    case they exist to make audible. Decision 9 chose the trigger because it is
+    loud; a policy that silences it is not a hardening.

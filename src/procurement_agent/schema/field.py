@@ -496,6 +496,30 @@ class CanonicalField(BaseModel):
     `conflict_status` to RESOLVED before assigning `resolution` raises, because
     that intermediate state is exactly the forbidden one - assign the
     resolution first, or use `evolve(...)` to set both in one validated step.
+
+    **What is closed, and the one route that is not.** Review enumerated six ways
+    to reach RESOLVED-with-no-Resolution and one way to silently overwrite a
+    recorded decision. Five of the six are now closed at the point they occur:
+    `model_construct` runs the invariant on the finished object, `__setstate__`
+    revalidates on unpickle, `__deepcopy__` revalidates on copy,
+    `model_copy(update=...)` raises, and `evolve` revalidates. Assigning
+    `resolution = None` to a RESOLVED field was already refused by
+    `validate_assignment`. Overwriting a recorded `Resolution` - which every
+    validator passes, because the resulting state is perfectly legal - is now
+    refused by `__setattr__` and by `evolve`, per FR-HITL-06's "logged immutably".
+
+    The route that remains is writing `__dict__` directly:
+
+        field.__dict__["conflict_status"] = ConflictStatus.RESOLVED
+        object.__setattr__(field, "conflict_status", ConflictStatus.RESOLVED)
+
+    These are one route in two spellings, not two: pydantic v2 keeps field values
+    in the instance `__dict__`, and `object.__setattr__` is how you write it
+    while bypassing this class's `__setattr__`. No Python object can defend
+    against it - `__slots__` would not help, since the attack is the same
+    primitive the language uses to build the object in the first place. It is
+    recorded here and in docs/requirements-traceability.md rather than papered
+    over, because a defence that cannot exist should not be implied to.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -514,10 +538,22 @@ class CanonicalField(BaseModel):
     conflict_status: ConflictStatus = ConflictStatus.NONE
     resolution: Resolution | None = None
 
-    @model_validator(mode="after")
-    def _resolution_matches_status(self) -> CanonicalField:
+    def _assert_resolution_matches_status(self) -> None:
+        """The FR-HITL-06 state invariant, as a plain method.
+
+        Separate from the validator below so the routes that bypass validation
+        entirely - `model_construct`, unpickling, deep copy - can call it
+        directly. A `@model_validator`-decorated function is a descriptor proxy
+        on the class, not an ordinary callable, so it cannot be invoked from
+        those paths; splitting the rule out is what makes one statement of it
+        serve every entry point instead of two copies drifting apart.
+        """
         if self.conflict_status is ConflictStatus.RESOLVED and self.resolution is None:
             raise ValueError("a resolved field must carry its Resolution (FR-HITL-06)")
+
+    @model_validator(mode="after")
+    def _resolution_matches_status(self) -> CanonicalField:
+        self._assert_resolution_matches_status()
         return self
 
     def is_missing(self) -> bool:
@@ -576,6 +612,22 @@ class CanonicalField(BaseModel):
                 f"{type(self).__name__}.evolve() got unknown field(s): "
                 f"{sorted(unknown)}. Known fields: {sorted(type(self).model_fields)}"
             )
+        # Same rule as `__setattr__`: a recorded decision is append-only.
+        # `evolve` routes through `model_validate`, which sees only the finished
+        # snapshot, so it could swap one reviewer's Resolution for another's and
+        # every validator would still pass. Checked here, where the transition is
+        # still visible, rather than in the validator, which cannot see it.
+        if (
+            "resolution" in changes
+            and self.resolution is not None
+            and changes["resolution"] != self.resolution
+        ):
+            raise ValueError(
+                "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: "
+                "the decision log is immutable). A reopened conflict "
+                "(REQUEST_MORE_WEB_SEARCH) records a NEW resolution against the "
+                "conflict; it does not rewrite this one."
+            )
         snapshot = {name: getattr(self, name) for name in type(self).model_fields}
         return type(self).model_validate({**snapshot, **changes})
 
@@ -597,6 +649,102 @@ class CanonicalField(BaseModel):
                 "CanonicalField.evolve(...) instead, which revalidates."
             )
         return super().model_copy(deep=deep)
+
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
+        """Build without field validation, but never without the class invariant.
+
+        `model_construct` exists to skip *field* parsing on data already known to
+        be well-typed - a row read back from the store, say. It skips model
+        validators too, which is how it produced a RESOLVED field with no
+        `Resolution` that then serialised into the audit trail:
+
+            CanonicalField.model_construct(
+                ..., conflict_status=ConflictStatus.RESOLVED, resolution=None
+            ).model_dump()["conflict_status"]    # 'resolved'
+
+        The speed argument for skipping per-field coercion does not extend to
+        skipping one boolean check on the finished object, so the object is built
+        the fast way and then checked. `_resolution_matches_status` is called
+        directly rather than re-running `model_validate`, so nothing here
+        re-parses the fields the caller asked not to have re-parsed.
+        """
+        instance = super().model_construct(_fields_set, **values)
+        instance._assert_resolution_matches_status()
+        return instance
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Revalidate on unpickle.
+
+        Pickle is a deserialisation boundary: a `CanonicalField` arriving from a
+        cache, a task queue or another process is data that has been outside this
+        type's control, and stock pydantic restores `__dict__` wholesale with no
+        validator run at all, so a corrupt object survived a round trip and
+        arrived looking freshly constructed.
+
+        This does not make the origination routes in the class docstring
+        defensible - a caller who can poke `__dict__` in-process can equally poke
+        it after unpickling. What it does is stop a corrupt object crossing a
+        process or storage boundary silently, which is the crossing that turns
+        one component's bug into another component's audit record.
+        """
+        super().__setstate__(state)
+        self._assert_resolution_matches_status()
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        """Revalidate on deep copy, for the same reason as `__setstate__`.
+
+        `copy.deepcopy` is the in-process twin of a pickle round trip - pydantic
+        implements it by copying `__dict__` - and it is the ordinary way a
+        corrupt object gets duplicated into a collection that is then serialised.
+        Checking here costs one comparison and removes a propagation route.
+        """
+        duplicate: Self = super().__deepcopy__(memo)
+        duplicate._assert_resolution_matches_status()
+        return duplicate
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Refuse to overwrite a resolution that has already been recorded.
+
+        `validate_assignment` reruns `_resolution_matches_status`, which checks
+        that a RESOLVED field *has* a resolution. It cannot check that it is the
+        *same* one, because a validator sees only the finished state and not the
+        transition that produced it. So
+
+            field.resolution = someone_elses_decision
+
+        passed every check and left no trace that a different reviewer's decision
+        had ever been there - the exact failure FR-HITL-06 ("logged immutably")
+        names, on the object the requirement is about. `ConflictQueueEntry` was
+        frozen for this reason; `CanonicalField` cannot be frozen (see the class
+        docstring) so it needs the rule stated rather than inherited.
+
+        Attaching a resolution to a field that has none is the legitimate
+        transition and stays allowed. Re-assigning an equal value is allowed so an
+        idempotent replay is not an error. `evolve` enforces the same rule.
+
+        One case is deliberately left to pydantic: clearing the resolution of a
+        field that is already RESOLVED. The *resulting state* is independently
+        illegal, so `_resolution_matches_status` catches it under
+        `validate_assignment` and raises a `ValidationError` naming the state
+        invariant, which is the more useful diagnosis and the one
+        `test_a_resolved_field_cannot_have_its_resolution_cleared` already pins.
+        The check below is for the case a validator structurally cannot see - one
+        legal state replacing another legal state.
+        """
+        if (
+            name == "resolution"
+            and getattr(self, "resolution", None) is not None
+            and value != self.resolution
+            and not (value is None and self.conflict_status is ConflictStatus.RESOLVED)
+        ):
+            raise ValueError(
+                "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: "
+                "the decision log is immutable). A reopened conflict "
+                "(REQUEST_MORE_WEB_SEARCH) records a NEW resolution against the "
+                "conflict; it does not rewrite this one."
+            )
+        super().__setattr__(name, value)
 
 
 class ConflictCandidate(BaseModel):

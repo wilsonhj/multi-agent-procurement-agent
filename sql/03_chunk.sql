@@ -185,6 +185,29 @@ CREATE POLICY chunk_write_delete ON public.chunk
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.chunk TO procurement_app;
 
+-- The indexing principal (00_roles.sql, procurement_ingest); see the long
+-- comment on the equivalent policies in 02_document.sql for why this role
+-- exists and why these four policies are the one role-scoped set in the schema.
+--
+-- All four verbs, not just INSERT: FR-RAG-05 requires incremental add/update/
+-- delete by stable chunk_id and never a full re-index, and re-indexing a
+-- reclassified confidential document is exactly the case procurement_app's
+-- confidentiality-carrying UPDATE/DELETE policies (correctly) refuse. Without a
+-- SELECT policy here the indexer could not even run `INSERT ... RETURNING
+-- chunk_id` for a restricted document's chunks -- and by the inheritance
+-- trigger at the foot of this file, every chunk of a restricted document is
+-- restricted, so that is all of them.
+CREATE POLICY chunk_ingest_select ON public.chunk
+    FOR SELECT TO procurement_ingest USING (true);
+CREATE POLICY chunk_ingest_insert ON public.chunk
+    FOR INSERT TO procurement_ingest WITH CHECK (true);
+CREATE POLICY chunk_ingest_update ON public.chunk
+    FOR UPDATE TO procurement_ingest USING (true) WITH CHECK (true);
+CREATE POLICY chunk_ingest_delete ON public.chunk
+    FOR DELETE TO procurement_ingest USING (true);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.chunk TO procurement_ingest;
+
 -- ---------------------------------------------------------------------------
 -- chunk.access_restricted is DERIVED from the parent document, not merely
 -- declared alongside it.

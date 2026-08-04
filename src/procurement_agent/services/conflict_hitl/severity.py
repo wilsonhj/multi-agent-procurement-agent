@@ -469,16 +469,64 @@ def _reconciles(a: ConflictCandidate, b: ConflictCandidate, tolerance: FieldTole
 # --- the four bounded modifiers, open-decisions.md #1 --------------------------
 
 
+#: The order-of-magnitude ratio `_gross_divergence` falls back to when a field
+#: has no D-2 band to scale. Ten, so the two branches state the same threshold in
+#: the two different currencies available: "ten times the tolerance" where a
+#: tolerance exists, "ten times the value" where none does. A decimal-comma or
+#: decimal-point slip - D-5's named trap, and the modifier's stated purpose -
+#: moves a value by a factor of exactly 10, 100 or 1000, so 10 is the smallest
+#: ratio that catches every one of them and the largest that catches none of the
+#: ordinary disagreements this table is otherwise full of (a 25-year versus
+#: 30-year warranty is 1.2x; 0.19 versus 0.35 USD/W is 1.8x).
+GROSS_DIVERGENCE_RATIO = 10.0
+
+
 def _gross_divergence(field_name: str, candidate_set: Sequence[ConflictCandidate]) -> bool:
     """+1: divergence >= 10x the D-2 tolerance - usually a decimal-comma error,
-    D-5's highest-risk trap."""
+    D-5's highest-risk trap.
+
+    **Two branches, because most contract keys have no D-2 band.** `_band`
+    returns `None` for EXACT and DECLARED_BAND, and `tolerance.py` defaults every
+    field D-2 does not cover to EXACT - which is 105 of the 124 keys in
+    `CRITICALITY`, including 22 of the 24 `TIER_A_FIELDS` and *all twelve*
+    fields whose base class is CRITICAL. With only the band branch this modifier
+    could not fire for any of them, so the docstring above named the
+    decimal-comma trap as its purpose while being structurally unable to detect
+    one on the single most likely field to carry it:
+
+        assign_severity("price_per_watt_dc", INTER_DOCUMENT,
+                        [0.35 USD/W, 35.0 USD/W], ...)   # a 100x slip
+        # _gross_divergence(...) -> False
+
+    An absent tolerance means "no per-field magnitude to scale", not "no
+    magnitude at all": the candidates carry one. So where `_band` has nothing to
+    offer, the fallback compares the values to each other -
+    `max / min >= GROSS_DIVERGENCE_RATIO` - which is scale-free and needs no
+    per-field number to be invented. This is the same reasoning `_reconciles`
+    already applies one function up, where EXACT falls back to numeric equality
+    rather than reading "no D-2 band" as "cannot compare".
+
+    Deliberately **not** applied when a band exists: a band is D-2's own
+    statement of how far this specific quantity may legitimately vary, and a
+    ratio test would silently override it. `rated_ac_power` at 10000 vs 10050
+    kVA is 1.005x and well inside its 1% band; the band branch is the correct
+    and more informative test wherever one is available.
+
+    The fallback is skipped when the two sides straddle zero or either is zero -
+    a ratio is meaningless there, and a temperature coefficient of -0.29 against
+    +0.29 is a sign error, which is a different defect with a different fix.
+    """
     numbers = _scaled_numbers(candidate_set)
     if numbers is None:
         return False
+    low, high = min(numbers), max(numbers)
     band = _band(tolerance_for(field_name), numbers)
-    if band is None or band <= 0:
+    if band is not None and band > 0:
+        return (high - low) >= GROSS_DIVERGENCE_RATIO * band
+    # No usable D-2 band: fall back to an order-of-magnitude ratio.
+    if low <= 0.0 or high <= 0.0:
         return False
-    return (max(numbers) - min(numbers)) >= 10 * band
+    return (high / low) >= GROSS_DIVERGENCE_RATIO
 
 
 def _both_system_of_record_inter_document(

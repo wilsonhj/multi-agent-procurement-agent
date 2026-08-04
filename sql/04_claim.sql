@@ -108,11 +108,79 @@ CREATE INDEX claim_condition_gin_idx ON public.claim USING gin (condition jsonb_
 
 ALTER TABLE public.claim OWNER TO procurement_owner;
 
--- No UPDATE/DELETE below: this is the actual "no UPDATE path" tasks.md's C8
--- invariant asks for. The trigger further down is free extra insurance, not
+-- ---------------------------------------------------------------------------
+-- Confidentiality (NFR-03, AC-8). `claim.value` and `claim.verbatim_value` hold
+-- the extracted content of the document named by `document_id` -- the price, the
+-- warranty term, the certification status -- so a claim row is exactly as
+-- confidential as its document. Without the policies below, as procurement_app:
+--
+--     SELECT document_id FROM public.document WHERE document_id = 'doc-secret';
+--      (0 rows)
+--     SELECT document_id, field, value FROM public.claim
+--       WHERE document_id = 'doc-secret';
+--      doc-secret | price_per_watt_dc | 0.19
+--
+-- sql/README.md's decision 10 previously argued RLS here would be "inventing
+-- scope Decision 3c never asked for". That reading holds only if `claim` were a
+-- table of references; it is a table of extracted values, and AC-8 says content
+-- must not influence a retrieved result *by any route*. The derivation needs no
+-- new column and no C7 labelling model -- see public.document_is_restricted in
+-- 02_document.sql.
+ALTER TABLE public.claim ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.claim FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY claim_confidentiality_select ON public.claim
+    FOR SELECT
+    USING (
+        NOT public.document_is_restricted(document_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
+
+-- RLS's default-deny is per command, so INSERT needs its own policy or the
+-- GRANT below is starved. WITH CHECK (true): what a role may write is the
+-- GRANT's business, exactly as on document/chunk. Note that this leaves
+-- `INSERT ... RETURNING claim_id` failing for a restricted document under
+-- procurement_app -- RLS applies the SELECT policy to the returned row -- and
+-- claim_id is GENERATED ALWAYS AS IDENTITY, so conflict_candidate needs that
+-- RETURNING. Writing claims about a confidential document is pipeline work and
+-- belongs to procurement_ingest, which has the read-back policy below. This is
+-- the same split, and the same reasoning, as 02_document.sql's.
+CREATE POLICY claim_write_insert ON public.claim
+    FOR INSERT
+    WITH CHECK (true);
+
+CREATE POLICY claim_ingest_select ON public.claim
+    FOR SELECT TO procurement_ingest USING (true);
+
+-- **These two exist so the append-only trigger keeps speaking.** The obvious
+-- move on an append-only table is to declare no UPDATE/DELETE policy at all, so
+-- a future mis-grant of those verbs finds zero eligible rows. Measured, that is
+-- worse, because RLS filters rows out *before* a FOR EACH ROW trigger sees them:
+--
+--     SET ROLE procurement_owner;
+--     UPDATE public.claim SET confidence = 0.1;   -- UPDATE 0     <- silent
+--     DELETE FROM public.claim;                   -- DELETE 0     <- silent
+--
+-- The data survived, but the statement reported success, and plan.md Decision 9
+-- picks the trigger tripwire precisely because it is *loud*: "a fork is loud,
+-- not silent" is the same argument one table over. This is the empty-table trap
+-- from sql/README.md in a new costume -- a FOR EACH ROW trigger cannot fire on
+-- rows RLS has already removed, so a checklist run against an RLS-filtered table
+-- proves exactly as little as one run against an empty one.
+--
+-- With `USING (true)` the rows stay eligible, the trigger fires, and the same
+-- attempt raises. Nothing is loosened: no role is granted UPDATE or DELETE on
+-- this table (see the GRANTs below), so these policies are reachable only in the
+-- mis-grant case they exist to make audible.
+CREATE POLICY claim_tripwire_update ON public.claim FOR UPDATE USING (true);
+CREATE POLICY claim_tripwire_delete ON public.claim FOR DELETE USING (true);
+
+-- No UPDATE/DELETE is granted: this is the actual "no UPDATE path" tasks.md's
+-- C8 invariant asks for. The trigger further down is free extra insurance, not
 -- the boundary -- a superuser or the table owner can still bypass it, exactly
 -- as Decision 9 documents for audit.event.
 GRANT SELECT, INSERT ON public.claim TO procurement_app;
+GRANT SELECT, INSERT ON public.claim TO procurement_ingest;
 
 -- Shared immutability tripwire, reused by resolution (06_resolution.sql) for
 -- the same reasoning. Owned by procurement_owner, the owner of every table

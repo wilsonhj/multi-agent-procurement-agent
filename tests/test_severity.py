@@ -35,6 +35,7 @@ from procurement_agent.services.conflict_hitl.severity import (
     DEFAULT_CRITICALITY,
     TIER_A_EXCLUSIONS,
     TIER_A_FIELDS,
+    _gross_divergence,
     _unit_mismatch_reconciles,
     assign_severity,
     criticality_for,
@@ -166,55 +167,188 @@ def test_a_tier_a_conflict_never_falls_below_the_compose_gate(
 # --- base severity: the criticality-class lookup -------------------------------
 
 
-@pytest.mark.parametrize(
-    "key,expected",
-    [
-        # Attestation / eligibility -> CRITICAL
-        ("certifications", Severity.CRITICAL),
-        ("fire_safety_certifications", Severity.CRITICAL),
-        ("cell_certification", Severity.CRITICAL),
-        ("pcs_certification", Severity.CRITICAL),
-        ("ul_listing", Severity.CRITICAL),
-        ("domestic_content_status", Severity.CRITICAL),
-        ("domestic_content_percentage", Severity.CRITICAL),
-        ("baba_status", Severity.CRITICAL),
-        ("feoc_pfe_status", Severity.CRITICAL),
-        ("country_of_origin", Severity.CRITICAL),
-        ("ercot_compliance_items", Severity.CRITICAL),
-        # Commercial -> HIGH
-        ("price_per_watt_dc", Severity.HIGH),
-        ("price_per_watt_ac", Severity.HIGH),
-        ("price_per_metre", Severity.HIGH),
-        ("warranty_years", Severity.HIGH),
-        ("product_warranty_years", Severity.HIGH),
-        ("material_assistance_cost_ratio", Severity.HIGH),
-        # The named exception: looks descriptive, is a buildability field.
-        ("vector_group", Severity.HIGH),
-        # Decision-driving performance -> MEDIUM
-        ("nameplate_power", Severity.MEDIUM),
-        ("module_efficiency", Severity.MEDIUM),
-        ("rating_mva", Severity.MEDIUM),
-        ("usable_energy_per_container", Severity.MEDIUM),
-        ("round_trip_efficiency", Severity.MEDIUM),
-        ("cycle_life", Severity.MEDIUM),
-        ("ampacity", Severity.MEDIUM),
-        ("trd_percent", Severity.MEDIUM),
-        # Secondary comparison -> LOW
-        ("mppt_count", Severity.LOW),
-        ("harmonic_spectrum", Severity.LOW),
-        ("enclosure_rating", Severity.LOW),
-        ("conductor_size", Severity.LOW),
-        ("protocols", Severity.LOW),
-        # Descriptive -> INFORMATIONAL
-        ("supplier_verbatim", Severity.INFORMATIONAL),
-        ("model_verbatim", Severity.INFORMATIONAL),
-        ("datasheet_revision", Severity.INFORMATIONAL),
-        ("stow_strategy", Severity.INFORMATIONAL),
-        ("support_terms", Severity.INFORMATIONAL),
-    ],
-)
-def test_base_severity_matches_criticality_class(key: str, expected: Severity) -> None:
-    assert criticality_for(key) is expected
+#: Every contract key's criticality class, pinned independently of the module
+#: under test.
+#:
+#: **Why all 124 and not a representative sample.** The previous version of this
+#: file listed 36 hand-picked keys in a `parametrize`, and mutation testing
+#: measured what that bought: bumping each `CRITICALITY` value one step and
+#: re-running the whole suite, **81 of 120 one-step mutants survived** - the
+#: table's values were, for two thirds of the contract, asserted by nothing.
+#: Both membership directions were already checked
+#: (`test_every_criticality_key_is_a_contract_key` and its reverse), so a typo in
+#: a *key* was caught while a wrong *value* was not, which is the half that
+#: decides whether the compose gate blocks.
+#:
+#: This is a second, independent transcription rather than a derivation from
+#: `CRITICALITY`: a test that reads the table it is checking asserts only that
+#: the table equals itself. Changing a classification therefore takes two edits,
+#: which is the intended cost - `DEFAULT_CRITICALITY`'s docstring calls the base
+#: class a safety interlock, and an interlock nobody has to look twice at to
+#: move is not one.
+EXPECTED_CRITICALITY: dict[str, Severity] = {
+    # --- Attestation / eligibility -> CRITICAL (12 keys) ---
+    "certifications": Severity.CRITICAL,
+    "fire_safety_certifications": Severity.CRITICAL,
+    "cell_certification": Severity.CRITICAL,
+    "pcs_certification": Severity.CRITICAL,
+    "ul_listing": Severity.CRITICAL,
+    "domestic_content_status": Severity.CRITICAL,
+    "domestic_content_percentage": Severity.CRITICAL,
+    "baba_status": Severity.CRITICAL,
+    "baba_certification_ref": Severity.CRITICAL,
+    "feoc_pfe_status": Severity.CRITICAL,
+    "country_of_origin": Severity.CRITICAL,
+    "ercot_compliance_items": Severity.CRITICAL,
+    # --- Commercial (+ the two named exceptions) -> HIGH (14 keys) ---
+    "price_per_watt_dc": Severity.HIGH,
+    "price_per_watt_ac": Severity.HIGH,
+    "price_per_metre": Severity.HIGH,
+    "product_warranty_years": Severity.HIGH,
+    "performance_warranty_years": Severity.HIGH,
+    "performance_warranty_end_output": Severity.HIGH,
+    "warranty_years": Severity.HIGH,
+    "corrosion_warranty_years": Severity.HIGH,
+    "degradation_warranty_years": Severity.HIGH,
+    "degradation_warranty_cycles": Severity.HIGH,
+    "material_assistance_cost_ratio": Severity.HIGH,
+    "degradation_year_1": Severity.HIGH,
+    "degradation_annual": Severity.HIGH,
+    "vector_group": Severity.HIGH,
+    # --- Decision-driving performance -> MEDIUM (40 keys) ---
+    "nameplate_power": Severity.MEDIUM,
+    "power_tolerance": Severity.MEDIUM,
+    "module_efficiency": Severity.MEDIUM,
+    "stc_rating": Severity.MEDIUM,
+    "nmot_rating": Severity.MEDIUM,
+    "temp_coeff_pmax": Severity.MEDIUM,
+    "temp_coeff_voc": Severity.MEDIUM,
+    "temp_coeff_isc": Severity.MEDIUM,
+    "rated_ac_power": Severity.MEDIUM,
+    "rated_ac_power_temp": Severity.MEDIUM,
+    "max_efficiency": Severity.MEDIUM,
+    "cec_efficiency": Severity.MEDIUM,
+    "trd_percent": Severity.MEDIUM,
+    "trd_limit_applied": Severity.MEDIUM,
+    "reactive_capability_at_zero_output": Severity.MEDIUM,
+    "ride_through_coordination": Severity.MEDIUM,
+    "automatic_generation_control": Severity.MEDIUM,
+    "ercot_telemetry": Severity.MEDIUM,
+    "pmu_support": Severity.MEDIUM,
+    "rating_mva": Severity.MEDIUM,
+    "rating_mva_by_cooling": Severity.MEDIUM,
+    "impedance_percent": Severity.MEDIUM,
+    "no_load_loss": Severity.MEDIUM,
+    "load_loss": Severity.MEDIUM,
+    "efficiency": Severity.MEDIUM,
+    "ampacity": Severity.MEDIUM,
+    "usable_energy_per_container": Severity.MEDIUM,
+    "nameplate_energy_per_container": Severity.MEDIUM,
+    "power_rating": Severity.MEDIUM,
+    "c_rate": Severity.MEDIUM,
+    "round_trip_efficiency": Severity.MEDIUM,
+    "cycle_life": Severity.MEDIUM,
+    "energy_density": Severity.MEDIUM,
+    "footprint_area": Severity.MEDIUM,
+    "design_wind_speed": Severity.MEDIUM,
+    "stow_wind_speed": Severity.MEDIUM,
+    "ground_coverage_ratio": Severity.MEDIUM,
+    "backtracking_yield_gain": Severity.MEDIUM,
+    "tracking_range": Severity.MEDIUM,
+    "bearing_gear_l10_years": Severity.MEDIUM,
+    # --- Secondary comparison -> LOW (48 keys) ---
+    "mppt_count": Severity.LOW,
+    "mppt_voltage_min": Severity.LOW,
+    "mppt_voltage_max": Severity.LOW,
+    "harmonic_spectrum": Severity.LOW,
+    "thd_percent": Severity.LOW,
+    "k_factor": Severity.LOW,
+    "filtering_provisions": Severity.LOW,
+    "dc_injection": Severity.LOW,
+    "flicker_pst": Severity.LOW,
+    "flicker_plt": Severity.LOW,
+    "communication_protocols": Severity.LOW,
+    "protocols": Severity.LOW,
+    "cybersecurity_standards": Severity.LOW,
+    "inverter_integration": Severity.LOW,
+    "bess_integration": Severity.LOW,
+    "ride_through_standards": Severity.LOW,
+    "enclosure_rating": Severity.LOW,
+    "conductor_size": Severity.LOW,
+    "conductor_material": Severity.LOW,
+    "conductor_area": Severity.LOW,
+    "insulation_type": Severity.LOW,
+    "shielding": Severity.LOW,
+    "standards": Severity.LOW,
+    "cooling_classes": Severity.LOW,
+    "seismic_qualification": Severity.LOW,
+    "max_system_voltage": Severity.LOW,
+    "max_dc_voltage": Severity.LOW,
+    "voltage_class": Severity.LOW,
+    "voltage_hv": Severity.LOW,
+    "voltage_lv": Severity.LOW,
+    "load_factor": Severity.LOW,
+    "input_count": Severity.LOW,
+    "fuse_rating": Severity.LOW,
+    "continuous_current": Severity.LOW,
+    "string_monitoring": Severity.LOW,
+    "surge_protection": Severity.LOW,
+    "disconnect_type": Severity.LOW,
+    "chemistry": Severity.LOW,
+    "thermal_management": Severity.LOW,
+    "augmentation_plan": Severity.LOW,
+    "cell_technology": Severity.LOW,
+    "bifaciality_factor": Severity.LOW,
+    "bifaciality_tolerance": Severity.LOW,
+    "topology": Severity.LOW,
+    "configuration": Severity.LOW,
+    "modules_per_row": Severity.LOW,
+    "galvanization_spec": Severity.LOW,
+    "foundations_per_mw": Severity.LOW,
+    # --- Descriptive -> INFORMATIONAL (10 keys) ---
+    "supplier": Severity.INFORMATIONAL,
+    "supplier_verbatim": Severity.INFORMATIONAL,
+    "model": Severity.INFORMATIONAL,
+    "model_verbatim": Severity.INFORMATIONAL,
+    "component_category": Severity.INFORMATIONAL,
+    "datasheet_revision": Severity.INFORMATIONAL,
+    "datasheet_date": Severity.INFORMATIONAL,
+    "stow_strategy": Severity.INFORMATIONAL,
+    "support_terms": Severity.INFORMATIONAL,
+    "plant_controller_model": Severity.INFORMATIONAL,
+}
+
+
+def test_every_criticality_value_is_pinned() -> None:
+    """The whole table, key by key, in both directions at once.
+
+    A one-step mutation of any single row now fails here. Reported as three
+    separate diffs rather than one `assert a == b`, because a 124-entry dict
+    comparison prints as an unreadable wall on failure and the useful question is
+    always which rows moved.
+    """
+    missing = sorted(set(EXPECTED_CRITICALITY) - set(CRITICALITY))
+    extra = sorted(set(CRITICALITY) - set(EXPECTED_CRITICALITY))
+    changed = sorted(
+        (key, EXPECTED_CRITICALITY[key].name, CRITICALITY[key].name)
+        for key in set(EXPECTED_CRITICALITY) & set(CRITICALITY)
+        if CRITICALITY[key] is not EXPECTED_CRITICALITY[key]
+    )
+    assert not missing, f"contract keys dropped from CRITICALITY: {missing}"
+    assert not extra, f"CRITICALITY rows this test does not pin: {extra}"
+    assert not changed, (
+        "criticality class changed for (key, pinned, actual): "
+        f"{changed}. If the reclassification is intended, update "
+        "EXPECTED_CRITICALITY above and say why in the module comment."
+    )
+
+
+def test_the_pinned_table_covers_the_whole_contract() -> None:
+    """Guards the guard: `test_every_criticality_value_is_pinned` compares two
+    dicts, so deleting a row from *both* would leave it green. This ties the
+    pinned table to the frozen contract itself, the same way
+    `test_every_contract_key_has_a_criticality` ties the real one."""
+    assert set(EXPECTED_CRITICALITY) == _contract_keys()
 
 
 def test_vector_group_is_high_not_descriptive() -> None:
@@ -445,15 +579,118 @@ def test_certification_floor_holds_domestic_content_at_critical() -> None:
 
 def test_floors_do_not_lower_a_field_that_already_exceeds_them() -> None:
     """A floor is a minimum, not a reset: stacking positive modifiers on a
-    Tier A field must still reach CRITICAL, not stick at the HIGH floor."""
+    Tier A field must still reach CRITICAL, not stick at the HIGH floor.
+
+    The `assign_severity` assertion is deliberately not the whole test.
+    `price_per_watt_dc` bases at HIGH(3) and the other two modifiers already sum
+    to 5, which clamps to CRITICAL on their own - so the result is CRITICAL
+    whether or not gross divergence fires, and an earlier version of this test
+    annotated the 0.35/35.0 pair `# 100x gross` while passing unchanged when the
+    values were replaced with 0.35/0.36/0.37. The comment documented behaviour
+    the code did not have: `_gross_divergence` could not fire for this field at
+    all, because `price_per_watt_dc`'s D-2 rule is EXACT and `_band` returns
+    `None` there. The white-box assertions are what make the annotation
+    load-bearing rather than decorative.
+    """
     group = [
         _c(0.35, unit="USD/W", tier=SourceTier.SYSTEM_OF_RECORD, doc="doc-a"),
         _c(35.0, unit="USD/W", tier=SourceTier.SYSTEM_OF_RECORD, doc="doc-b"),  # 100x gross
         _c(9.0, unit="USD/W", tier=SourceTier.SYSTEM_OF_RECORD, doc="doc-c"),  # 3rd distinct
     ]
     pair = group[:2]
+    assert _gross_divergence("price_per_watt_dc", pair), (
+        "the '100x gross' annotation on doc-b is only true if the modifier fires"
+    )
+    assert not _gross_divergence(
+        "price_per_watt_dc", [group[0], _c(0.36, unit="USD/W", doc="doc-x")]
+    )
     result = assign_severity("price_per_watt_dc", ConflictClass.INTER_DOCUMENT, group, pair)
     assert result is Severity.CRITICAL
+
+
+# --- gross divergence where the field has no D-2 band --------------------------
+
+
+def test_gross_divergence_fires_on_a_decimal_slip_for_an_exact_field() -> None:
+    """The modifier's own docstring names the decimal-comma error as its purpose,
+    and `price_per_watt_dc` is the field most likely to carry one. It could not
+    fire there: `tolerance.py` defaults every field D-2 does not cover to EXACT,
+    `_band` returns `None` for EXACT, and the band branch bailed out. Measured
+    over the contract that was 105 of the 124 keys in `CRITICALITY`, including 22
+    of the 24 `TIER_A_FIELDS` and all 12 whose base class is CRITICAL - the
+    modifier was inert for precisely the fields the floors exist to protect.
+
+    Black-box through `assign_severity`, on an INTRA_DOCUMENT pair so no other
+    modifier can contribute: base HIGH(3) + gross(1) = CRITICAL(4)."""
+    pair = [_c(0.35, unit="USD/W", doc="doc-a"), _c(35.0, unit="USD/W", doc="doc-b")]
+    assert (
+        assign_severity("price_per_watt_dc", ConflictClass.INTRA_DOCUMENT, pair, pair)
+        is Severity.CRITICAL
+    )
+
+
+def test_the_fallback_ignores_an_ordinary_disagreement() -> None:
+    """The other half of the same claim. A ratio test that fired on any
+    disagreement would mark every conflict gross and make the modifier
+    meaningless in the opposite direction. 0.19 vs 0.35 USD/W is 1.8x - a real
+    commercial disagreement, not a misplaced decimal point - and a 25 vs 30 year
+    warranty is 1.2x. Neither may fire."""
+    prices = [_c(0.19, unit="USD/W", doc="doc-a"), _c(0.35, unit="USD/W", doc="doc-b")]
+    assert not _gross_divergence("price_per_watt_dc", prices)
+    warranty = [_c(25.0, unit="yr", doc="doc-a"), _c(30.0, unit="yr", doc="doc-b")]
+    assert not _gross_divergence("warranty_years", warranty)
+    assert (
+        assign_severity("warranty_years", ConflictClass.INTRA_DOCUMENT, warranty, warranty)
+        is Severity.HIGH
+    )
+
+
+def test_the_fallback_boundary_is_at_exactly_ten_times() -> None:
+    """Pinned at the boundary rather than deep inside it, matching
+    `test_gross_divergence_boundary_is_at_exactly_ten_times_tolerance` for the
+    band branch: exactly 10x must fire (`>=`, not `>`), 9.9x must not."""
+    at_boundary = [_c(2.5, unit="yr", doc="doc-a"), _c(25.0, unit="yr", doc="doc-b")]
+    just_under = [_c(2.5, unit="yr", doc="doc-a"), _c(24.75, unit="yr", doc="doc-b")]
+    assert _gross_divergence("warranty_years", at_boundary)
+    assert not _gross_divergence("warranty_years", just_under)
+
+
+def test_the_fallback_does_not_fire_across_zero_or_a_sign_flip() -> None:
+    """A ratio is meaningless where the values straddle zero, and a sign error is
+    a different defect with a different fix than a misplaced decimal point, so
+    the fallback declines rather than guessing. `domestic_content_percentage` has
+    no D-2 band, so this exercises the fallback branch and not the band one."""
+    across_zero = [_c(0.0, unit="%", doc="doc-a"), _c(55.0, unit="%", doc="doc-b")]
+    sign_flip = [_c(-55.0, unit="%", doc="doc-a"), _c(55.0, unit="%", doc="doc-b")]
+    assert not _gross_divergence("domestic_content_percentage", across_zero)
+    assert not _gross_divergence("domestic_content_percentage", sign_flip)
+
+
+def test_a_d2_band_still_wins_over_the_ratio_fallback() -> None:
+    """The fallback must not silently override D-2. `rated_ac_power` carries a
+    RELATIVE 1% band, and 10000 vs 10050 kVA is 1.005x - inside the band, where
+    the band branch is both correct and more informative than any ratio. The
+    fallback exists only for fields that have no band to consult."""
+    pair = [_c(10000.0, unit="kVA", doc="doc-a"), _c(10050.0, unit="kVA", doc="doc-b")]
+    assert not _gross_divergence("rated_ac_power", pair)
+
+
+def test_the_modifier_is_reachable_for_every_floored_field() -> None:
+    """The inertness was a property of the *table*, not of one example, so it is
+    checked against the table. Every Tier A field and every CRITICAL-base field
+    must be able to reach the modifier on a 100x pair; before the fallback, none
+    of the 22 band-less Tier A fields could."""
+    floored = TIER_A_FIELDS | {
+        key for key, value in CRITICALITY.items() if value is Severity.CRITICAL
+    }
+    unreachable = [
+        key
+        for key in sorted(floored)
+        if not _gross_divergence(
+            key, [_c(1.0, unit=None, doc="doc-a"), _c(100.0, unit=None, doc="doc-b")]
+        )
+    ]
+    assert not unreachable, f"gross divergence still cannot fire for: {unreachable}"
 
 
 # --- the load-bearing invariant: a pure function of exactly these four --------

@@ -189,6 +189,72 @@ ALTER TABLE audit.event OWNER TO audit_owner;
 REVOKE ALL ON audit.event FROM PUBLIC;
 GRANT USAGE ON SCHEMA audit TO procurement_app;
 GRANT SELECT, INSERT ON audit.event TO procurement_app;
+GRANT USAGE ON SCHEMA audit TO procurement_ingest;
+GRANT SELECT, INSERT ON audit.event TO procurement_ingest;
+
+-- ---------------------------------------------------------------------------
+-- Confidentiality (NFR-03, AC-8). `payload_canonical` -- and therefore the
+-- generated `payload` -- is the extraction's own content: the price that was
+-- read, the certification that was found. Measured as procurement_app against a
+-- document that role could not see:
+--
+--     SELECT document_id FROM public.document WHERE document_id = 'doc-secret';
+--      (0 rows)
+--     SELECT document_id, event_type, payload FROM audit.event
+--       WHERE document_id = 'doc-secret';
+--      doc-secret | document_ingested | {"price_per_watt_dc": 0.19}
+--      doc-secret | extraction        | {"price_per_watt_dc": 0.19}
+--
+-- An audit log that reproduces the material it audits is a copy of that
+-- material, and NFR-03 does not carve out an exception for copies. The
+-- derivation is the document this stream belongs to -- structurally exact here,
+-- because `stream = 'doc:' || document_id` is a CHECK constraint on this table,
+-- so an event's subject document is never ambiguous.
+--
+-- **This does not weaken Decision 9.** RLS governs SELECT visibility; it is not
+-- and never was the immutability boundary -- that is the GRANT above (no UPDATE,
+-- no DELETE, no TRUNCATE) plus the tripwires below. Nothing here can hide an
+-- event from the H.5 verification CLI either: that runs as an operator identity
+-- which sets `app.allow_restricted`, exactly as the confidentiality model
+-- intends, and a chain walk that skipped rows would fail to verify rather than
+-- pass quietly.
+ALTER TABLE audit.event ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit.event FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY audit_event_confidentiality_select ON audit.event
+    FOR SELECT
+    USING (
+        NOT public.document_is_restricted(document_id)
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
+
+-- INSERT needs its own policy or RLS's per-command default-deny starves the
+-- GRANT above.
+--
+-- Note the consequence for the caller sequence at the top of this file: step 2
+-- reads the chain tip with a SELECT, so a worker appending to a restricted
+-- document's chain must connect as procurement_ingest (00_roles.sql), which the
+-- policy below entitles. Under procurement_app that SELECT returns no rows and
+-- the worker would compute a genesis event for a stream that already has one --
+-- caught loudly by audit_event_no_fork, but caught late.
+CREATE POLICY audit_event_write_insert ON audit.event
+    FOR INSERT
+    WITH CHECK (true);
+
+CREATE POLICY audit_event_ingest_select ON audit.event
+    FOR SELECT TO procurement_ingest USING (true);
+
+-- Permissive UPDATE/DELETE policies on the append-only table, for the reason
+-- given at length in 04_claim.sql. Without them, enabling RLS above would have
+-- quietly *disabled* the Decision 9 tripwire this file's whole second half is
+-- about: RLS filters rows out before a FOR EACH ROW trigger runs, so
+-- `UPDATE audit.event SET actor = 'x'` as audit_owner returned `UPDATE 0`
+-- instead of raising. Decision 9's attack matrix lists that cell as
+-- "Trigger: blocked", and a silent no-op is not blocked, it is unmeasured.
+-- Neither verb is granted to any role; these policies only make a mis-grant
+-- audible.
+CREATE POLICY audit_event_tripwire_update ON audit.event FOR UPDATE USING (true);
+CREATE POLICY audit_event_tripwire_delete ON audit.event FOR DELETE USING (true);
 
 -- Forward-looking only: this affects audit tables that audit_owner itself
 -- creates after this point (for example, via SET ROLE audit_owner in a later

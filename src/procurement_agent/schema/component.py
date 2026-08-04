@@ -8,9 +8,10 @@ Stage 1 exit condition, so they belong in a follow-up rather than in scaffolding
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .enums import ComponentCategory, DocumentType
 from .field import CanonicalField
@@ -66,7 +67,54 @@ class ComponentInstance(BaseModel):
             "under more than one manufacturer. See clarifications.md D-4 and D-8."
         ),
     )
-    fields: dict[str, CanonicalField] = Field(default_factory=dict)
+    manufacturer_key: str | None = Field(
+        default=None,
+        description=(
+            "D-4 stage 1's normalised supplier. Filled by `services.identity."
+            "identity_keys`; `schema` sits below `services` and cannot import it, "
+            "so the slot is declared here and populated from outside - the same "
+            "arrangement `surrogate_id` already used."
+        ),
+    )
+    model_family: str | None = Field(
+        default=None,
+        description="D-4 stage 2's family, i.e. the model string with the bin token masked.",
+    )
+    fields: dict[str, list[CanonicalField]] = Field(
+        default_factory=dict,
+        description=(
+            "Contract key -> every conditioned value for it. **List-valued, not "
+            "one entry per key.** D-1 makes `condition` part of what a value *is*, "
+            "and one datasheet routinely states one parameter several times under "
+            "different conditions - the Sungrow SG350HX prints `352 kVA @30 degC / "
+            "320 @40 degC / 295 @50 degC` for a single `rated_ac_power`. Collapsing "
+            "those to one entry either loses two real values or forces a new "
+            "contract key per condition, which is what the ad-hoc encodings "
+            "(`stc_rating` vs `nmot_rating`, `rated_ac_power_temp`) already do. "
+            "The contract keeps those; this is the general mechanism beside them."
+        ),
+    )
+
+    @field_validator("nameplate")
+    @classmethod
+    def _reject_non_finite(cls, value: float | None) -> float | None:
+        """Same reasoning as `ConditionDimensions` and `DeclaredBand`, applied to
+        the one float left in the total order.
+
+        NaN compares false against everything, so it is not a sort key at all:
+        three instances whose category, manufacturer and family tie come out in
+        four different orders depending on the order they arrive in, and AC-7
+        wants byte-identical output from an unchanged store. `-0.0` is folded for
+        the same repr-stability reason the other two give.
+
+        `None` stays legal - a nameplate is often not known yet, and
+        `ordering_key` maps it to `-inf`, which *is* totally ordered.
+        """
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("nameplate must be finite (no NaN or infinity)")
+        return value + 0.0
 
     def ordering_key(self) -> tuple[str, str, str, float, str]:
         """Canonical sort position for deterministic workbook regeneration.
@@ -80,11 +128,18 @@ class ComponentInstance(BaseModel):
         entities publish `ASB-M10-144-550` with genuinely different specs (PTC 509.9
         vs 518.2). Without the tie-break the sort is unstable exactly where the data
         is most ambiguous.
+
+        D-4 stage 5 sorts on the *normalised* keys, not the raw strings: sorting on
+        `supplier` puts `Trina Solar` and `Trina Solar Co.,Ltd` far apart, so the
+        entity split stage 1 exists to close reopens in the row order. The raw
+        strings remain the fallback for an instance nobody has run the matcher over
+        - a partially-normalised store must still have a total order, and falling
+        back is visible where raising would only move the failure.
         """
         return (
             self.component_category.value,
-            self.supplier,
-            self.model,
+            self.manufacturer_key or self.supplier,
+            self.model_family or self.model,
             self.nameplate if self.nameplate is not None else float("-inf"),
             self.surrogate_id or "",
         )
@@ -98,4 +153,11 @@ class ComponentInstance(BaseModel):
         from .enums import ConflictStatus
 
         blocking = {ConflictStatus.OPEN, ConflictStatus.INSUFFICIENT_EVIDENCE}
-        return [name for name, f in self.fields.items() if f.conflict_status in blocking]
+        return sorted(
+            {
+                name
+                for name, values in self.fields.items()
+                for value in values
+                if value.conflict_status in blocking
+            }
+        )

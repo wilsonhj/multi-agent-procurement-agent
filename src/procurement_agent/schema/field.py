@@ -58,6 +58,17 @@ class SourceRef(BaseModel):
     document_id: str | None = None
     page: int | None = None
     section: str | None = Field(default=None, description="Table or section locator")
+    extractor_version: str | None = Field(
+        default=None,
+        description=(
+            "The code and prompt that produced the value. Contract C3 is "
+            "`(document_id, page, span, extractor_version)` and this was the "
+            "missing quarter: `FieldClaim` carried it, and the projection to a "
+            "`CanonicalField` dropped it, so a stored value could not be traced "
+            "to the extractor that produced it. A regression is then invisible "
+            "in the store even though the claim recording it is still there."
+        ),
+    )
     bounding_box: tuple[float, float, float, float] | None = Field(
         default=None, description="OCR bbox retained per FR-ING-04"
     )

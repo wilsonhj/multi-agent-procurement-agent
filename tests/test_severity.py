@@ -29,11 +29,11 @@ from procurement_agent.schema import (
     SourceRef,
     SourceTier,
 )
+from procurement_agent.services.confidence import TIER_A_EXCLUSIONS
 from procurement_agent.services.conflict_hitl import severity as severity_module
 from procurement_agent.services.conflict_hitl.severity import (
     CRITICALITY,
     DEFAULT_CRITICALITY,
-    TIER_A_EXCLUSIONS,
     TIER_A_FIELDS,
     _gross_divergence,
     _unit_mismatch_reconciles,

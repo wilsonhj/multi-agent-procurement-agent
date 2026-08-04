@@ -367,7 +367,8 @@ These cannot be parallelised away. Plan for them rather than discovering them.
 | AC-4 every cell resolves to a source | WP-G | **passing** (schema level) |
 | AC-5 re-ingest creates no duplicates | WP-A | ☐ |
 | AC-6 TRD against correct voltage-class limit; tax status per supplier | WP-B + WP-G | ☐ |
-| AC-7 byte-identical regeneration | WP-G | ☐ gated on G.6 |
+| AC-7 (a) byte-identical canonical projection — *the criterion* | WP-C6 + WP-G | ☐ gated on G.1 |
+| AC-7 (b) byte-identical `.xlsx` — renderer-regression check | WP-G | ☐ gated on G.6 |
 | AC-8 unclear user cannot influence retrieved results | WP-C | ☐ |
 
 ---

@@ -1064,6 +1064,20 @@ layer (a) is gated on C6 and G.1 instead. `docs/requirements-traceability.md:187
 layers. None of these change a verdict — AC-7 is `partial` either way, since `write_workbook`
 still raises `NotImplementedError` — so they are drift, not error.
 
+**Two of the three closed at integration; the third deliberately not.** `tasks.md`'s ownership
+table now carries AC-7 as two rows — (a) gated on G.1, (b) gated on G.6 — and
+`docs/requirements-traceability.md` scores the layers separately, noting that the previous row
+credited layer (b)'s partial coverage to what is now layer (a).
+
+`docs/current-state.md` was left alone, and that is a decision rather than an omission. Its first
+sentence pins it: "*This audit describes `main` at commit `72deacf` on 2026-08-04*", and its stated
+baseline of "470 passing tests and 23 skipped" is already three merges behind (511 with a DSN, 482
+plus 29 skips without). It is a dated snapshot, not a live status page. Patching one row inside it
+would produce a document that is current about AC-7 and stale about its own commit pin, test
+baseline and AC-5 row — the failure mode is a reader trusting the rest of it because one row looked
+fresh. It needs a whole refresh against a named commit, which is a separate piece of work, and it is
+recorded here as owed rather than done.
+
 ---
 
 ## A-47 (Low) — the FR-RAG-03 note went stale a second time

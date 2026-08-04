@@ -40,6 +40,14 @@ jobs:
         # pyproject pins `requires-python = ">=3.12,<3.14"`, and the README
         # promises both. Testing only one would leave the other a claim.
         python: ["3.12", "3.13"]
+    env:
+      # Every `uv` invocation in this job must agree on the interpreter.
+      # `uv sync --python 3.13` followed by a bare `uv run` does NOT: `uv run`
+      # re-resolves to the default interpreter, **deletes the 3.13 environment**
+      # and rebuilds it from the base dependency set. The first version of this
+      # file did exactly that and the job failed with `Failed to spawn: ruff` —
+      # the tools were installed, then thrown away one step later.
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,25 +57,31 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --python ${{ matrix.python }}
+        id: install
+        run: uv sync --extra dev
 
-      # Each gate runs even if an earlier one failed, so one PR gets the whole
-      # list rather than one error per push.
+      # `--no-sync` on every gate: without it `uv run` re-syncs to the *default*
+      # environment, dropping `--extra dev` and taking the tools with it.
+      #
+      # `always() && install succeeded` rather than plain `always()`: the gates
+      # should all report so one push gets the whole list, but running them
+      # after a failed install produces four `Failed to spawn` errors and buries
+      # the one that matters.
       - name: ruff check
-        if: always()
-        run: uv run ruff check .
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync ruff check .
 
       - name: ruff format --check
-        if: always()
-        run: uv run ruff format --check .
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync ruff format --check .
 
       - name: mypy --strict
-        if: always()
-        run: uv run mypy
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync mypy
 
       - name: pytest
-        if: always()
-        run: uv run pytest -q
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync pytest -q
 
   sql:
     name: sql behaviour (live PostgreSQL)
@@ -99,7 +113,9 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        # `store` brings psycopg; the behaviour tests skip themselves without it.
+        # `store` brings pgvector alongside psycopg. The same `--no-sync` rule as
+        # the job above applies to the run step below, and bites harder here: a
+        # bare `uv run` would re-sync without either extra.
         run: uv sync --extra dev --extra store
 
       - name: Run the live-schema behaviour suite
@@ -112,7 +128,7 @@ jobs:
         # exited 0.
         run: |
           set -o pipefail
-          uv run pytest tests/test_sql_behaviour.py -q 2>&1 | tee /tmp/sql-out
+          uv run --no-sync pytest tests/test_sql_behaviour.py -q 2>&1 | tee /tmp/sql-out
           if grep -qE '[0-9]+ skipped' /tmp/sql-out; then
             echo "::error::the live-schema suite skipped; PROCUREMENT_TEST_DSN is not reaching it"
             exit 1

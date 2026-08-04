@@ -320,6 +320,8 @@ def test_a_clean_store_has_no_unresolved_conflicts() -> None:
         fields={"rated_ac_power": [_field(352.0, ConflictStatus.NONE, 30.0)]},
     )
     assert instance.unresolved_conflicts() == []
+
+
 def _resolved_field() -> CanonicalField:
     return CanonicalField(
         value=650,

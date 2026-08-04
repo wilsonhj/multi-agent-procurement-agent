@@ -39,10 +39,13 @@ Changing the **condition vocabulary** counts too, even though it is not a C-item
 [`contracts/canonical-parameters.md`](specs/001-procurement-agent/contracts/canonical-parameters.md),
 which is marked FROZEN, and rank 1 of the authority order.
 
-Note that this list is *not* the list of contracts still needing to be frozen. C5 is done and
-the other seven are not; [docs/current-state.md](docs/current-state.md) holds that status and is
-the one to check before claiming work. Changing a frozen contract is a contract change too — it
-is the case this rule most exists for.
+Note that this list is *not* the list of contracts still needing to be frozen. C1, C3 and C5 are
+done; C2, C4, C7 and C8 are partial; C6 is untouched.
+[docs/current-state.md](docs/current-state.md) holds that status, with the evidence for each, and
+is the one to check before claiming work. Changing a frozen contract is a contract change too —
+it is the case this rule most exists for, and with three of the eight now frozen it is the case
+that comes up most. In particular, `sql/` is C1: editing a table, a policy or a grant there is a
+contract change, not a schema tweak.
 
 ## Good contribution shapes
 

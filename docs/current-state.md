@@ -1,11 +1,16 @@
 # Current state
 
-This audit describes `main` at commit `ee1503d` on 2026-08-03, plus the one regression test
-added alongside it (see [Output primitives](#output-primitives)). It answers the practical
-question a new contributor has first: what can the repository do today?
+This audit describes `main` at commit `72deacf` on 2026-08-04. It was first written against
+`ee1503d`; the [database schema](#database-schema), [persistence](#persistence),
+[security](#security) and [contract status](#contracts-are-only-partially-frozen) sections were
+rewritten when the Phase 0 substrate landed. It answers the practical question a new contributor
+has first: what can the repository do today?
 
-The local verification baseline is 229 passing tests, a clean Ruff check, and a clean
-strict-mypy check across `src/` and `tests/`. It was 228 at `ee1503d`.
+The local verification baseline is 470 passing tests and 23 skipped, a clean Ruff check, a clean
+`ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
+23 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
+disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
+was 229 passing when this audit was first written.
 
 ## Executive assessment
 
@@ -86,6 +91,22 @@ against the thirteen literal tab names by `test_expected_tabs_returns_all_thirte
 or reordering the helper now fails. The two tests above it in that file check the `WorkbookTab`
 enum, which is a different thing from the helper that returns it.
 
+### Database schema
+
+Nine numbered DDL files in `sql/` create `document`, `chunk`, `claim`, `conflict`,
+`conflict_candidate`, `resolution`, `job` and `audit.event`. They carry
+`FORCE ROW LEVEL SECURITY` on the seven tables that hold document content, owner/application
+privilege separation across four roles, append-only triggers on `claim`, `resolution` and
+`audit.event`, and `audit.event`'s per-document hash chain with its fork, parent-exists and
+loop constraints.
+
+Two suites cover them, and the split is the point. `tests/test_sql_schema.py` asserts the DDL
+*text* and needs no server. `tests/test_sql_behaviour.py` re-runs the attacks each defence
+descends from against a real PostgreSQL — a role declassifying rows it cannot read, a chunk not
+inheriting its document's restriction, a `TRUNCATE` taking the decision log with it, a chain that
+was constrained but not walkable — and the `sql` job in `.github/workflows/ci.yml` supplies one
+from a `pgvector/pgvector` container. Those are the 23 tests that skip locally.
+
 ## Declared but not operational
 
 ### Integration ports
@@ -102,8 +123,16 @@ as a pipeline.
 
 ### Persistence
 
-There are no database migrations or repositories. The planned document, claim, canonical,
-chunk, conflict, resolution, job, and audit tables do not exist.
+The tables exist (see [Database schema](#database-schema)); nothing in Python reaches them.
+There is no repository layer, no connection or session management, and no store adapter, so no
+code path in `src/` reads or writes a row. `psycopg` is an optional `store` extra that only the
+live-schema test suite imports.
+
+`sql/` is also not a migration tool. It is a numbered, forward-only file set applied by `psql` in
+lexical order, with no version tracking: re-running `02`–`08` against a database that already has
+the tables is *expected* to fail with `relation already exists` rather than no-op. That is
+deliberate and documented in `sql/README.md`; it is not the same thing as having migrations, and
+a project that wants rollback or a schema-version table still has to choose one.
 
 ### Human review
 
@@ -113,8 +142,19 @@ API, authentication, or UI.
 ### Security
 
 The design calls for access labels, retrieval-time filtering, forced PostgreSQL RLS, a
-non-owner application role, and self-hosted or enterprise inference. None is enforced by
-running code.
+non-owner application role, and self-hosted or enterprise inference. Two of the five now hold at
+the database: `FORCE ROW LEVEL SECURITY` is applied to all seven content-bearing tables, and
+`procurement_app` is a non-owner, non-superuser `LOGIN` role with `NOBYPASSRLS` re-asserted on
+every apply. Both are exercised against a live server in CI.
+
+The other three do not. Access *labels* are one boolean —
+`SourceDocument.access_restricted`, derived through `public.document_is_restricted()` and gated
+by an `app.allow_restricted` session GUC the caller must `SET LOCAL` — which is C7's minimum, not
+C7's model. Retrieval-time filtering has no code, because no retrieval path exists to filter.
+Inference hosting is a deployment choice nothing in the repository makes.
+
+The distinction that matters: a defence enforced in the schema is only reached by a caller that
+connects, and no application code connects yet.
 
 ## Acceptance status
 
@@ -190,25 +230,65 @@ is filed there as A-24.
 ### Contracts are only partially frozen
 
 [`tasks.md` Phase 0](../specs/001-procurement-agent/tasks.md) enumerates eight shared contracts,
-C1–C8. **Seven of the eight are unfinished**; only C5 is done. Four are untouched and three are
-started but not settled, and the distinction matters — a *partial* contract is the more
-dangerous kind, because there is enough of it to build against and not enough to be stable:
+C1–C8. **Five of the eight are unfinished**: C1, C3 and C5 are done, four are partial, and one is
+untouched. The distinction matters — a *partial* contract is the more dangerous kind, because
+there is enough of it to build against and not enough to be stable:
 
 | ID | Contract | Status in `tasks.md` |
 |---|---|---|
-| C1 | Postgres schema (`document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event`) | ☐ not started |
-| C2 | Claim/extraction record | partial — `schema/` exists, needs `condition` and per-category models |
-| C3 | Provenance reference `(document_id, page, span, extractor_version)` | partial — `SourceRef` exists |
-| C4 | Audit event envelope and `event_type` taxonomy | ☐ not started |
+| C1 | Postgres schema (`document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event`) | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08` |
+| C2 | Claim/extraction record | partial — `condition` has landed; per-category models still do not exist |
+| C3 | Provenance reference `(document_id, page, span, extractor_version)` | **done** — all four elements on `SourceRef` |
+| C4 | Audit event envelope and `event_type` taxonomy | partial — SQL half only; no Python envelope or canonicalisation library |
 | C5 | Conflict record and the five resolution action shapes | **done** |
 | C6 | Canonical workbook projection | ☐ not started |
-| C7 | Retrieval interface and ACL/labelling model | partial — `VectorStorePort` exists, ACL model undecided |
-| C8 | Stage runner contract, including the append-only claim invariant | ☐ not started |
+| C7 | Retrieval interface and ACL/labelling model | partial — RLS enforces the one label that exists; the model is still undecided |
+| C8 | Stage runner contract, including the append-only claim invariant | partial — append-only enforced; job states are the DDL's own proposal, no runner |
 
-An earlier version of this section named five of these and omitted C2 and C3. That was the
-wrong five to shorten to: `tasks.md` singles out **C1, C2, C3 and C7** as “the expensive ones to
-change”, so two of the four costliest were the ones missing. C2 and C3 are also the two most
-likely to be mistaken for finished, because `schema/` and `SourceRef` already exist.
+The evidence behind each, since “done” is the word this repository has most often been wrong
+about:
+
+- **C1** — `sql/02`–`08` create every table C1 names. Both of T0.1's checks were run against a
+  live cluster and are recorded in `sql/README.md`. The first — the files apply cleanly — is now
+  continuous: `test_sql_behaviour.py`'s `schema` fixture reapplies all nine into a freshly
+  dropped database on every CI run, so a file that stops applying fails the job. The second —
+  `procurement_app` cannot `UPDATE`, `DELETE` or `TRUNCATE` `audit.event` — is guarded rather
+  than re-run: `test_sql_schema.py` asserts the narrow grant, and `test_truncate_is_refused`
+  exercises the tripwire as the owner, not as `procurement_app`. The absence of Alembic is not a
+  gap in C1: C1 asks for the schema, and T0.1 asks that migrations apply, which they do.
+- **C3** — `SourceRef` carries `document_id`, `page`, `section` (C3's span) and
+  `extractor_version`; `FieldClaim.provenance()` stamps the fourth on, and
+  `test_the_extractor_version_reaches_the_store` fails if the projection drops it again.
+- **C2** — `condition` is on `FieldClaim`, on `CanonicalField` and on the `claim` table, and
+  `test_the_sungrow_trio_raises_no_conflict` covers D-1's worked example. What is left is
+  per-category models: `ComponentInstance.fields` is a generic
+  `dict[str, list[CanonicalField]]`, and `schema/component.py`'s own docstring says the TRS
+  section 7 field sets “are not yet enumerated here”.
+- **C4** — `sql/07_audit_event.sql` has the envelope columns, the seven-value `event_type`
+  CHECK and `payload_canonical`. Nothing in `src/` does. The file itself records that the
+  taxonomy is “this file's own proposal” precisely because C4 is unfrozen, and WP-H's H.2
+  canonicalisation — the rule that fixes which bytes get hashed — has not been written, so the
+  `hash` column has no defined input.
+- **C7** — argued at length in `tasks.md`. RLS on seven tables, an `app.allow_restricted`
+  entitlement, a `procurement_ingest` write role and a chunk-inheritance trigger are real
+  enforcement, and they enforce exactly one boolean. `sql/README.md` states that this is C7 “at
+  its frozen minimum, not guessed at in full”, and T0.4's deliverable — a written ACL decision in
+  `clarifications.md` — is not there. Undecided, on the DDL author's own account.
+- **C8** — `sql/04_claim.sql` refuses `UPDATE`/`DELETE`/`TRUNCATE` on `claim` and
+  `services/claims` projects canonical values over appended claims, so the append-only invariant
+  holds in both halves. The rest does not: `job` carries the five statuses, the lease pair and a
+  `UNIQUE` idempotency key, but its own `COMMENT` says it is “this file's own C8-consistent
+  design, not a mapping of an existing frozen type”, there is no Pydantic model for it, and
+  `orchestrator.run()` raises `NotImplementedError`.
+- **C6** — unchanged. `write_workbook()` raises `NotImplementedError` and no sorted-key JSON
+  projection exists anywhere in `src/`.
+
+An earlier version of this section named only five contracts and omitted C2 and C3, on the
+reasoning that `schema/` and `SourceRef` already existed and so were the ones most likely to be
+mistaken for finished. **C4 and C8 are now that pair**, for the mirror-image reason: each has a
+finished, live-verified SQL half and an unstarted Python half, and `sql/` is the visible artifact.
+It is the same split this document already flags in the acceptance table — a tested half that
+gets quoted and an unbuilt half that does not.
 
 These are shared boundaries. Building multiple adapters before freezing them would create
 incompatible records and rework.
@@ -225,7 +305,7 @@ The fastest path to a useful contributor demo is not to implement every service 
 Build one tested vertical slice:
 
 1. settle the license and contributor-governance choices;
-2. freeze the seven contracts still open above — C1–C4 and C6–C8;
+2. freeze the five contracts still open above — C2, C4, C6, C7 and C8;
 3. commit sanitized fixtures for one PV module document and its expected claims;
 4. implement content detection and one format-native parser;
 5. persist immutable claims and reduce them to canonical fields;
@@ -250,5 +330,8 @@ Changes that are useful without depending on unfinished storage contracts includ
 - documentation checks and link validation; and
 - proposals for the unresolved shared contracts.
 
-Avoid implementing production database or workbook shapes in isolation. Those formats are
-explicitly shared contracts and need an accepted design decision first.
+Avoid inventing a production workbook shape in isolation: C6 is still unfrozen, and it is
+explicitly a shared contract that needs an accepted design decision first. The database shape is
+no longer in that category — C1 has landed — but the same rule applies from the other side: build
+against `sql/` rather than beside it, and changing what is there is a contract change under
+[CONTRIBUTING.md](../CONTRIBUTING.md).

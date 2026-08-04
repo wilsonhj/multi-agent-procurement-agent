@@ -12,13 +12,22 @@ the attack is run, and the assertion is that it now fails. The docstring on each
 one names what it used to do.
 
 **Skipped unless `PROCUREMENT_TEST_DSN` points at a disposable database.** CI
-supplies one from a `pgvector/pgvector` service container. Locally:
+supplies one from a `pgvector/pgvector` service container. Locally, over TCP
+with password authentication, which is what CI does:
 
-    initdb -D /tmp/pg/data -U postgres --auth=trust
-    pg_ctl -D /tmp/pg/data -o '-p 5433 -k /tmp/pg' start
-    psql -h /tmp/pg -p 5433 -U postgres -c 'create database procurement'
-    PROCUREMENT_TEST_DSN='postgresql://postgres@/procurement?host=/tmp/pg&port=5433' \
+    echo postgres > /tmp/pg/pw
+    initdb -D /tmp/pg/data -U postgres --auth-host=scram-sha-256 --pwfile=/tmp/pg/pw
+    pg_ctl -D /tmp/pg/data -o '-p 5433 -h 127.0.0.1' start
+    PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -c 'create database procurement'
+    PROCUREMENT_TEST_DSN='postgresql://postgres:postgres@127.0.0.1:5433/procurement' \
         uv run pytest tests/test_sql_behaviour.py
+
+**Use TCP and a password, not a Unix socket with `trust`.** The first version of
+this docstring recommended the socket, and the socket never exercises
+authentication: the suite passed locally and failed 8 of 23 in CI, because the
+DDL creates its roles without passwords and the container's `pg_hba.conf`
+requires `scram-sha-256`. A local setup that cannot reproduce a CI failure is
+worse than no local setup, because it is trusted. See `TEST_ROLE_PASSWORD`.
 
 The database is **dropped and recreated per session**. Never point this at
 anything you care about; the fixture says so again at the point of use.
@@ -44,8 +53,12 @@ if TYPE_CHECKING:
     # `psycopg.errors.*` classes. `importorskip` returns an untyped module
     # object, so the annotations below would be unresolvable names without this.
     import psycopg
+    import psycopg.sql
 else:
     psycopg = pytest.importorskip("psycopg", reason="the `store` extra is not installed")
+    # Importing the parent does not bind the submodule, and the fixture below
+    # uses psycopg.sql for safe identifier quoting on ALTER ROLE.
+    import psycopg.sql  # noqa: F401,F811
 
 DSN = os.environ.get("PROCUREMENT_TEST_DSN")
 
@@ -62,9 +75,35 @@ CHILD_HASH = bytes.fromhex("bb" * 32)
 FABRICATED = bytes.fromhex("ff" * 32)
 
 
+#: Password given to the two LOGIN roles for the duration of the test run.
+#:
+#: `00_roles.sql` deliberately creates them **without** one — credentials are a
+#: deployment concern and belong nowhere near version control. That is correct,
+#: and it means a harness connecting over TCP has to supply them: the pgvector
+#: image's `pg_hba.conf` ends in `host all all all scram-sha-256`, so a
+#: passwordless role gets `FATAL: password authentication failed ... has no
+#: password assigned`.
+#:
+#: This was not hypothetical. A first version of this file passed locally
+#: against a Unix socket with `trust` auth and failed 8 of 23 in CI for exactly
+#: that reason — the local run never exercised authentication at all.
+#:
+#: A literal rather than a generated secret, because this only ever reaches a
+#: database the fixture drops and rebuilds, and a reader should be able to
+#: connect by hand while debugging a failure.
+TEST_ROLE_PASSWORD = "procurement-test-only"
+
+#: The roles the DDL creates with LOGIN. The two owner roles are NOLOGIN by
+#: design (Decision 9) and must stay that way — `test_owner_roles_cannot_log_in`
+#: asserts it — so they are deliberately absent.
+LOGIN_ROLES = ("procurement_app", "procurement_ingest")
+
+
 def _connect(*, user: str = "postgres", autocommit: bool = True) -> psycopg.Connection:
     assert DSN is not None
-    return psycopg.connect(DSN, user=user, autocommit=autocommit)
+    if user == "postgres":
+        return psycopg.connect(DSN, autocommit=autocommit)
+    return psycopg.connect(DSN, user=user, password=TEST_ROLE_PASSWORD, autocommit=autocommit)
 
 
 @pytest.fixture(scope="session")
@@ -93,6 +132,19 @@ def schema() -> None:
         conn.execute("GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC")
         for path in sorted(SQL_DIR.glob("0*.sql")):
             conn.execute(path.read_text(encoding="utf-8"))
+
+        # Credentials, supplied by the harness rather than by the DDL — see
+        # TEST_ROLE_PASSWORD. Done after the files are applied so the roles
+        # exist, and only for the two LOGIN roles: setting a password on a
+        # NOLOGIN owner would not grant it a login, but writing that line would
+        # suggest otherwise to the next reader.
+        for role in LOGIN_ROLES:
+            conn.execute(
+                psycopg.sql.SQL("ALTER ROLE {} WITH PASSWORD {}").format(
+                    psycopg.sql.Identifier(role),
+                    psycopg.sql.Literal(TEST_ROLE_PASSWORD),
+                )
+            )
 
 
 @pytest.fixture

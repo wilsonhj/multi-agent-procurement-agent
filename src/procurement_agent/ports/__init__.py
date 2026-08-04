@@ -67,6 +67,14 @@ class RetrievedChunk(Protocol):
     page: int | None
     source_tier: SourceTier
     score: float
+    """The reranker's score, and the reranker's alone (A-43).
+
+    Retrieval has no fusion stage whose score could compete with it: the store
+    returns a deduped candidate union, and `RerankerPort.rerank` produces the
+    final order and this number. On the one degraded path - reranker
+    unavailable - this carries the dense cosine score instead, and the result
+    order is dense-score order.
+    """
 
 
 @runtime_checkable
@@ -116,6 +124,15 @@ class VectorStorePort(Protocol):
     under-returning on a filtered top-k, and an HNSW index cost more than the
     table. The Protocol is agnostic; do not build an ANN index on the strength
     of the requirement text alone.
+
+    **This port owns the whole of hybrid retrieval, not just its dense leg**
+    (A-43). Decision 3b's lexical legs - Postgres `tsvector`/GIN and `pg_trgm` -
+    match on the query *text*, so `search` takes the text beside the vector.
+    Until it did, Decision 3b was unimplementable through the ports: reaching
+    those legs meant either raw SQL inside `services.retrieval` - a second,
+    un-swappable path into the store, when NFR-04 names the vector store as a
+    swap point and a swap that leaves two thirds of retrieval behind is not one -
+    or three separate round-trips fused in Python.
     """
 
     def upsert(
@@ -129,6 +146,7 @@ class VectorStorePort(Protocol):
     def search(
         self,
         vector: list[float],
+        query_text: str,
         *,
         limit: int,
         category: ComponentCategory | None = None,
@@ -136,7 +154,39 @@ class VectorStorePort(Protocol):
         source_tier: SourceTier | None = None,
         allowed_document_ids: set[str] | None = None,
     ) -> list[RetrievedChunk]:
-        """Metadata-filtered search.
+        """Metadata-filtered hybrid search: **one statement, three legs**.
+
+        `vector` and `query_text` are the same query in two representations -
+        the dense leg ranks by `vector`, the `tsvector` and `pg_trgm` legs match
+        `query_text`. Both are required; there is no dense-only call, because a
+        caller that could omit the text would silently get a third of Decision
+        3b and no error.
+
+        The pgvector adapter must implement this as **a single SQL statement**
+        (A-43):
+
+        1. one CTE applying the `category`/`supplier`/`source_tier`/
+           `allowed_document_ids` filter, evaluated under the Decision 3c row
+           policies the connection already rides;
+        2. three legs ranked over *that CTE* - cosine distance on `embedding`,
+           `ts_rank_cd` on `tsv`, similarity on `chunk_text gin_trgm_ops` - each
+           taking `limit // 3` rows;
+        3. union and dedup by `chunk_id` inside the statement, `LIMIT limit`.
+
+        One CTE is the point: filtering happens before ranking in all three legs
+        at once, so restricted content cannot influence any of them. Three
+        round-trips fused in Python would be three places to forget the ACL
+        predicate, and under NFR-03/AC-8 one omission is a leak. It is also what
+        makes the C.9 regression test (`len(results) == k` on a filtered query)
+        cover every leg with a single query rather than one leg out of three.
+
+        `limit` is the **candidate budget** handed to the reranker, not the
+        caller's final k, which is why the legs take `limit // 3`: floor
+        division makes the deduped union provably no larger than the budget, and
+        that property is what licenses retrieval having no fusion stage at all
+        (see `RerankerPort`). Dedup keeps one row per `chunk_id` carrying its
+        dense score where it has one - the order the reranker-unavailable
+        fallback uses; rows only a lexical leg found sort last there.
 
         allowed_document_ids carries NFR-03 access control. It is a search
         parameter rather than a post-filter because the requirement is that
@@ -151,7 +201,8 @@ class RerankerPort(Protocol):
 
     FR-RAG-03 says vector + BM25; **plan Decision 3b reverses the BM25 half** -
     there is no permissively licensed true-BM25 for PostgreSQL, so the lexical
-    leg is Postgres `tsvector`/GIN plus `pg_trgm`, fused with RRF (k=60).
+    leg is Postgres `tsvector`/GIN plus `pg_trgm`, unioned and deduped inside
+    `VectorStorePort.search`'s single statement.
 
     Not the embedding model's sparse output, which this docstring previously
     claimed: that is a *contingency* under Decision 5 (swap Qwen3-Embedding-4B
@@ -160,6 +211,21 @@ class RerankerPort(Protocol):
     substitution appears in the deviation note beside FR-RAG-03 in `spec.md`,
     which is why it is spelled out here. Reranking is what lets the design get
     away without BM25 at all, which is this port's stake in the decision.
+
+    **This port is now the only thing that orders results** (A-43). Decision 3b
+    originally fused the three legs with RRF (k=60) before reranking; that stage
+    is gone, and it cost nothing to remove. RRF's only observable effect here was
+    choosing which candidates made the rerank cut-off - Decision 3b says outright
+    that the ranking function "barely matters" because the cross-encoder
+    determines final order - and `search` sizes its legs so the whole deduped
+    union already fits inside the rerank budget. A fusion step over a union that
+    already fits can only drop candidates, so union recall >= RRF recall by
+    construction.
+
+    **Degraded path:** if the reranker is unavailable, that request falls back to
+    dense-score order. Not to RRF - reintroducing it as the fallback would put
+    back the stage this decision removed, on the path where it is least
+    justified and least exercised.
     """
 
     def rerank(

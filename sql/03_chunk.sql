@@ -75,12 +75,28 @@ CREATE TABLE public.chunk (
     -- target this column and not context_prefix.
     chunk_text         text NOT NULL,
 
-    -- Decision 6, "contextual retrieval": 1-2 sentences of document/section
-    -- context, prepended only to the text that gets embedded. Kept in its own
-    -- column, separate from chunk_text, so a citation never presents
-    -- LLM-generated framing to a reviewer as if it were the source. This split
-    -- is this file's own resolution of an ambiguity Decision 6 leaves open --
-    -- see sql/README.md. NULL where no prefix was generated.
+    -- Decision 6, "contextual retrieval": document/section context, prepended
+    -- only to the text that gets embedded. Kept in its own column, separate
+    -- from chunk_text, so a citation never presents generated framing to a
+    -- reviewer as if it were the source. This split is this file's own
+    -- resolution of an ambiguity Decision 6 leaves open -- see sql/README.md.
+    -- NULL where the row carries no usable metadata.
+    --
+    -- Built DETERMINISTICALLY from this row's own columns -- supplier, model,
+    -- document_type, section, page -- and never by an LLM (A-44, revising
+    -- Decision 6's original per-chunk generated sentence). E.g.
+    --
+    --   'Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): '
+    --
+    -- See services.indexing.context_prefix for the format. Two consequences
+    -- worth having here rather than only in the plan: the value is reproducible
+    -- from the row, so a mismatch between prefix and metadata is a bug and not
+    -- a generation artefact; and it cannot invent a model number that never
+    -- existed, which a generated sentence can, and which would poison the dense
+    -- leg for exactly the row-lookup queries the table_row chunks exist to
+    -- serve. table_summary chunks remain LLM-generated -- that is one call per
+    -- table, not per chunk, and after A-44 it is the only generated text the
+    -- index path writes.
     context_prefix     text,
 
     -- Decision 5: Qwen3-Embedding-4B, Matryoshka-truncated and renormalised to

@@ -640,3 +640,128 @@ remained, now records the note as corrected and points here.
   scaffolding stage; assigned to WP-A.
 - **NFR-06 and NFR-07 have no verification.** Both are scale/latency properties that need a
   running system. Assigned to WP-I.
+
+---
+
+# Round 5 — the retrieval pipeline, reviewed before it is written (2026-08-04)
+
+Decisions 3b and 6 were read against the interfaces that have to carry them —
+`ports/__init__.py`, `services/retrieval`, `services/indexing`, `sql/03_chunk.sql` — rather than
+against each other. Both findings are cheap here and expensive later. The retrieval services are
+`NotImplementedError` stubs, no adapter implements `VectorStorePort`, and no test imports `ports`
+(checked by grep across `src` and `tests` before the signature was touched), so A-43 costs one
+signature line today and a breaking interface change once an adapter exists; A-44 costs a
+docstring today and a full re-embed of the corpus once C.3 has run once.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-43 | **H** | **The port contract could not express Decision 3b.** `VectorStorePort.search` took only a dense vector, so the `tsvector` and `pg_trgm` legs had no interface carrying the query *text*; the decision was implementable only by putting raw SQL in the retrieval service or fusing three round-trips in Python. Fusing in Python also put the ACL filter in three places, where NFR-03/AC-8 need one | **Fixed** — `query_text` added; hybrid specified as one statement in the adapter; RRF dropped |
+| A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
+
+## A-43 (High) — a decision no declared interface could reach
+
+**Artifacts:** `src/procurement_agent/ports/__init__.py` vs [plan.md Decision 3b](plan.md) ·
+`src/procurement_agent/services/retrieval/__init__.py`
+
+Decision 3b names three legs. Two of them match text: `tsvector`/GIN over `chunk.tsv` and
+`pg_trgm` over `chunk_text`. `VectorStorePort.search` took `vector: list[float]` and a filter set,
+and `retrieve()` received `embedder`, `store` and `reranker` — the query string existed in the
+service and stopped there. So the decision as written had exactly two implementations available:
+raw SQL inside `services/retrieval`, which is a second path into the store that no adapter swap
+follows and therefore straightforwardly against NFR-04's "vector store swappable behind a stable
+interface"; or three store calls fused in Python.
+
+The second is the one worth naming, because it looks harmless. `services/retrieval` already says
+that filtering must happen **before** ranking so restricted content never influences a result
+(NFR-03, AC-8). Three legs orchestrated in Python is three call sites that each have to remember
+`allowed_document_ids`, and the failure is silent in the direction that matters — a leg that
+forgets the predicate returns *more*, and the reranker happily orders it. One shared CTE is one
+place. It also decides what C.9 is worth: `len(results) == k` on a filtered query covers all three
+legs when there is one query, and one leg out of three when there are three.
+
+**The fix is two sentences of contract.** `search` takes `query_text` beside `vector` — the same
+query in two representations, both required, so a caller cannot silently get a third of Decision
+3b. And the adapter implements the legs as *one statement*: shared filter CTE, three ranked legs
+over it, union and dedup by `chunk_id` in SQL, `LIMIT` the rerank budget.
+
+**RRF (k=60) is dropped in the same edit**, and this is the part that deserves an argument rather
+than an assertion. Decision 3b's own case for tolerating weak per-leg ranking is that the
+cross-encoder determines final order — the ranking function "barely matters" (plan.md, Decision
+3b). Grant that, and RRF's only observable effect in this pipeline is *which candidates make the
+rerank cut-off*. Size each leg at `budget // 3` and the deduped union is provably no larger than
+the budget, so the whole union reaches the reranker; a fusion step applied to a set that already
+fits can only drop members. **Union recall ≥ RRF recall by construction**, and the deleted stage
+had no other observable output, since final order and `RetrievedChunk.score` were always going to
+be the reranker's.
+
+Two things this does **not** touch, deliberately:
+
+- **The reranker stays.** FR-RAG-03's body mandates reranking, NFR-04 names it a swap point, and
+  it is the thing that licenses both the missing BM25 (A-24) and now the missing fusion. Removing
+  RRF makes the reranker more load-bearing, not less. The degraded path is written down for the
+  same reason: reranker unavailable falls back to **dense-score order**, never to RRF, which would
+  otherwise creep back as the fallback and be exercised only when nobody is looking.
+- **Neither lexical leg is trimmed.** `pg_trgm` in particular is the leg the decision exists for
+  (`JKM610N-66HL4M-V` against `JKM610N 66HL4M V`), and `tsvector` supplies recall into the
+  candidate set. The revision changes how the legs are *combined*, not how many there are.
+
+**Left open deliberately, and this branch cannot fix it.** `spec.md`'s FR-RAG-03 deviation note
+and `docs/architecture.md` both still describe the replacement as "fused with Reciprocal Rank
+Fusion (k=60)" — which was correct when A-40 corrected it and is now half-stale, naming a fusion
+stage the plan no longer has. The requirement text is untouchable here (this is a plan-level
+revision and `spec.md` is two ranks above `plan.md`), and correcting the note is itself a
+`spec.md` edit that has to be registered on its own, exactly as A-40 was. Recording it rather than
+reaching for the file is A-39's rule: a finding made in a file you do not own is still a finding.
+The remedy is one clause — "unioned and deduped in a single statement, then reranked, not BM25" —
+and it should cite A-24 and A-43 together.
+
+## A-44 (Medium) — the one string you cannot cheaply change was the generated one
+
+**Artifacts:** [plan.md Decision 6](plan.md) and [tasks.md C.3](tasks.md) vs `sql/03_chunk.sql`
+
+Decision 6 asked for 1–2 LLM-generated sentences of document/section context per chunk, prepended
+before embedding. `sql/03_chunk.sql` had already had to defuse half of that: `context_prefix` is a
+separate column from `chunk_text` precisely so a citation never shows a reviewer generated framing
+as if it were the source, and the lexical indexes run over `chunk_text` only. That split is right
+and is kept exactly as designed.
+
+What the split does not defuse is the embedding. The prefix is *inside* the vector, and the fields
+a datasheet chunk is retrieved by — supplier, model, section — are the fields a generated sentence
+is most likely to get subtly wrong. A prefix reading "Jinko JKM610N-66HL4M" on a chunk from a
+`JKM610N-66HL4M-V` sheet is not a cosmetic error; it is a wrong part number embedded into the one
+representation the dense leg searches, for exactly the row-lookup queries C.2 calls out ("what is
+the Voc of module X"). The evidence on the other side is thin by the register's own standard: the
+~67% retrieval-failure reduction is imported from large-corpus benchmarks, and D-11 states flatly
+that no public benchmark exists for PV/inverter/BESS datasheet extraction and every accuracy
+figure in the plan is extrapolated. A-9's rule applies: where two options both work, the one that
+wins is the one with the less fragile failure mode.
+
+**The chunk row already carries everything the sentence was going to say.** `supplier`, `model`,
+`document_type`, `section` and `page` are denormalised onto `public.chunk` (sql/03_chunk.sql), so
+the prefix is a join-free format string over validated metadata:
+
+    "Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): "
+
+Zero LLM calls, deterministic, reproducible from the row — a mismatch between prefix and metadata
+becomes a bug with a cause rather than a generation artefact. `services.indexing.context_prefix`
+declares it, and takes no `LLMPort`, which is what makes the decision enforceable rather than
+merely written down.
+
+**`table_summary` stays LLM-generated, and the asymmetry is the whole point.** Its case is the one
+the prefix's was borrowed from and does not hold: query vocabulary like "temperature coefficient"
+or "derating" genuinely appears nowhere in the cells, so there is real information to add, and it
+is one call per *table* rather than per chunk. After this revision it is the only generated text
+in the index path, which is a defensible resting point — one generator, one chunk kind, and it
+never touches a `table_row` or `prose` embedding.
+
+**Why now and not after the first corpus.** The prefix is baked into every embedding, so changing
+strategy later is a full re-embed of every chunk — the single operation FR-RAG-05's incremental
+add/update/delete philosophy exists to avoid, and the one thing `VectorStorePort.upsert`'s
+stable-ID contract cannot make cheap. Today it is a docstring and a column comment.
+
+**One wording left for the file's owner:** `sql/README.md` item 15, under "Design decisions made
+here that the specs did not settle", justifies the `context_prefix`/`chunk_text` split as keeping
+"a generated framing sentence" out of citations.
+The split survives this revision unchanged and so does the reasoning, but "generated" is now the
+wrong word for the prefix specifically — the honest form is that a citation shows source text and
+nothing else, generated or derived. Not edited here; `sql/README.md` is not this branch's file.

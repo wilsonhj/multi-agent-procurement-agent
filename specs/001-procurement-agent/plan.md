@@ -193,8 +193,8 @@ short result set and nothing else catches it.
 
 ### Decision 3b — Hybrid retrieval without BM25
 
-**Chosen:** `pgvector` dense + Postgres `tsvector`/GIN full-text + `pg_trgm` trigram, fused with
-Reciprocal Rank Fusion (k=60), then reranked. **Confidence: high.**
+**Chosen:** `pgvector` dense + Postgres `tsvector`/GIN full-text + `pg_trgm` trigram, in **one SQL
+statement**, then reranked. **Confidence: high.**
 
 BM25 is unavailable under our licence posture, and at 10k–100k chunks the ranking *function*
 barely matters, because the cross-encoder reranker determines final order far better than either
@@ -205,6 +205,44 @@ More importantly: for datasheets the retrieval failure that actually bites is
 `"JKM610N-66HL4M-V"` not matching `"JKM610N 66HL4M V"`. **BM25 does not fix that. `pg_trgm`
 does**, and it ships with Postgres under the same permissive licence. The licence constraint
 pushes us toward the better answer here.
+
+**One statement, not three round-trips** (revised — see [A-43](analysis.md)). The whole of hybrid
+retrieval lives inside the `VectorStorePort` adapter:
+
+1. one CTE applying the category / supplier / source-tier / `allowed_document_ids` filter, under
+   the Decision 3c row policies the connection already rides;
+2. three legs ranked over *that CTE* — cosine distance on `embedding`, `ts_rank_cd` on `tsv`,
+   `similarity()` on the `chunk_text` trigram index — each taking `budget // 3` rows;
+3. union and dedup by `chunk_id` in SQL, `LIMIT` the rerank budget.
+
+This is not tidiness. `services/retrieval` states that filtering must happen **before** ranking so
+restricted content never influences a result (NFR-03, AC-8); three legs orchestrated in Python is
+three places to forget the ACL predicate, and one shared CTE is one place. It is also what makes
+C.9's `len(results) == k` regression test cover all three legs with a single query. The
+alternative — raw SQL inside the retrieval service — would be a second path into the store that no
+adapter swap could follow, against NFR-04.
+
+The port change this required: **`VectorStorePort.search` takes the query text beside the vector.**
+It previously took only a dense vector, so the two lexical legs of the decision had no interface
+to reach and Decision 3b was, as written, unimplementable through the ports.
+
+**RRF is dropped** (revised — see [A-43](analysis.md)). Earlier drafts of this decision fused the
+three legs with Reciprocal Rank Fusion (k=60) before reranking. Take each leg's top-K, dedup the
+union, send **all** of it to the reranker; final order and `RetrievedChunk.score` come from the
+reranker alone.
+
+The proof that this loses nothing is this decision's own second paragraph: the ranking function
+"barely matters" because the cross-encoder determines final order, so RRF's only observable effect
+here was choosing which candidates made the rerank cut-off. Size the legs at `budget // 3` and the
+deduped union is provably no larger than the budget — at Decision 5's rerank top-50 that is 16 per
+leg, and a budget of 60 gives the round 20. A fusion step over a union that already fits inside
+the budget can only *drop* candidates, so **union recall ≥ RRF recall by construction.**
+
+**Degraded path, stated so nobody reinvents one:** if the reranker is unavailable, that request
+falls back to dense-score order. **Not** to RRF — keeping it as the fallback would preserve the
+stage this revision removes, on the path where it is least justified and least exercised. The
+reranker itself is not optional: FR-RAG-03 mandates reranking, NFR-04 names it a swap point, and
+this decision's whole argument for weak per-leg ranking is that the cross-encoder fixes order.
 
 ### Decision 3c — Access control via FORCE ROW LEVEL SECURITY
 
@@ -301,18 +339,36 @@ unstated batch size — benchmark before setting an SLA.*
      `"Model: JKM610N-66HL4M-V | Pmax: 610 W | Voc: 41.24 V"`. **This is what makes "what is the
      Voc of module X" retrievable at all.** A bare `"41.24"` is unretrievable; table-level
      embeddings reliably fail row-level lookups because the specific value is averaged away.
-  3. `table_summary` — 1–3 generated sentences naming the table's contents, headers and covered
-     models. Highest-leverage single trick here, because query vocabulary
-     ("temperature coefficient", "derating") frequently appears nowhere in the cells.
+  3. `table_summary` — 1–3 **LLM-generated** sentences naming the table's contents, headers and
+     covered models. Highest-leverage single trick here, because query vocabulary
+     ("temperature coefficient", "derating") frequently appears nowhere in the cells. This one
+     earns its call: it is one call per *table*, and after the revision below it is the only
+     generated text anywhere in the index path.
 - **Overlap 0–10%, not 10–20%.** Systematic analysis found overlap gave no measurable benefit and
   only increased indexing cost. Docling supplies real section boundaries, which is most of what
   overlap was compensating for. Keep ~50 tokens only when splitting *within* a section; zero at
   section boundaries. *Medium confidence — worth an A/B on our own eval set.*
 - **Prose: 512 tokens, split on structure first**, then packed — never at a fixed offset that
   ignores headings.
-- **Add contextual retrieval.** Prepend 1–2 sentences of document/section context to each chunk
-  *before embedding*. Reported ~67% reduction in retrieval failures when combined with reranking;
-  the one-time cost at our volume is negligible.
+- **Add contextual retrieval, built from metadata rather than generated** (revised — see
+  [A-44](analysis.md)). Prepend document/section context to each chunk *before embedding*, keep it
+  in its own `chunk.context_prefix` column, and cite `chunk_text` verbatim — that much is
+  unchanged. Earlier drafts made the prefix 1–2 **LLM-generated** sentences; build it instead from
+  the metadata the chunk row already carries (supplier, model, document type, section, page — all
+  denormalised onto it by `sql/03_chunk.sql`):
+
+  `"Jinko Solar JKM610N-66HL4M-V spec sheet - Electrical Characteristics (p. 4): "`
+
+  Zero LLM cost, deterministic, and nothing to hallucinate. The ~67% retrieval-failure reduction
+  reported for the generated form is imported from large-corpus benchmarks, and D-11 says plainly
+  that no benchmark exists for *this* task and every accuracy figure in this plan is extrapolated —
+  so it does not buy a per-chunk generation surface. Against that: a generated prefix that
+  misstates a model number poisons the dense leg for exactly the row-lookup queries this product
+  cares most about, and a prefix derived from validated metadata cannot.
+
+  **Lock this now rather than after the first index run.** The prefix is baked into every
+  embedding, so changing strategy later means a full re-embed — the one operation FR-RAG-05's
+  incremental philosophy exists to avoid.
 
 ---
 

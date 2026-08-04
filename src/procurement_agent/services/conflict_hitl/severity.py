@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 from collections.abc import Sequence
 from decimal import Decimal
 
@@ -222,11 +223,58 @@ CRITICALITY: dict[str, Severity] = {
 #: is for the gap between a contract addition and this table catching up.
 DEFAULT_CRITICALITY = Severity.CRITICAL
 
+#: The D-3 Tier A categories, as patterns over contract keys.
+#:
+#: This exists so `TIER_A_FIELDS` can be checked in the direction that actually
+#: fails. `test_tier_a_fields_are_contract_keys` asserts the set contains no
+#: invented names, which catches a typo and cannot catch an omission - and the
+#: omission is the one that costs something, because a field absent from the set
+#: simply does not get the floor. Three were missing on that basis; see the note
+#: on `TIER_A_FIELDS`.
+TIER_A_KEY_PATTERNS: tuple[str, ...] = (
+    r"price",  # "Pricing"
+    r"warrant|degradation_year_1|degradation_annual",  # "warranty terms"
+    r"domestic_content|country_of_origin|material_assistance|baba|feoc",
+    r"cert|listing",  # "certification presence *or absence*"
+)
+
+_TIER_A_RE = re.compile("|".join(TIER_A_KEY_PATTERNS))
+
+
+def looks_tier_a(field_name: str) -> bool:
+    """Whether a contract key falls in one of D-3's Tier A categories."""
+    return _TIER_A_RE.search(field_name) is not None
+
+
+#: Contract keys matching a Tier A pattern that are deliberately *not* Tier A.
+#:
+#: Empty. It exists so a future exclusion has to be written down with a reason
+#: instead of achieved by omission - which is how the three below went missing.
+TIER_A_EXCLUSIONS: dict[str, str] = {}
+
 #: D-3's Tier A, verbatim: "Pricing; warranty terms; domestic-content, BABA and
 #: FEOC status; certification presence or absence." A floor, not a derived set -
 #: hand-keyed from clarifications.md D-3 rather than computed from `CRITICALITY`
 #: above, because Tier A is D-3's classification and independent of this
 #: module's own criticality-class choices for the same fields.
+#:
+#: **Three fields were missing, and each one shipped a contractual conflict past
+#: the compose gate.** `material_assistance_cost_ratio` (the 45X
+#: material-assistance metric, i.e. FEOC status), `degradation_year_1` and
+#: `degradation_annual` (warranty terms - the criticality table's own comment
+#: eighteen lines up calls them "the guaranteed degradation curve underwriting
+#: the performance warranty"). All three carry base `HIGH`, so with no Tier A
+#: floor a `%`-vs-`fraction` extraction artefact takes `_unit_mismatch_reconciles`'
+#: -2 straight down to `LOW`:
+#:
+#:     assign_severity("degradation_year_1", UNIT_NORMALIZATION,
+#:                     [2.0 "%", 0.02 "fraction"], ...)  ->  Severity.LOW
+#:
+#: `config.compose_gate_threshold` defaults to `MEDIUM` and the gate blocks
+#: *strictly above* it, so `LOW` means the workbook ships with an unresolved
+#: contractual-degradation or FEOC-eligibility conflict. `HIGH` would have
+#: blocked it. `country_of_origin` was missing too and was rescued only
+#: incidentally, by the separate `CRITICAL` floor below it.
 TIER_A_FIELDS: frozenset[str] = frozenset(
     {
         "price_per_watt_dc",
@@ -239,8 +287,12 @@ TIER_A_FIELDS: frozenset[str] = frozenset(
         "corrosion_warranty_years",
         "degradation_warranty_years",
         "degradation_warranty_cycles",
+        "degradation_year_1",
+        "degradation_annual",
         "domestic_content_status",
         "domestic_content_percentage",
+        "country_of_origin",
+        "material_assistance_cost_ratio",
         "baba_status",
         "baba_certification_ref",
         "feoc_pfe_status",

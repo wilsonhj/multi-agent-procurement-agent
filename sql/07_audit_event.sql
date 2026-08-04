@@ -123,8 +123,57 @@ CREATE TABLE audit.event (
     -- prev_hash NULL) collide too -- an ordinary UNIQUE constraint treats two
     -- NULLs as distinct and would let one stream grow two unrelated roots.
     CONSTRAINT audit_event_no_fork UNIQUE NULLS NOT DISTINCT (stream, prev_hash),
-    CONSTRAINT audit_event_seq_unique UNIQUE (stream, seq)
+    CONSTRAINT audit_event_seq_unique UNIQUE (stream, seq),
+
+    -- The chain has to be walkable, not merely fork-free.
+    --
+    -- `audit_event_no_fork` catches one shape of tampering: two children of the
+    -- same parent. Review found three it does not, all accepted as
+    -- procurement_app against the first version of this file:
+    --
+    --   1. a row whose prev_hash names a parent that never existed
+    --   2. a second, disconnected root in the same stream (seq 900, prev_hash
+    --      pointing at a fabricated digest) -- a fork made by starting a new
+    --      segment rather than by branching an existing one, which is precisely
+    --      what the comment above claims to prevent
+    --   3. two rows in one stream sharing a `hash`, i.e. a chain loop
+    --
+    -- Each is silent, and each produces a chain that can never be verified.
+    -- Decision 9 leans on this chain as "the only mechanism that survives the
+    -- superuser bypass -- a superuser can edit a row but cannot make the chain
+    -- re-verify", so a chain that was never walkable in the first place gives
+    -- that argument nothing to stand on.
+    --
+    -- UNIQUE (stream, hash) makes a digest identify at most one event per
+    -- stream, which is what lets the self-reference below be a foreign key at
+    -- all, and independently rules out (3).
+    CONSTRAINT audit_event_hash_unique UNIQUE (stream, hash)
 );
+
+-- The self-reference: every non-genesis event's parent must exist, in the same
+-- stream. Added after the table rather than inline because a self-referential
+-- FK cannot be declared against a unique constraint defined in the same
+-- CREATE TABLE statement.
+--
+-- NOT VALID is deliberately NOT used: this file creates the table empty, so
+-- there is nothing to validate against and the constraint is enforced from the
+-- first INSERT.
+--
+-- MATCH SIMPLE (the default) is what makes genesis work: with prev_hash NULL
+-- the constraint is satisfied without a parent, so `audit_event_genesis_seq_zero`
+-- above remains the thing that ties genesis to seq 0.
+--
+-- ON DELETE/UPDATE RESTRICT rather than CASCADE -- a cascade here would let one
+-- deletion unravel a whole chain, which is the opposite of the property this
+-- table exists to provide. The append-only triggers below already reject both
+-- verbs; this is the same defence stated where a reader of the constraint will
+-- see it.
+ALTER TABLE audit.event
+    ADD CONSTRAINT audit_event_parent_exists
+    FOREIGN KEY (stream, prev_hash)
+    REFERENCES audit.event (stream, hash)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT;
 
 COMMENT ON TABLE audit.event IS
     'C4 audit event envelope. Immutable: see the triggers below and the GRANT '

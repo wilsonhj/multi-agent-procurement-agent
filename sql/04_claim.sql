@@ -138,3 +138,37 @@ CREATE TRIGGER claim_no_mutation
     BEFORE UPDATE OR DELETE ON public.claim
     FOR EACH ROW
     EXECUTE FUNCTION public.reject_mutation();
+
+-- TRUNCATE is a separate event from UPDATE and DELETE and is NOT caught by the
+-- row-level trigger above: TRUNCATE fires no per-row triggers, so a
+-- `FOR EACH ROW` trigger sees nothing at all. Review found `TRUNCATE public.claim
+-- CASCADE` succeeding and taking `resolution` and `conflict_candidate` with it,
+-- while sql/README.md claimed all three verbs were refused.
+--
+-- `ON DELETE RESTRICT` on the child FKs does not help either -- TRUNCATE CASCADE
+-- truncates the children rather than deleting through the constraint.
+--
+-- Statement-level, because that is the only level TRUNCATE has. Same tripwire
+-- caveat as everything else here: DISABLE TRIGGER and
+-- session_replication_role=replica bypass it, and privilege separation above is
+-- the actual boundary. plan.md Decision 9's attack matrix lists
+-- `TRUNCATE | Trigger: blocked`, which is what this restores.
+CREATE FUNCTION public.reject_truncate() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE EXCEPTION
+        'this table is append-only: TRUNCATE is rejected by trigger (secondary '
+        'tripwire only; privilege separation above is the actual boundary -- '
+        'plan.md Decision 9). Note TRUNCATE fires no row-level triggers, so the '
+        'append-only FOR EACH ROW trigger on this table does not see it -- this '
+        'statement-level trigger is the only thing that does.';
+END;
+$$;
+
+ALTER FUNCTION public.reject_truncate() OWNER TO procurement_owner;
+
+CREATE TRIGGER claim_no_truncate
+    BEFORE TRUNCATE ON public.claim
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION public.reject_truncate();

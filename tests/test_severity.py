@@ -33,10 +33,12 @@ from procurement_agent.services.conflict_hitl import severity as severity_module
 from procurement_agent.services.conflict_hitl.severity import (
     CRITICALITY,
     DEFAULT_CRITICALITY,
+    TIER_A_EXCLUSIONS,
     TIER_A_FIELDS,
     _unit_mismatch_reconciles,
     assign_severity,
     criticality_for,
+    looks_tier_a,
 )
 
 
@@ -98,6 +100,67 @@ def test_every_contract_key_has_a_criticality() -> None:
 def test_tier_a_fields_are_contract_keys() -> None:
     unknown = TIER_A_FIELDS - _contract_keys()
     assert not unknown, f"TIER_A_FIELDS names a field the contract does not have: {unknown}"
+
+
+def test_no_tier_a_field_is_missing_from_the_set() -> None:
+    """The direction the test above cannot cover, and the one that costs.
+
+    A subset check catches a typo. It cannot catch an *omission*, and an omitted
+    field simply does not get the floor. Three were missing on that basis:
+    `material_assistance_cost_ratio` (FEOC), `degradation_year_1` and
+    `degradation_annual` (warranty terms - the criticality table's own comment
+    calls them the guaranteed curve underwriting the performance warranty).
+    """
+    missing = {
+        key
+        for key in _contract_keys()
+        if looks_tier_a(key) and key not in TIER_A_EXCLUSIONS and key not in TIER_A_FIELDS
+    }
+    assert not missing, (
+        f"contract fields in a D-3 Tier A category but unfloored: {sorted(missing)}. "
+        "Add them to TIER_A_FIELDS, or record a reason in TIER_A_EXCLUSIONS."
+    )
+
+
+def test_the_patterns_actually_recognise_the_floored_fields() -> None:
+    """Otherwise the check above passes vacuously: it asserts an empty set, so
+    breaking the detector makes it succeed rather than fail."""
+    unrecognised = {key for key in TIER_A_FIELDS if not looks_tier_a(key)}
+    assert not unrecognised, (
+        f"floored fields the D-3 category patterns cannot find: {sorted(unrecognised)}"
+    )
+
+
+def test_the_exclusion_list_is_not_a_way_to_lose_a_field() -> None:
+    assert set(TIER_A_EXCLUSIONS) <= _contract_keys()
+    assert all(reason.strip() for reason in TIER_A_EXCLUSIONS.values())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "unit_a", "value_a", "unit_b", "value_b"),
+    [
+        ("degradation_year_1", "%", 2.0, "fraction", 0.02),
+        ("degradation_annual", "%", 0.55, "fraction", 0.0055),
+        ("material_assistance_cost_ratio", "%", 45.0, "fraction", 0.45),
+        ("country_of_origin", "%", 45.0, "fraction", 0.45),
+    ],
+)
+def test_a_tier_a_conflict_never_falls_below_the_compose_gate(
+    field_name: str, unit_a: str, value_a: float, unit_b: str, value_b: float
+) -> None:
+    """The concrete cost of the omission, pinned as behaviour rather than as
+    set membership.
+
+    `config.compose_gate_threshold` defaults to MEDIUM and the gate blocks
+    *strictly above* it, so a `%`-vs-`fraction` extraction artefact scoring LOW
+    means the workbook ships with an unresolved contractual conflict.
+    """
+    pair = [_c(value_a, unit=unit_a), _c(value_b, unit=unit_b)]
+    assigned = assign_severity(field_name, ConflictClass.UNIT_NORMALIZATION, pair, pair)
+    assert assigned >= Severity.HIGH, (
+        f"{field_name} scored {assigned.name}; the -2 unit-reconciliation "
+        "discount took a Tier A field below the gate"
+    )
 
 
 # --- base severity: the criticality-class lookup -------------------------------

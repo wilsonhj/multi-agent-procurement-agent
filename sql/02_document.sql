@@ -104,9 +104,18 @@ CREATE POLICY document_write_insert ON public.document
     FOR INSERT
     WITH CHECK (true);
 
+-- The UPDATE policy carries the confidentiality predicate for the reason set
+-- out at length in 03_chunk.sql: `USING (true)` plus `access_restricted` inside
+-- the granted column set let procurement_app declassify every restricted row
+-- with one WHERE-less UPDATE, because an UPDATE needs no SELECT. An entitled
+-- session -- one that has set `app.allow_restricted` -- can still correct a
+-- misclassification, which is what the narrow grant below exists for.
 CREATE POLICY document_write_update ON public.document
     FOR UPDATE
-    USING (true)
+    USING (
+        NOT access_restricted
+        OR current_setting('app.allow_restricted', true) = 'true'
+    )
     WITH CHECK (true);
 
 -- document is append-only in spirit (document_id is content-addressed

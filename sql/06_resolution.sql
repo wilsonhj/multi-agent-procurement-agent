@@ -55,3 +55,12 @@ CREATE TRIGGER resolution_no_mutation
     BEFORE UPDATE OR DELETE ON public.resolution
     FOR EACH ROW
     EXECUTE FUNCTION public.reject_mutation();
+
+-- See 04_claim.sql for why this is separate from the row-level trigger above.
+-- This table is the record of what a human decided, so losing it to a TRUNCATE
+-- CASCADE from `claim` is the worst of the three -- FR-HITL-04 has no other
+-- copy of a reviewer's rationale.
+CREATE TRIGGER resolution_no_truncate
+    BEFORE TRUNCATE ON public.resolution
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION public.reject_truncate();

@@ -143,17 +143,136 @@ CREATE POLICY chunk_confidentiality_select ON public.chunk
 -- per command, so INSERT/UPDATE/DELETE each need their own permissive policy or
 -- the SELECT-only policy above would leave them at zero rows despite the GRANT
 -- below allowing them.
+--
+-- **The UPDATE and DELETE policies carry the confidentiality predicate.** The
+-- first version used `USING (true)` on both, on the reasoning that RLS is for
+-- retrieval-time visibility and the write path should sit exactly where the
+-- GRANT puts it. Review showed what that costs: a permissive `USING (true)` is
+-- OR'd with the SELECT policy, a WHERE-less UPDATE needs no SELECT, and
+-- `access_restricted` was inside the app's own UPDATE column set. So
+--
+--     UPDATE public.chunk SET access_restricted = false;
+--
+-- ran as procurement_app, returned `UPDATE 2`, and declassified a row that role
+-- could not read one statement earlier. `DELETE FROM public.chunk` likewise
+-- destroyed a row it could not see. Decision 3c's basis is "RLS never leaked a
+-- row in any test" -- the application role, which is the principal the control
+-- exists to contain, defeated it in one statement.
+--
+-- With the predicate in `USING`, a restricted row is not a candidate for UPDATE
+-- or DELETE unless the session has set `app.allow_restricted` -- i.e. unless it
+-- is already entitled to see the row. Correcting a misclassification stays
+-- possible for an entitled session, which is the case the narrow column grant
+-- was written for; it just is no longer possible blind.
 CREATE POLICY chunk_write_insert ON public.chunk
     FOR INSERT
     WITH CHECK (true);
 
 CREATE POLICY chunk_write_update ON public.chunk
     FOR UPDATE
-    USING (true)
+    USING (
+        NOT access_restricted
+        OR current_setting('app.allow_restricted', true) = 'true'
+    )
     WITH CHECK (true);
 
 CREATE POLICY chunk_write_delete ON public.chunk
     FOR DELETE
-    USING (true);
+    USING (
+        NOT access_restricted
+        OR current_setting('app.allow_restricted', true) = 'true'
+    );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.chunk TO procurement_app;
+
+-- ---------------------------------------------------------------------------
+-- chunk.access_restricted is DERIVED from the parent document, not merely
+-- declared alongside it.
+--
+-- The column above defaults to false and, in the first version, nothing tied it
+-- to document.access_restricted. Review demonstrated the consequence: an
+-- indexer that writes a chunk without setting the flag leaves the text
+-- world-readable while the parent document is correctly hidden --
+--
+--     select chunk_id, chunk_text from public.chunk;
+--      c3 | CONFIDENTIAL: price 0.19/W from restricted pricing doc
+--     select document_id from public.document;
+--      (0 rows)
+--
+-- Chunks are the retrieval unit: they are what feeds citations and the LLM
+-- context window. So this is the table where NFR-03 and AC-8 are actually
+-- decided, and a flag the caller may simply forget is not a control.
+--
+-- tasks.md:53 names this exact failure in advance: "C7 is a single decision
+-- constraining two work packages at opposite ends of the pipeline (labelling at
+-- ingest, enforcement at retrieval). This is the most common place this kind of
+-- plan breaks."
+--
+-- The rule is OR, not assignment: a chunk is at least as restricted as its
+-- parent, and may be *more* restricted (a confidential paragraph inside an
+-- otherwise open datasheet). Restriction can therefore only ever increase, and
+-- forgetting the flag is safe rather than silent.
+--
+-- BEFORE INSERT OR UPDATE so it also holds when a document is reclassified and
+-- its chunks are re-labelled, and so an UPDATE cannot lower a chunk below its
+-- parent.
+CREATE FUNCTION public.chunk_inherit_access_restricted() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    parent_restricted boolean;
+BEGIN
+    -- The lookup must see restricted parents, and neither SECURITY DEFINER nor
+    -- ownership grants that: `document` is FORCE ROW LEVEL SECURITY, which
+    -- applies to procurement_owner exactly as it does to anyone else. A first
+    -- version of this function relied on SECURITY DEFINER alone and failed
+    -- closed and loudly on the very first restricted chunk --
+    --
+    --     ERROR: chunk.document_id doc2 has no document row
+    --
+    -- because the parent SELECT returned zero rows rather than `true`. Loud is
+    -- the right direction to fail, but it made every restricted chunk
+    -- un-insertable.
+    --
+    -- The `SET app.allow_restricted` clause on the function below is what
+    -- actually grants visibility, using this schema's own confidentiality
+    -- mechanism rather than a new privilege: the setting is scoped to this
+    -- function invocation and reverts on exit, so it cannot leak into the
+    -- calling session.
+    SELECT d.access_restricted INTO parent_restricted
+    FROM public.document d
+    WHERE d.document_id = NEW.document_id;
+
+    IF parent_restricted IS NULL THEN
+        -- The FK below rejects this anyway; failing closed here means the
+        -- ordering of constraint and trigger cannot open a window.
+        RAISE EXCEPTION
+            'chunk.document_id % has no document row; cannot derive '
+            'access_restricted', NEW.document_id;
+    END IF;
+
+    NEW.access_restricted := NEW.access_restricted OR parent_restricted;
+    RETURN NEW;
+END;
+$$ SECURITY DEFINER
+   SET search_path = public, pg_temp
+   SET app.allow_restricted = 'true';
+
+-- SECURITY DEFINER is deliberate and is the one such function in this schema.
+-- The body reads exactly one boolean from one table by primary key, takes no
+-- caller-supplied SQL, and returns nothing to the caller, so the usual
+-- SECURITY DEFINER hazard -- privilege escalation through an injectable body or
+-- a mutable search_path -- does not apply. search_path is pinned per the
+-- standard hardening, and EXECUTE is revoked from PUBLIC so it is reachable
+-- only as this trigger.
+--
+-- Note what the `SET app.allow_restricted` clause can and cannot do: it makes
+-- the parent lookup succeed, and it cannot be used to read anything else,
+-- because the function returns only `NEW` and the one boolean never leaves it.
+ALTER FUNCTION public.chunk_inherit_access_restricted() OWNER TO procurement_owner;
+REVOKE EXECUTE ON FUNCTION public.chunk_inherit_access_restricted() FROM PUBLIC;
+
+CREATE TRIGGER chunk_inherit_access_restricted
+    BEFORE INSERT OR UPDATE ON public.chunk
+    FOR EACH ROW
+    EXECUTE FUNCTION public.chunk_inherit_access_restricted();

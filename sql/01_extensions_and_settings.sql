@@ -6,8 +6,9 @@
 -- Decision 3 / Decision 5: single Postgres datastore; Qwen3-Embedding-4B stored
 -- at 1024 dims via Matryoshka truncation. pgvector 0.8.5 is pinned at the
 -- application dependency layer (pyproject.toml); this file only requires some
--- pgvector new enough to provide `vector(1024)` and the hnsw.iterative_scan GUC
--- (0.5.0+), whatever exact version the target cluster has installed.
+-- pgvector new enough to provide `vector(1024)` (0.5.0+), whatever exact version
+-- the target cluster has installed. The hnsw.iterative_scan GUC set below needs
+-- **0.8.0+** and is applied conditionally -- see the note on that statement.
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Decision 3b: the licence gate (plan.md) rules out every permissively licensed
@@ -48,12 +49,42 @@ COMMENT ON SCHEMA audit IS
 -- `vector` extension's library actually loads into a given backend (the first
 -- time that backend touches a vector value or operator), at which point the
 -- placeholder is validated against the real enum definition.
+--
+-- **That placeholder reasoning is wrong below pgvector 0.8.0, and the failure is
+-- a hard abort, not a warning.** pgvector *reserves* the `hnsw` prefix
+-- (`EmitWarningsOnPlaceholders("hnsw")`), so once the library is loaded the
+-- prefix stops accepting unknown placeholders. On a cluster whose pgvector
+-- predates the GUC, this statement fails outright:
+--
+--     ERROR:  invalid configuration parameter name "hnsw.iterative_scan"
+--     DETAIL:  "hnsw" is a reserved prefix.
+--
+-- Reproduced on PostgreSQL 16.13 + pgvector 0.6.0, where it aborted this file
+-- at this line and left the remaining settings unapplied. `hnsw.iterative_scan`
+-- arrived in pgvector 0.8.0.
+--
+-- Guarded rather than removed: the setting is a genuine safety net if Decision
+-- 3a is ever revisited and an HNSW index appears, and on the pinned 0.8.5 it
+-- applies exactly as before. Skipping it costs nothing today, because Decision
+-- 3a means no HNSW index exists for it to govern.
 DO $$
+DECLARE
+    pgvector_version text;
 BEGIN
-    EXECUTE format(
-        'ALTER DATABASE %I SET hnsw.iterative_scan = %L',
-        current_database(),
-        'relaxed_order'
-    );
+    SELECT extversion INTO pgvector_version
+    FROM pg_extension WHERE extname = 'vector';
+
+    IF string_to_array(pgvector_version, '.')::int[] >= ARRAY[0, 8, 0] THEN
+        EXECUTE format(
+            'ALTER DATABASE %I SET hnsw.iterative_scan = %L',
+            current_database(),
+            'relaxed_order'
+        );
+    ELSE
+        RAISE NOTICE
+            'pgvector % predates hnsw.iterative_scan (0.8.0); skipping. No HNSW '
+            'index exists to govern -- plan.md Decision 3a. Revisit if that '
+            'decision is reversed.', pgvector_version;
+    END IF;
 END
 $$;

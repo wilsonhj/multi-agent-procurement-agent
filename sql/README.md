@@ -127,6 +127,12 @@ All nine files applied in order under `ON_ERROR_STOP=1` with no errors. Then:
 | a duplicate *genesis* row is also refused | `NULLS NOT DISTINCT` | refused |
 | chains on different documents stay independent | Decision 9 | allowed, as intended |
 | `claim` rejects `UPDATE`/`DELETE`/`TRUNCATE` with a row present | C8 | all three refused |
+| `resolution` rejects `TRUNCATE` | C8 | refused |
+| app cannot declassify a row it cannot read | Decision 3c | `UPDATE 0`, `DELETE 0` |
+| a chunk written for a restricted document inherits the flag | NFR-03, C7 | inherited |
+| `prev_hash` naming a parent that never existed | Decision 9 | refused, FK |
+| a second disconnected root in one stream | Decision 9 | refused, FK |
+| two events in one stream sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
 | duplicate `content_hash` refused | NFR-05, AC-5 | refused |
 | no `hnsw`/`ivfflat` index exists | Decision 3a | 0 found |
 | `FORCE ROW LEVEL SECURITY` on `document` and `chunk` | Decision 3c | both forced |
@@ -392,6 +398,17 @@ can check exactly these choices rather than re-deriving the whole schema.
     is reused on `claim` and `resolution`. This is a deliberate extension
     beyond the literal ask, flagged so it can be reviewed and removed if judged
     unwanted.
+
+    **Correction.** The row above originally read that `claim` refused all three
+    of `UPDATE`, `DELETE` and `TRUNCATE`. It refused two. `TRUNCATE` fires no
+    row-level triggers at all, so a `FOR EACH ROW` trigger cannot see it, and
+    `TRUNCATE public.claim CASCADE` succeeded — taking `resolution` and
+    `conflict_candidate` with it, i.e. the immutable record of what a human
+    decided. `ON DELETE RESTRICT` on the child FKs does not help, because
+    `TRUNCATE CASCADE` truncates the children rather than deleting through the
+    constraint. `audit.event` had the correct statement-level companion from the
+    start; `claim` and `resolution` now have it too
+    (`public.reject_truncate`).
 
 13. **`document` allows narrow, column-level `UPDATE`** on `access_restricted`
     and `data_vintage` only, for post-ingest correction. Everything else about

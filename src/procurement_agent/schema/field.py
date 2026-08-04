@@ -543,8 +543,41 @@ class CanonicalField(BaseModel):
         docstring: `conflict_status` and `resolution` can be supplied together
         in one call and are validated as a single snapshot, so there is no
         intermediate "RESOLVED, no Resolution yet" state to trip over.
+
+        **The snapshot is taken from the live attributes, not from
+        `model_dump()`.** `value` is typed `object | None`, so it has no schema
+        to validate back against - `model_dump()` serialises whatever is in it
+        and `model_validate` stores the serialised form. For a `DeclaredBand`
+        that means the field silently comes back holding a `dict`:
+
+            f.value                     # DeclaredBand
+            f.evolve(confidence=0.8).value
+            # {'low': 0.0, 'high': 5.0, ...}  -- no error, no warning
+            f.evolve(confidence=0.8).value.resolve(650.0)
+            # AttributeError: 'dict' object has no attribute 'resolve'
+
+        That is not hypothetical: the frozen contract types `power_tolerance`
+        and `bifaciality_tolerance` as `DeclaredBand`, and this module's own
+        `DeclaredBand` docstring says a band is a field value like any other. It
+        was also a *regression* against the `model_copy(update=...)` this method
+        replaces, which shallow-copied `__dict__` and preserved the object.
+
+        Passing live attributes keeps `value` untouched while every validator
+        still runs on the result, which is the whole point of the method.
         """
-        return type(self).model_validate({**self.model_dump(), **changes})
+        unknown = set(changes) - set(type(self).model_fields)
+        if unknown:
+            # `model_config` does not set `extra="forbid"`, so `model_validate`
+            # would drop these silently and return a field with the change not
+            # applied - `evolve(conflict_stauts=RESOLVED)` succeeding as a no-op.
+            # For an FR-HITL-06 audit path a silent no-op is the worse direction,
+            # and the route this replaces would at least have set the key.
+            raise ValueError(
+                f"{type(self).__name__}.evolve() got unknown field(s): "
+                f"{sorted(unknown)}. Known fields: {sorted(type(self).model_fields)}"
+            )
+        snapshot = {name: getattr(self, name) for name in type(self).model_fields}
+        return type(self).model_validate({**snapshot, **changes})
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         """Refuse the one form of `model_copy` that skips validation.

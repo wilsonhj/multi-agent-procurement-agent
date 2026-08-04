@@ -1,6 +1,7 @@
 """Invariants the canonical schema must hold regardless of implementation."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -13,11 +14,13 @@ from procurement_agent.schema import (
     ConflictClass,
     ConflictQueueEntry,
     ConflictStatus,
+    DeclaredBand,
     Resolution,
     ResolutionAction,
     Severity,
     SourceRef,
     SourceTier,
+    ToleranceKind,
     WorkbookTab,
 )
 
@@ -325,3 +328,61 @@ def test_resolution_fields_are_frozen() -> None:
     resolution = _resolution("alice")
     with pytest.raises(ValidationError):
         resolution.resolved_by = "mallory"
+
+
+# --- evolve() must not quietly change what a value *is* -------------------------
+
+
+def _band_field() -> CanonicalField:
+    return CanonicalField(
+        value=DeclaredBand(low=0.0, high=5.0, kind=ToleranceKind.ABSOLUTE, unit="W"),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+
+
+def test_evolve_preserves_a_model_typed_value() -> None:
+    """Review: `evolve` was `model_validate({**self.model_dump(), **changes})`.
+
+    `value` is typed `object | None`, so it has no schema to validate back
+    against - `model_dump()` serialised whatever was in it and `model_validate`
+    stored the serialised form. A `DeclaredBand` came back as a plain `dict`,
+    silently, with no warning even under `simplefilter("always")`.
+
+    Not hypothetical: the frozen contract types `power_tolerance` and
+    `bifaciality_tolerance` as `DeclaredBand`. It was also a regression against
+    the `model_copy(update=...)` that `evolve` replaces, which shallow-copied
+    `__dict__` and preserved the object.
+    """
+    evolved = _band_field().evolve(confidence=0.8)
+    assert isinstance(evolved.value, DeclaredBand)
+    assert evolved.value.resolve(650.0) == (650.0, 655.0)
+
+
+def test_evolve_still_revalidates() -> None:
+    """The property the live-attribute snapshot must not cost."""
+    with pytest.raises(ValidationError):
+        _band_field().evolve(conflict_status=ConflictStatus.RESOLVED)
+
+
+def test_evolve_preserves_decimal_precision() -> None:
+    """`_decimals` depends on `Decimal` not collapsing to `float`."""
+    field = CanonicalField(
+        value=Decimal("22.35"),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    assert field.evolve(confidence=0.8).value == Decimal("22.35")
+    assert isinstance(field.evolve(confidence=0.8).value, Decimal)
+
+
+def test_evolve_refuses_an_unknown_field() -> None:
+    """Review: `model_config` sets no `extra="forbid"`, so `model_validate` drops
+    unknown keys - `evolve(conflict_stauts=RESOLVED)` returned a field with the
+    change silently not applied. For an FR-HITL-06 audit path a no-op update is
+    the worse direction, and the route this replaces would at least have set the
+    key."""
+    with pytest.raises(ValueError, match="unknown field"):
+        _band_field().evolve(conflict_stauts=ConflictStatus.RESOLVED)

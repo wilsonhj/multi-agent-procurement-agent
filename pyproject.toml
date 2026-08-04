@@ -56,6 +56,12 @@ dev = [
     "types-openpyxl>=3.1",
     "ruff>=0.7",
     "mypy>=1.11",
+    # tests/test_sql_behaviour.py imports it, so `mypy --strict` over `tests`
+    # needs it present or the module is an unresolvable import. It ships its own
+    # type information, so no stub package is required. This is the same driver
+    # the `store` extra pins for runtime; here it is a test dependency, and the
+    # behaviour suite still skips itself unless PROCUREMENT_TEST_DSN is set.
+    "psycopg[binary]>=3.2",
 ]
 
 [build-system]

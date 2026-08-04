@@ -1,0 +1,137 @@
+name: CI
+
+# Every gate the contributor docs tell people to run, run automatically.
+#
+# `CONTRIBUTING.md` and `docs/development.md` both list four commands. Until now
+# nothing ran them, and the cost showed: a merge-conflict resolution shipped a
+# file that `ruff check`, `mypy` and `pytest` all passed and only
+# `ruff format --check` rejected. Three green gates and one that nobody ran.
+#
+# The `sql` job is the one that earns its keep. Four of this schema's defects -
+# an application role that could declassify every confidential row in one
+# statement, chunks that never inherited their document's restriction, a
+# TRUNCATE that took the human-decision log with it, and a hash chain that was
+# constrained but not walkable - read correctly in the DDL and were only visible
+# against a running server. They were closed by hand and, before this file
+# existed, nothing re-ran the checks that proved it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref. Not on main: those
+  # runs are the record of what the default branch actually did.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject pins `requires-python = ">=3.12,<3.14"`, and the README
+        # promises both. Testing only one would leave the other a claim.
+        python: ["3.12", "3.13"]
+    env:
+      # Every `uv` invocation in this job must agree on the interpreter.
+      # `uv sync --python 3.13` followed by a bare `uv run` does NOT: `uv run`
+      # re-resolves to the default interpreter, **deletes the 3.13 environment**
+      # and rebuilds it from the base dependency set. The first version of this
+      # file did exactly that and the job failed with `Failed to spawn: ruff` —
+      # the tools were installed, then thrown away one step later.
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        id: install
+        run: uv sync --extra dev
+
+      # `--no-sync` on every gate: without it `uv run` re-syncs to the *default*
+      # environment, dropping `--extra dev` and taking the tools with it.
+      #
+      # `always() && install succeeded` rather than plain `always()`: the gates
+      # should all report so one push gets the whole list, but running them
+      # after a failed install produces four `Failed to spawn` errors and buries
+      # the one that matters.
+      - name: ruff check
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync ruff check .
+
+      - name: ruff format --check
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync ruff format --check .
+
+      - name: mypy --strict
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync mypy
+
+      - name: pytest
+        if: always() && steps.install.outcome == 'success'
+        run: uv run --no-sync pytest -q
+
+  sql:
+    name: sql behaviour (live PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector's own image, so the extension is present without a build
+        # step. The tag pins the major version and the extension version
+        # together; `01_extensions_and_settings.sql` needs pgvector >= 0.8.0 for
+        # the `hnsw.iterative_scan` GUC and skips it with a NOTICE below that,
+        # which this image exercises.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: procurement
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # `store` brings pgvector alongside psycopg. The same `--no-sync` rule as
+        # the job above applies to the run step below, and bites harder here: a
+        # bare `uv run` would re-sync without either extra.
+        run: uv sync --extra dev --extra store
+
+      - name: Run the live-schema behaviour suite
+        env:
+          PROCUREMENT_TEST_DSN: postgresql://postgres:postgres@localhost:5432/procurement
+        # `--no-skip-allowed` does not exist, hence the grep. The whole file is
+        # `skipif` on the DSN, so a typo in the env var above would turn this job
+        # green while testing nothing — the exact shape of failure the suite
+        # exists to prevent. Assert that real tests ran, not merely that pytest
+        # exited 0.
+        run: |
+          set -o pipefail
+          uv run --no-sync pytest tests/test_sql_behaviour.py -q 2>&1 | tee /tmp/sql-out
+          if grep -qE '[0-9]+ skipped' /tmp/sql-out; then
+            echo "::error::the live-schema suite skipped; PROCUREMENT_TEST_DSN is not reaching it"
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/sql-out || {
+            echo "::error::the live-schema suite reported no passing tests"; exit 1; }

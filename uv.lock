@@ -1574,6 +1574,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
     { name = "ruff" },
     { name = "types-openpyxl" },
@@ -1603,6 +1604,7 @@ requires-dist = [
     { name = "openpyxl", specifier = "==3.1.5" },
     { name = "pandas", marker = "extra == 'parse'", specifier = ">=2.2" },
     { name = "pgvector", marker = "extra == 'store'", specifier = ">=0.3" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'store'", specifier = ">=3.2" },
     { name = "pvlib", marker = "extra == 'solar'", specifier = ">=0.11" },
     { name = "pydantic", specifier = ">=2.9" },

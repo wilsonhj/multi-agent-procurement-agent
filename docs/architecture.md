@@ -267,10 +267,13 @@ order below puts `spec.md` two ranks above `plan.md`, and nothing here changes t
 the reversal was taken through the escape hatch: A-24 is a register entry, so the plan is the
 recorded exception rather than a silent one. Cite A-24 and Decision 3b in the code.
 
-Correcting the note itself was a `spec.md` edit. It is registered by updating A-24's own
-resolution in the register named under [Specification authority](#specification-authority) below,
-rather than as a new entry, because it corrects A-24's description of the reversal rather than
-filing a new deviation.
+Correcting the note itself was a `spec.md` edit, and it is registered as its own entry,
+[A-40](../specs/001-procurement-agent/analysis.md), in the register named under
+[Specification authority](#specification-authority) below. A-24's row is left intact: it closed
+as **Fixed** and it was — the reversal is registered. That its inline note then described the
+replacement wrongly is a separate finding, discovered after A-24 shipped, and the register is an
+audit trail, so the correction appends rather than rewriting the closed row. This follows A-37,
+which is likewise a standalone entry for a prior remedy that proved defective.
 
 ## Parsing and extraction design
 

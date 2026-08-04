@@ -1,0 +1,121 @@
+name: CI
+
+# Every gate the contributor docs tell people to run, run automatically.
+#
+# `CONTRIBUTING.md` and `docs/development.md` both list four commands. Until now
+# nothing ran them, and the cost showed: a merge-conflict resolution shipped a
+# file that `ruff check`, `mypy` and `pytest` all passed and only
+# `ruff format --check` rejected. Three green gates and one that nobody ran.
+#
+# The `sql` job is the one that earns its keep. Four of this schema's defects -
+# an application role that could declassify every confidential row in one
+# statement, chunks that never inherited their document's restriction, a
+# TRUNCATE that took the human-decision log with it, and a hash chain that was
+# constrained but not walkable - read correctly in the DDL and were only visible
+# against a running server. They were closed by hand and, before this file
+# existed, nothing re-ran the checks that proved it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref. Not on main: those
+  # runs are the record of what the default branch actually did.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject pins `requires-python = ">=3.12,<3.14"`, and the README
+        # promises both. Testing only one would leave the other a claim.
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python ${{ matrix.python }}
+
+      # Each gate runs even if an earlier one failed, so one PR gets the whole
+      # list rather than one error per push.
+      - name: ruff check
+        if: always()
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        if: always()
+        run: uv run ruff format --check .
+
+      - name: mypy --strict
+        if: always()
+        run: uv run mypy
+
+      - name: pytest
+        if: always()
+        run: uv run pytest -q
+
+  sql:
+    name: sql behaviour (live PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector's own image, so the extension is present without a build
+        # step. The tag pins the major version and the extension version
+        # together; `01_extensions_and_settings.sql` needs pgvector >= 0.8.0 for
+        # the `hnsw.iterative_scan` GUC and skips it with a NOTICE below that,
+        # which this image exercises.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: procurement
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # `store` brings psycopg; the behaviour tests skip themselves without it.
+        run: uv sync --extra dev --extra store
+
+      - name: Run the live-schema behaviour suite
+        env:
+          PROCUREMENT_TEST_DSN: postgresql://postgres:postgres@localhost:5432/procurement
+        # `--no-skip-allowed` does not exist, hence the grep. The whole file is
+        # `skipif` on the DSN, so a typo in the env var above would turn this job
+        # green while testing nothing — the exact shape of failure the suite
+        # exists to prevent. Assert that real tests ran, not merely that pytest
+        # exited 0.
+        run: |
+          set -o pipefail
+          uv run pytest tests/test_sql_behaviour.py -q 2>&1 | tee /tmp/sql-out
+          if grep -qE '[0-9]+ skipped' /tmp/sql-out; then
+            echo "::error::the live-schema suite skipped; PROCUREMENT_TEST_DSN is not reaching it"
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/sql-out || {
+            echo "::error::the live-schema suite reported no passing tests"; exit 1; }

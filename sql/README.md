@@ -133,6 +133,24 @@ here rather than folded silently into "syntax verified."
 
 ## Live verification actually performed
 
+> **This is now automated.** The table below records runs made by hand, and by
+> hand was the whole problem: closing a defect against a cluster and writing the
+> result here left nothing that would notice if the fix were reverted.
+> `tests/test_sql_behaviour.py` runs these attacks as tests, and the `sql` job in
+> `.github/workflows/ci.yml` gives it a pgvector service container on every pull
+> request. Each fix below was revert-checked against that suite — put the old
+> line back and a named test fails.
+>
+> The record stays because it says which server versions were exercised, which
+> CI's single pinned image does not.
+>
+> One property is worth naming here because the suite had to be widened for it:
+> the write-policy fix and the chunk-inheritance trigger *both* keep a restricted
+> chunk restricted, so a test asserting only that outcome stayed green when the
+> policy was reverted. `test_the_write_policy_alone_protects_an_unreadable_row`
+> writes a column no trigger touches, which is the only way to see which layer is
+> holding.
+
 Run twice, against throwaway clusters:
 
 - **PostgreSQL 17.10, pgvector 0.8.6, pg_trgm 1.6** — the original run.

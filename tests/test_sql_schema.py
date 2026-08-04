@@ -12,10 +12,27 @@ closed; without a test, closing it is a comment in a file nobody re-runs. So eac
 test names the attack it descends from, and the assertion is chosen to fail if
 that specific line is reverted rather than merely if the file is reformatted.
 
-The repo has no live-database fixture and no driver dependency, and adding one to
-make four DDL files testable would change the CI story for the whole project. The
-honest position is: structural regression tests here, measured behaviour recorded
-in sql/README.md.
+**That premise has changed.** This docstring used to end "the repo has no
+live-database fixture and no driver dependency, and adding one would change the
+CI story for the whole project" — which was true, and was the reason to accept
+structural checks alone. The CI story has since been changed deliberately:
+`tests/test_sql_behaviour.py` runs the attacks against a real server, and the
+`sql` job in `.github/workflows/ci.yml` supplies one from a pgvector service
+container.
+
+So the division of labour is now explicit rather than a concession:
+
+- **here** — text-level, no server, runs in every developer's default `pytest`.
+  Catches a fix being deleted or edited.
+- **`test_sql_behaviour.py`** — runs the attack. Catches a fix that was never
+  right, which is the failure mode this schema actually had: `USING (true)` on a
+  write policy reads as "the write path is unrestricted", not as "the
+  application role can declassify every confidential row in one statement".
+
+Both are worth keeping. The structural checks stay green without Postgres, so
+they still run for a contributor who has not started one; and they fail on a
+reverted line even where two independent mechanisms would keep the *behaviour*
+correct, which is a real gap the behavioural suite hit and had to be widened for.
 """
 
 from __future__ import annotations

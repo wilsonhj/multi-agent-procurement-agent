@@ -79,13 +79,26 @@ Set up the development environment:
 uv sync --extra dev
 ```
 
-Run:
+Run all four:
 
 ```bash
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy
 ```
+
+`ruff format --check` is on that list because leaving it off cost us: a merge
+resolution once shipped a file that the other three accepted and only this one
+rejected.
+
+These same four run in CI (`.github/workflows/ci.yml`) on Python 3.12 and 3.13,
+so a pull request tells you rather than waiting for a reviewer to notice.
+
+CI also runs `tests/test_sql_behaviour.py` against a real PostgreSQL with
+pgvector. That suite skips itself locally unless `PROCUREMENT_TEST_DSN` points at
+a disposable database — the header of that file has the three commands to start
+one, and it is worth doing if you touch anything in `sql/`.
 
 See the [development guide](docs/development.md) for optional extras, the adapter sequence, and
 feature-specific test expectations. Note that `uv sync` is an exact sync: name every extra you

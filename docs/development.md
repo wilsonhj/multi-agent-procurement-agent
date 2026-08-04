@@ -20,11 +20,12 @@ cd multi-agent-procurement-agent
 uv sync --extra dev
 ```
 
-Run the same local checks expected for a change:
+Run the same local checks expected for a change — the same four CI runs:
 
 ```bash
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy
 ```
 
@@ -345,7 +346,11 @@ disagree, this list is the one to fix.
 Before requesting review:
 
 - all tests pass — `uv run pytest`;
-- Ruff and strict mypy pass — `uv run ruff check .` and `uv run mypy`;
+- Ruff and strict mypy pass — `uv run ruff check .`, `uv run ruff format --check .`
+  and `uv run mypy`. All four gates run in CI on Python 3.12 and 3.13;
+- if you touched `sql/`, the live-schema suite passes — see
+  `tests/test_sql_behaviour.py` for how to start a throwaway PostgreSQL. CI runs it
+  against a pgvector service container, so a structural-only change still gets checked;
 - new behavior has a failure-path test, and the test fails if you break the behavior it names.
   A test that passes against a deliberately broken implementation is not covering it;
 - outputs are deterministic under reordered input where required;

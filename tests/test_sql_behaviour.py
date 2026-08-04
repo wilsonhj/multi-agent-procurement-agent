@@ -524,6 +524,39 @@ def test_a_same_condition_duplicate_is_refused_with_a_null_nameplate(seeded: Non
             )
 
 
+def test_omitting_the_condition_is_an_error_rather_than_a_second_spelling(
+    seeded: None,
+) -> None:
+    """`condition` carried `DEFAULT '{}'::jsonb` until A-49, on the argument that
+    it made "no condition stated" one value. It made it two.
+
+    `Condition().model_dump(mode="json")` is
+    `{"basis": null, ..., "derived": []}` — jsonb-**distinct** from `{}`, while
+    `grouping_key()` calls the two identical. So a caller that omitted the column
+    and a caller that serialised the model faithfully wrote two rows for one
+    claim, and `claim_natural_key` saw nothing wrong. The unstated condition is
+    the commonest one there is, per `services/claims.project`'s own docstring.
+
+    Dropping the default cannot stop a caller writing a bare `'{}'` on purpose —
+    no CHECK here can, without hardcoding into the DDL the dimension list this
+    column exists to keep out of it. What it stops is the *silent* path. Omission
+    is now a `NotNullViolation` at INSERT instead of a duplicate nobody sees
+    until the projection fails.
+    """
+    with _connect() as conn, pytest.raises(psycopg.errors.NotNullViolation) as raised:
+        conn.execute(
+            """
+            INSERT INTO public.claim
+                (document_id, component_category, supplier, model, field,
+                 extractor_version, value, source_tier, source_ref, confidence)
+            VALUES ('open-1', 'pv_modules', 'Trina', 'TSM-700', 'nameplate_power',
+                    'v1', '700'::jsonb, 'system_of_record',
+                    '{"document_id":"open-1"}'::jsonb, 0.9)
+            """
+        )
+    assert raised.value.diag.column_name == "condition"
+
+
 # --- the hash chain has to be walkable, not merely fork-free --------------------
 
 
@@ -621,6 +654,61 @@ def test_a_duplicate_genesis_is_still_refused(chain: None) -> None:
         "a duplicate genesis was refused, but by "
         f"{raised.value.diag.constraint_name} rather than the fork constraint — "
         "so this test no longer measures NULLS NOT DISTINCT"
+    )
+
+
+def test_an_event_cannot_be_its_own_parent(chain: None) -> None:
+    """Was: accepted, by the INSERT-only role. A row whose `prev_hash` equals its
+    own `hash` satisfies the self-FK **by itself** — the parent it names is the
+    row being inserted — so every constraint on the table passed.
+
+    Not cosmetic. The documented tip read (`ORDER BY seq DESC LIMIT 1`) returns
+    this planted high-`seq` row, so every honest append afterwards chains off the
+    plant and the real chain is orphaned; and the H.5 walk from that tip revisits
+    one row forever without reaching genesis.
+
+    The error class is `CheckViolation`, not `ForeignKeyViolation`, and that is
+    the whole finding: no foreign key can express "not yourself".
+    """
+    planted = bytes.fromhex("7f" * 32)
+    with _connect() as conn, pytest.raises(psycopg.errors.CheckViolation) as raised:
+        _event(conn, 5000, planted, planted)
+    assert raised.value.diag.constraint_name == "audit_event_no_self_parent"
+
+
+def test_a_two_row_cycle_is_accepted_and_leaves_no_genesis(chain: None) -> None:
+    """**This documents a hole, not a defence.** Two rows inserted in one
+    statement, each naming the other as parent, are accepted: the FK is checked
+    at end-of-statement, by which time both exist, and every CHECK is per-row so
+    none can see the pair. No constraint on this table can close it.
+
+    What the cycle cannot hide is its shape. `audit_event_genesis_seq_zero`
+    forces both members to a non-zero `seq`, so the document it targets ends up
+    with **zero** genesis rows — and that is the assertion below, because it is
+    the property WP-H's H.5 walk must check. A walk that only follows `prev_hash`
+    until it stops finding parents will spin here instead of reporting.
+
+    If a future constraint does close this, delete the test rather than
+    weakening it — a red here would mean the hole shut, which is good news.
+    """
+    a, b = bytes.fromhex("a1" * 32), bytes.fromhex("b2" * 32)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit.event
+                (document_id, seq, prev_hash, hash, event_type, actor, payload_canonical)
+            VALUES ('secret-1', 10, %s, %s, 'extraction', 'attacker', '{}'::jsonb),
+                   ('secret-1', 11, %s, %s, 'extraction', 'attacker', '{}'::jsonb)
+            """,
+            (b, a, a, b),
+        )
+        roots = conn.execute(
+            "SELECT count(*) FROM audit.event WHERE document_id = 'secret-1' AND prev_hash IS NULL"
+        ).fetchone()
+    assert roots is not None
+    assert roots[0] == 0, (
+        "the cycle was inserted but the document has a genesis row, so the "
+        "detection property H.5 is told to rely on does not hold"
     )
 
 

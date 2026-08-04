@@ -194,9 +194,12 @@ it:
 | two events in one document's chain sharing a `hash` | Decision 9 | refused, `audit_event_hash_unique` |
 | a valid chain still appends, and a new document still starts one | Decision 9 | both allowed |
 | all six of the above still hold with no `stream` column | A-42 | re-measured, all six |
+| an event naming **itself** as parent | A-49 | refused, `audit_event_no_self_parent` |
+| a two-row cycle inserted in one statement | A-49 | **accepted** — no constraint can see the pair; leaves the document with zero genesis rows, which is what H.5's walk must detect |
 | two conditions of one field/document/extractor both insert | C2, D-1, A-41 | both accepted |
 | a same-key **same-condition** duplicate is still refused | C8, A-41 | refused |
 | the same, with `nameplate` NULL | `NULLS NOT DISTINCT`, A-41 | refused |
+| omitting `condition` entirely | A-49 | refused, NOT NULL — the `DEFAULT '{}'` that made "unstated" a second jsonb value is gone |
 | duplicate `content_hash` refused | NFR-05, AC-5 | refused |
 | app cannot declassify or delete a row it cannot read | Decision 3c | `UPDATE 0`, `DELETE 0` |
 | a chunk written for a restricted document inherits the flag | NFR-03, C7 | inherited |

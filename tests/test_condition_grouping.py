@@ -244,6 +244,51 @@ def test_the_printed_spacing_of_a_member_is_not_a_validation_failure() -> None:
         assert Condition(standards_regime=printed).standards_regime is StandardsRegime.IEEE  # type: ignore[arg-type]
 
 
+def test_the_euro_efficiency_spelling_the_alias_comment_cites_resolves() -> None:
+    """The alias table's comment justifies itself with two printed forms, and
+    **both were rejected** until A-49 measured them. This is the one that is now
+    closed: "Fronius- and SMA-family sheets print 'Euro efficiency'", which folds
+    to `euro_efficiency` while the table carried only bare `euro`.
+
+    Named literally rather than tested generically, because the finding is that
+    the table dropped documents on its own worked example.
+    """
+    for printed in ("Euro efficiency", "European efficiency", "euro", "EURO EFFICIENCY"):
+        assert (
+            Condition(weighting=printed).weighting  # type: ignore[arg-type]
+            is EfficiencyWeighting.EUROPEAN
+        )
+
+
+def test_a_regime_carrying_its_clause_citation_is_still_refused() -> None:
+    """The alias comment's *other* worked example — this repo's own text writing
+    "ANSI/IEEE (C57.12.00 5.4)" — is deliberately left failing, and this test
+    pins that choice so nobody re-opens it by reflex.
+
+    A fallback stripping a trailing parenthetical after the whole token failed
+    was written, and it resolved this correctly while changing no
+    currently-valid input. It was reverted because it also resolved
+    `IEC (but not really)` — and, less contrived, would resolve `IEC (draft)`
+    and `IEC (superseded)`, where the parenthetical carries the meaning. Nothing
+    textual separates a citation from a qualifier, and a wrong regime picks the
+    wrong multi-cooling rating in silence, which is the failure
+    `test_regimes_derived_from_a_standard_are_not_silently_mapped` guards below.
+
+    The obligation is at the extraction boundary: emit the regime and the
+    citation as separate fields. If that lands and this test goes red, the fix
+    is to delete it — but only alongside the extractor change that makes it safe.
+    """
+    for citation_bearing in (
+        "ANSI/IEEE (C57.12.00 5.4)",
+        "IEC (draft)",
+        "IEC (but not really)",
+        "(only parens)",
+        "()",
+    ):
+        with pytest.raises(ValidationError):
+            Condition(standards_regime=citation_bearing)  # type: ignore[arg-type]
+
+
 def test_regimes_derived_from_a_standard_are_not_silently_mapped() -> None:
     """`gb`, `is` and `csa` name standards derived from a regime, not the regime.
     Guessing which would be a technical claim nobody here has verified, and a

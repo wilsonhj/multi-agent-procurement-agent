@@ -134,6 +134,20 @@ CREATE TABLE audit.event (
     CONSTRAINT audit_event_genesis_seq_zero
         CHECK ((prev_hash IS NULL) = (seq = 0)),
 
+    -- An event may not be its own parent. The self-FK below cannot catch this:
+    -- a row whose `prev_hash` equals its own `hash` satisfies that FK *by
+    -- itself*, so every constraint on this table passed and the INSERT
+    -- succeeded -- measured as procurement_app, the INSERT-only role, in
+    -- register A-49.
+    --
+    -- It is not a cosmetic loop. The documented tip read at the top of this
+    -- file (`ORDER BY seq DESC LIMIT 1`) returns a planted high-`seq` row, so
+    -- every honest append afterwards chains off the plant and the genuine chain
+    -- is orphaned; and the H.5 walk from that tip revisits one row forever and
+    -- never reaches genesis. An INSERT-only writer could do it.
+    CONSTRAINT audit_event_no_self_parent
+        CHECK (prev_hash IS DISTINCT FROM hash),
+
     -- Fork detection, loud rather than silent (Decision 9's own phrase).
     -- NULLS NOT DISTINCT (PostgreSQL 15+, available under Decision 3's
     -- PostgreSQL 18 pin) so that two genesis events for one document (both
@@ -161,6 +175,24 @@ CREATE TABLE audit.event (
     -- superuser bypass -- a superuser can edit a row but cannot make the chain
     -- re-verify", so a chain that was never walkable in the first place gives
     -- that argument nothing to stand on.
+    --
+    -- A fourth was found later (A-49) and is closed by
+    -- `audit_event_no_self_parent` above: a row that is its own parent.
+    --
+    -- **A fifth remains open, and no constraint on this table can close it.**
+    -- Two rows inserted in ONE statement, each naming the other as parent, are
+    -- accepted: the FK is checked at end-of-statement, by which time both exist.
+    -- Every CHECK here is per-row and cannot see the pair. What such a cycle
+    -- leaves behind is a document whose chain has **zero** genesis rows, since
+    -- `audit_event_genesis_seq_zero` forces both members to a non-zero `seq`.
+    --
+    -- That is the shape of the remedy, and it belongs to WP-H H.5 rather than
+    -- to this file: the verification walk must (a) cap its hops and report a
+    -- cycle instead of looping forever, and (b) assert that each document's
+    -- chain terminates at exactly one genesis row. (b) catches the 2-cycle and
+    -- every longer one; a walk that only follows `prev_hash` until it stops
+    -- finding parents will hang instead of reporting. Do not implement H.5
+    -- without both.
     --
     -- UNIQUE (document_id, hash) makes a digest identify at most one event per
     -- document, which is what lets the self-reference below be a foreign key at
@@ -199,12 +231,22 @@ COMMENT ON TABLE audit.event IS
     'actual boundary per plan.md Decision 9; the triggers are a free secondary '
     'tripwire that catches a mis-grant, nothing more.';
 
--- A prefix-duplicate of `audit_event_seq_unique`'s index since the re-key, and
--- kept anyway: `document_id` alone is the RLS policy's filter and the H.5 chain
--- walk's filter, and a one-column index is materially smaller than the
--- (document_id, seq) unique it would otherwise share. Recorded rather than left
--- for a reader to wonder about, because "why are there two indexes led by the
--- same column" is a fair question with a boring answer.
+-- A prefix-duplicate of all three per-document uniques since the re-key
+-- (`no_fork`, `seq_unique`, `hash_unique`), and kept anyway -- but not for the
+-- two reasons this comment first gave, both of which were measured false in
+-- A-49:
+--
+--   * "the RLS policy's filter" -- the policy predicate is
+--     `NOT document_is_restricted(document_id)`, a function call. Not
+--     indexable; the plan is a Seq Scan either way.
+--   * "the H.5 chain walk's filter" -- the walk as this file documents it
+--     (`WHERE document_id = $1 ORDER BY seq DESC`) picks
+--     `audit_event_seq_unique`, because that index also supplies the ordering.
+--
+-- What it actually serves is a bare `WHERE document_id = $1` with no ordering,
+-- which the RLS-exempt `procurement_ingest` role and ad-hoc audit queries do
+-- run. That is a real use and the index is materially smaller (80 kB vs 112 kB
+-- at 2k rows), so it stays -- on the correct justification.
 CREATE INDEX audit_event_document_id_idx ON audit.event (document_id);
 CREATE INDEX audit_event_type_idx ON audit.event (event_type);
 
@@ -234,6 +276,20 @@ GRANT SELECT, INSERT ON audit.event TO procurement_ingest;
 -- derivation is the document the event's chain belongs to -- structurally exact
 -- here, because `document_id` IS the chain identity and a NOT NULL foreign key,
 -- so an event's subject document is never ambiguous and never absent.
+--
+-- **One qualification on "never absent", since this file names replica mode as
+-- a trigger bypass and then leans on the FKs as the structural layer.** Foreign
+-- keys are RI system triggers and share that bypass: under
+-- `session_replication_role = 'replica'` both FKs on this table stop firing,
+-- and a row naming a document that does not exist inserts (measured, A-49). The
+-- UNIQUE constraints are index-enforced and survive it -- `audit_event_no_fork`
+-- still refuses a fork in replica mode -- so the bypass is narrower than
+-- "everything", but it is not nothing.
+--
+-- It is **not** a confidentiality hole: `document_is_restricted` coalesces a
+-- missing document to `true`, so an orphaned event is invisible to
+-- procurement_app rather than exposed by it. The policy fails closed on exactly
+-- the row the bypass could create. Verified: 0 rows.
 --
 -- **This does not weaken Decision 9.** RLS governs SELECT visibility; it is not
 -- and never was the immutability boundary -- that is the GRANT above (no UPDATE,

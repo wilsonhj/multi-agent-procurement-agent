@@ -341,12 +341,30 @@ class ConditionDimensions(BaseModel):
 #: *derived* from one regime rather than names for it, and asserting which would
 #: be a technical claim about a standard nobody here has read - see
 #: open-decisions.md.
+#: **Both spellings the comment above names as its justification were themselves
+#: rejected** until A-49 measured them. `Condition(weighting="Euro efficiency")`
+#: folds to `euro_efficiency`, which this table did not carry - only bare `euro`
+#: - and `Condition(standards_regime="ANSI/IEEE (C57.12.00 5.4)")` folds to
+#: `ansi/ieee_(c57.12.00_5.4)`, which nothing could match. Both raised
+#: `ValidationError`: the failure direction this table exists to prevent,
+#: demonstrated on the two examples offered as the reason it exists.
+#:
+#: `euro_efficiency` is closed below - it is a fixed industry term, and folding
+#: it asserts nothing. **The clause-bearing form is deliberately left failing**:
+#: see `_normalise_token` for why a general parenthetical-stripping rule was
+#: tried and rejected. That one is an extraction-boundary obligation - emit the
+#: regime and the citation separately - not an alias.
 VOCABULARY_ALIASES: dict[str, str] = {
     "ansi": "ieee",
     "ansi/ieee": "ieee",
     "ieee/ansi": "ieee",
     "euro": "european",
     "eu": "european",
+    # "Euro efficiency" is a fixed industry term for the European weighting, not
+    # a phrase whose first word happens to be `euro`. Folding it asserts nothing
+    # a datasheet does not already say.
+    "euro_efficiency": "european",
+    "european_efficiency": "european",
 }
 
 #: Characters PDF and XLSX extraction inserts that carry no meaning. `str.strip`
@@ -395,6 +413,21 @@ def _normalise_token(value: object) -> object:
     # dimension and strand the value in its own group.
     if not folded:
         return None
+    # A trailing parenthetical is NOT stripped, and the attempt is worth
+    # recording because it looked obviously right (A-49). "ANSI/IEEE (C57.12.00
+    # 5.4)" folds to `ansi/ieee_(c57.12.00_5.4)` and matches nothing, so a
+    # fallback that dropped the parenthetical after the whole token failed would
+    # resolve it to `ieee` and change no currently-valid input. It also resolved
+    # "IEC (but not really)" to `iec` - and, less contrived, would resolve "IEC
+    # (draft)" and "IEC (superseded)", where the parenthetical is the part that
+    # carries the meaning. Nothing textual separates a citation from a
+    # qualifier, and a wrong regime picks the wrong multi-cooling rating in
+    # silence.
+    #
+    # So the clause-bearing form stays a hard failure, and the obligation moves
+    # to the extraction boundary: emit the regime and the clause as separate
+    # fields. `standards_regime` takes the regime; the citation belongs in
+    # `note`, or in the SourceRef span. See A-49.
     return VOCABULARY_ALIASES.get(folded, folded)
 
 

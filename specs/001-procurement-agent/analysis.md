@@ -654,6 +654,7 @@ not own the file.
 | A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
 | A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
 | A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
+| A-49 | **H** | **Three defects under A-41/A-42, found by reviewing the merged tree.** `condition`'s `DEFAULT '{}'` made the commonest condition two jsonb values, and the comment excusing it said the projection "collapses" when it actually raises and fails the whole field; an audit event could be **its own parent**, satisfying the self-FK by itself, letting an INSERT-only role orphan a chain; and `VOCABULARY_ALIASES` rejected **both** printed spellings its own comment cites as the reason it exists | **Fixed** — `DEFAULT` dropped, `audit_event_no_self_parent` added, `euro_efficiency` aliased. Two residues recorded not fixed: the 2-cycle (belongs to H.5's walk) and the clause-bearing regime (belongs to the extraction boundary) |
 | A-48 | **H** | **The integration pass closed three of the four branches' owed-lists and skipped A-45's.** `plan.md` Decision 9 — newly added prose, present tense — instructed an implementer to add `UNIQUE(stream, prev_hash)` on a column A-42 deleted in the same change; Decision 10 contradicted Decision 1a within one file; `ports/__init__.py` contradicted `orchestrator/__init__.py` within one package. Two of the five carriers were in files the pass had itself edited | **Fixed** — all five corrected; the check is a grep for the retired identifier across the merged tree, not the branches' owed-lists |
 | A-47 | **L** | **The FR-RAG-03 deviation note went stale a second time in eight days.** A-43 dropped RRF as a fusion stage but could not edit `spec.md`; the note there and the narrating paragraph in `docs/architecture.md` were left naming "fused with Reciprocal Rank Fusion (k=60)". One clause, eight carriers — including a line of this register — and three entries about it in eight days | **Fixed** at integration — both carriers, plus A-40's own prose, now read union-and-dedup with no fusion stage, citing A-24, A-40 and A-43 |
 
@@ -1185,6 +1186,97 @@ is not a durable test, and inventing one to look rigorous would be worse than na
 **Severity High** because Decision 9's clause is executable instruction in a rank-4 artifact, and
 because the class — *a scoped review's owed-list going stale at the moment of integration* — will
 recur every time this project fans work out, which it now does routinely.
+
+---
+
+## A-49 (High) — three defects the round's own fixes created or left standing
+
+**Artifacts:** `sql/04_claim.sql` · `sql/07_audit_event.sql` ·
+`src/procurement_agent/schema/field.py`
+
+An adversarial review of the merged SQL half. It **could not refute** A-41's central argument —
+3,063 `Condition` instances and 820 adversarial pairs produced zero cases the frozen contract calls
+distinct and `NULLS NOT DISTINCT` rejects, so that tightening is sound — and then found three
+things underneath it.
+
+### (a) The `condition` default made "unstated" two values, not one
+
+`Condition().model_dump(mode="json")` is `{"basis":null,…,"derived":[]}`. The column's
+`DEFAULT '{}'::jsonb` is jsonb-**distinct** from that, while `grouping_key()` calls the two
+identical. So a caller omitting the column and a caller serialising the model faithfully wrote two
+rows for one claim, and `claim_natural_key` saw nothing wrong — on what `services/claims.project`'s
+own docstring calls "the commonest condition by far".
+
+**The comment's stated consequence was also wrong, in the reassuring direction.** It said a
+duplicate "collapses (services/claims.canonical_claims), not a lost or corrupted value".
+`canonical_claims` collapses only when the duplicates agree; when they disagree it raises
+`ProposalError` and `project()` propagates, so the **whole field's projection fails**. Measured:
+
+```
+canonical_claims([claim("700"), claim("999")])   # identical grouping_key
+→ ProposalError: two different values share the claim key
+```
+
+**Fixed** by dropping the `DEFAULT`, which closes the *silent* half — omission is now a
+`NotNullViolation` rather than a second spelling. The explicit half (a caller writing a bare `'{}'`
+on purpose) cannot be closed by any CHECK without hardcoding into the DDL the dimension list this
+column exists to keep out of it. That residue is recorded as a **write-path obligation against
+C2/C8**: serialise this column through one function, the same one `claim_key()` reads. It is free
+to record now because no Python writer for this table exists yet.
+
+### (b) The hash chain was still not walkable: an event could be its own parent
+
+A row whose `prev_hash` equals its own `hash` satisfies the self-FK **by itself** — the parent it
+names is the row being inserted — so every constraint passed and the INSERT succeeded as
+`procurement_app`, the INSERT-only role. Not cosmetic: the documented tip read
+(`ORDER BY seq DESC LIMIT 1`) returns the planted high-`seq` row, so every honest append afterwards
+chains off the plant and the genuine chain is orphaned, and the H.5 walk from that tip revisits one
+row forever without reaching genesis.
+
+Pre-existing — `origin/main` accepts it too — but this round rewrote that block and presented
+*"each is silent, and each produces a chain that can never be verified"* as closed. Three shapes
+were closed; a fourth was not, and no foreign key can express "not yourself".
+
+**Fixed** by `CHECK (prev_hash IS DISTINCT FROM hash)`. Revert-checked: removing it reds exactly
+one test.
+
+**A fifth remains open and is recorded rather than fixed.** Two rows inserted in one statement,
+each naming the other, are accepted — the FK is checked at end-of-statement and every CHECK is
+per-row. No constraint on the table can see the pair. What the cycle cannot hide is that
+`audit_event_genesis_seq_zero` forces both members to a non-zero `seq`, leaving the document with
+**zero** genesis rows. That is the detection property, and it belongs to **WP-H H.5**: the walk must
+cap its hops and must assert exactly one genesis per document. A walk that merely follows
+`prev_hash` until parents run out will hang instead of reporting. Pinned by a test that asserts the
+hole, with instructions to delete it if a future constraint closes it.
+
+### (c) The alias table rejected both spellings its own comment cites as its justification
+
+`VOCABULARY_ALIASES` exists because "rejecting a real spelling is worse than folding a synonym", and
+names two: Fronius/SMA sheets printing "Euro efficiency", and this repo's own text writing
+"ANSI/IEEE (C57.12.00 5.4)". Both raised `ValidationError` — `euro_efficiency` was not in the table
+(only bare `euro`), and the clause-bearing form matched nothing. The table dropped documents on its
+own worked examples.
+
+**`euro_efficiency` fixed** — a fixed industry term, folding it asserts nothing.
+
+**The clause-bearing form deliberately left failing, and the attempt to fix it is the more useful
+record.** A fallback stripping a trailing parenthetical *after* the whole token failed was written,
+resolved the case correctly, and changed no currently-valid input — the ordering was the safety
+property. It was reverted because a test written in the same pass caught it resolving
+`IEC (but not really)`, and therefore `IEC (draft)` and `IEC (superseded)`, where the parenthetical
+is the part that carries the meaning. Nothing textual distinguishes a citation from a qualifier, and
+a wrong regime picks the wrong multi-cooling rating in silence. The obligation moves to the
+extraction boundary: emit the regime and the citation as separate fields.
+
+**Severity High** for (b) — an INSERT-only role could orphan an audit chain the design calls "the
+only mechanism that survives the superuser bypass" — with (a) and (c) Medium on their own.
+
+**What this round says about review.** The batch's own four reviews all reported clean on the
+artifacts they built; A-48 and A-49 both came from reviewing the *merged* tree afterwards, against
+the code rather than against the branches' summaries. Three of the five defects across the two
+entries are **claims in comments that the code does not do** — the projection "collapses", the index
+serves the RLS filter, the FK makes a document "never absent" under a bypass the same file names.
+That class survives every test suite by construction, because nothing executes a comment.
 
 ---
 

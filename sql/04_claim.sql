@@ -56,10 +56,28 @@ CREATE TABLE public.claim (
     -- condition dimension needs no migration to this table.
     --
     -- Part of `claim_natural_key` below, matching `FieldClaim.claim_key()`.
-    -- NOT NULL with an empty-object default rather than nullable, so "no
-    -- condition stated" is one value (`{}`) and not a NULL that a unique key
-    -- would have to reason about separately.
-    condition          jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- NOT NULL rather than nullable, so "no condition stated" is a value rather
+    -- than a NULL a unique key would have to reason about separately.
+    --
+    -- **NOT NULL and no DEFAULT, deliberately.** This column carried
+    -- `DEFAULT '{}'::jsonb` on the argument that it made "no condition stated"
+    -- *one* value. It did the opposite, and register A-49 has the measurement:
+    -- `Condition().model_dump(mode='json')` is
+    -- `{"basis":null,"temperature_c":null,...,"derived":[]}`, which is
+    -- jsonb-DISTINCT from `{}` while `grouping_key()` calls the two identical.
+    -- So a caller that omitted this column and a caller that serialised the
+    -- model faithfully wrote two rows for one claim -- and the unstated
+    -- condition is, per `services/claims.project`'s own docstring, "the
+    -- commonest condition by far". Dropping the default closes the silent half:
+    -- omission is now an error at INSERT rather than a second spelling.
+    --
+    -- It does not close the explicit half -- a caller may still write a bare
+    -- `'{}'` -- and no CHECK here can, without hardcoding the dimension list
+    -- this column exists to keep out of the DDL. That residue is an obligation
+    -- on the write path: **serialise this column through one function**, the
+    -- same one `claim_key()` reads. Recorded against C2/C8 in A-49 while it is
+    -- still free, because no Python writer for this table exists yet.
+    condition          jsonb NOT NULL,
     source_tier        text NOT NULL CHECK (source_tier IN ('system_of_record', 'web_supplement')),
     -- schema.field.SourceRef, serialised whole. May itself carry a document_id
     -- different from, or absent alongside, the outer document_id column above
@@ -122,12 +140,24 @@ CREATE TABLE public.claim (
     --      normalise away (`{"a":1.0}` = `{"a":1.00}`, verified on the server),
     --      but `{"basis":null}` and `{}` are distinct jsonb while
     --      `grouping_key()` calls them equal. So two rows the contract counts as
-    --      one claim can both be stored. On an append-only table that is a
-    --      duplicate row the projection collapses
-    --      (services/claims.canonical_claims), not a lost or corrupted value.
+    --      one claim can both be stored.
+    --
+    --      **What happens next is worse than a duplicate row, and this comment
+    --      used to get it wrong.** It read "the projection collapses
+    --      (services/claims.canonical_claims), not a lost or corrupted value".
+    --      `canonical_claims` collapses only when the duplicates carry the SAME
+    --      value; when they disagree it raises `ProposalError` ("two different
+    --      values share the claim key"), and `project()` propagates, so the
+    --      whole field's projection fails rather than one row losing. Measured
+    --      in A-49. The direction is still safe relative to `claim_key()` -- a
+    --      valid claim is never rejected at INSERT -- but the failure moves
+    --      downstream and gets louder, not quieter, which is the opposite of
+    --      what "collapses" implies to a reader deciding whether to care.
+    --
     --      Narrowing this to a `grouping_key()`-equivalent expression index
     --      would invert the direction and begin rejecting valid claims over a
-    --      `note` difference.
+    --      `note` difference. Still do not do that; fix it on the write path
+    --      instead (see the `condition` column comment above).
     --
     -- One practical caveat comes with indexing jsonb in a btree: a `condition`
     -- whose serialised form exceeds the btree tuple limit (~2704 bytes) fails

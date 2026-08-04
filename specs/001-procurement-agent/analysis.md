@@ -258,7 +258,7 @@ found real defects, **three of them regressions introduced by round 1**.
 | A-21 | **M** | No concurrency limits anywhere in config | **Fixed** |
 | A-22 | **M** | C8 lacked the append-only claim invariant | **Fixed** |
 | A-23 | **H** | **FR-RAG-02's ANN mandate was edited out of spec.md rather than registered.** The TRS says every chunk *shall* be stored in an ANN vector index (HNSW/IVF, cosine); plan Decision 3a reverses it. The decision is well-supported — pgvector's filtered search was measured silently under-returning on a filtered top-k, and an HNSW index cost more than the table — but a mandatory `shall` was paraphrased away instead of recorded here. | **Fixed** — TRS wording restored in spec.md, reversal marked inline |
-| A-24 | **H** | **FR-RAG-03's BM25 clause was generalised to "keyword search".** Reversed by plan Decision 3b (no permissively licensed true-BM25 for PostgreSQL), also unregistered. | **Fixed** — TRS wording restored, reversal marked inline |
+| A-24 | **H** | **FR-RAG-03's BM25 clause was generalised to "keyword search".** Reversed by plan Decision 3b (no permissively licensed true-BM25 for PostgreSQL), also unregistered. | **Fixed** — TRS wording restored, reversal marked inline. The inline note's *description of the replacement* was itself wrong; that is a separate finding, [A-40](#a-40-low--a-24s-inline-note-named-the-wrong-replacement). |
 | A-25 | **M** | **NFR-03's mechanism clause was dropped.** The TRS says access control *must* be enforced at retrieval time *via metadata filtering*; plan Decision 3c substitutes `FORCE ROW LEVEL SECURITY`. Defensible, but an unflagged change to a `must`. | **Fixed** — mechanism restored, substitution marked inline |
 | A-26 | **H** | **AC-6 was weakened on the exact point the TRS calls its key correction.** "TRD against the correct IEEE 2800 voltage-class limit" became "harmonic distortion against the correct voltage-class limit", and spec.md mentioned TRD, TDD, IEEE 2800 and IEEE 519 zero times — while the frozen contract warns at length that getting TRD-vs-TDD wrong "produces a compliance matrix that passes suppliers it should fail", and tasks.md still said "AC-6 TRD". The one normative document generalised the distinction away. | **Fixed** |
 | A-27 | **M** | **The coverage audit certified itself with the wrong count.** "All 26 FR IDs in spec.md match the TRS analysis" — spec.md contains **32** unique FR IDs (FR-ING-01..10, FR-RAG-01..05, FR-WEB-01..05, FR-HITL-01..06, FR-OUT-01..06); 26 is the count with FR-OUT-01..06 omitted. A full ID sweep found none missing and none invented, so only the arithmetic was wrong — but the claim that closes the audit was false, which left the audit unverified. | **Fixed** |
@@ -394,6 +394,7 @@ re-reproduced after; the commands and results are in `sql/README.md`.
 | A-33 | **H** | `_gross_divergence` could not fire for 105 of 124 contract keys, including 22 of 24 Tier A and all 12 CRITICAL fields, while its docstring named the decimal-comma trap as its purpose | **Fixed** — order-of-magnitude fallback |
 | A-34 | **M** | Five further routes reached the forbidden RESOLVED-with-no-`Resolution` state, and `evolve()` silently replaced a recorded `Resolution` | **Fixed**, except one undefendable route — see below |
 | A-35 | **M** | 81 of 120 one-step mutants of the `CRITICALITY` table survived the suite: membership was checked both ways, values were pinned for ~36 keys | **Fixed** — all 124 pinned |
+| A-40 | **L** | A-24 restored the FR-RAG-03 reversal but its inline note named the *replacement* wrongly — "the embedding model's sparse output", a Decision 5 reserve, where Decision 3b chose Postgres `tsvector`/`pg_trgm` fused with RRF (k=60). The `⚠️` note shipped as the register's own closed remedy | **Fixed** — `spec.md` note corrected against Decision 3b; A-24's row kept intact |
 
 ## A-28 (Medium) — the traceability table stopped at AC-6
 
@@ -589,6 +590,27 @@ neither of which this branch owns. Registering it is the whole point of the regi
 lesson was that a fix asserted from the edits made rather than from a search across the repository
 is not a fix, and the converse holds too — a finding made in a file you cannot edit is still a
 finding, and dropping it because it is inconvenient to fix is how it stays lost.
+
+## A-40 (Low) — A-24's inline note named the wrong replacement
+
+A-24 closed as **Fixed**: the FR-RAG-03 reversal was registered and the TRS `shall` was marked
+overridden inline rather than paraphrased away. That much held. What its inline note got wrong is
+the *replacement* — it read "lexical matching from the embedding model's sparse output, not BM25",
+and Decision 3b chose no such thing. The plan's lexical leg is Postgres `tsvector`/GIN full-text
+plus `pg_trgm` trigram, fused with Reciprocal Rank Fusion (k=60) (plan Decision 3b). The embedding
+model's sparse output is a *Decision 5 contingency* — swap Qwen3-Embedding-4B for `bge-m3` if
+Postgres full-text proves weak on part numbers — held in reserve and not adopted.
+
+This is filed as its own entry, not as an amendment to A-24, for the reason A-37 is its own entry:
+a remedy that shipped and later proved defective is a new finding, and rewriting the closed row
+would erase that A-24's `⚠️` note was wrong for the interval between the two. The register is an
+audit trail; corrections append.
+
+The three code docstrings that had repeated one or other stale position — `ports/__init__.py`,
+`services/retrieval/__init__.py`, `services/indexing/__init__.py` — were already corrected against
+Decision 3b. The `spec.md` note was the last carrier, and this change corrects it; `docs/
+architecture.md`'s "inaccuracy" table, which had flagged the note and pointed at it as what
+remained, now records the note as corrected and points here.
 
 ---
 

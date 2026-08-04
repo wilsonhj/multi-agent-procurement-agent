@@ -324,9 +324,6 @@ Changes that are useful without depending on unfinished storage contracts includ
 - Protocol conformance tests and an adapter test kit — no test imports `ports` at all today;
 - table-driven tests that close remaining schema and traceability gaps;
 - sanitized golden fixtures for the existing conflict policy;
-- correcting the deviation note beside FR-RAG-03 in `spec.md`, which names a design plan
-  Decision 3b did not choose. This is a well-bounded first change with a real specification
-  question in it: it edits a rank-2 artifact, so it needs its own `A-n` entry in `analysis.md`;
 - documentation checks and link validation; and
 - proposals for the unresolved shared contracts.
 

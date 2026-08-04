@@ -5,6 +5,11 @@ stage 5. The tie-break exists because (category, supplier, model) is provably no
 unique on real CEC data.
 """
 
+import math
+
+import pytest
+from pydantic import ValidationError
+
 from procurement_agent.schema import ComponentCategory, ComponentInstance
 
 
@@ -59,6 +64,23 @@ def test_missing_nameplate_sorts_first_and_does_not_raise() -> None:
     unknown = _instance(nameplate=None)
     ordered = sorted([known, unknown], key=ComponentInstance.ordering_key)
     assert ordered[0] is unknown
+
+
+def test_a_non_finite_nameplate_cannot_enter_the_order() -> None:
+    """NaN compares false against everything, so it is not a sort key at all: the
+    same three instances come out in four different orders depending on the order
+    they arrive in, which is exactly the AC-7 property `ordering_key` exists to
+    provide.
+
+    `ConditionDimensions` and `DeclaredBand` already reject non-finite floats at
+    construction for this reason. `nameplate` is the one remaining float in the
+    total order and it did not, so the guarantee held everywhere except in the
+    ordering itself.
+    """
+    with pytest.raises(ValidationError, match="finite"):
+        _instance(nameplate=math.nan)
+    with pytest.raises(ValidationError, match="finite"):
+        _instance(nameplate=math.inf)
 
 
 def test_category_dominates_the_sort() -> None:

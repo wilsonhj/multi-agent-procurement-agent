@@ -5,6 +5,7 @@ Each of them passed a green suite, so they are kept as tests rather than as
 changelog.
 """
 
+import inspect
 import math
 import pathlib
 import re
@@ -16,6 +17,7 @@ from procurement_agent.services.confidence import (
     FIELD_TIERS,
     SIGNAL_WEIGHTS,
     TIER_A_EXCLUSIONS,
+    UNIMPLEMENTED_REVIEW_ROUTING,
     UNOBSERVED_PRIOR,
     ConfidenceSignals,
     CriticalityTier,
@@ -24,6 +26,7 @@ from procurement_agent.services.confidence import (
     requires_review,
     tier_for,
 )
+from procurement_agent.services.output import flags_for
 
 
 def _contract_keys() -> set[str]:
@@ -271,6 +274,17 @@ def test_a_low_score_on_a_tier_b_field_is_reviewed() -> None:
 
 def test_a_high_score_on_a_tier_b_field_is_accepted() -> None:
     assert not requires_review("nameplate_power", 0.95, threshold=0.9)
+
+
+def test_the_gap_between_the_gate_and_the_workbook_is_named() -> None:
+    """`requires_review` gates Tier A, and `services.output.flags_for` - the only
+    thing that decides what a cell looks like - takes no field name and so cannot
+    consult the tier at all. It has no live caller yet, which is exactly why the
+    gap needs writing down: silence is what made the tolerance table's invented
+    keys invisible for four commits."""
+    assert "flags_for has no tier notion" in UNIMPLEMENTED_REVIEW_ROUTING
+    assert all(reason.strip() for reason in UNIMPLEMENTED_REVIEW_ROUTING.values())
+    assert "field_name" not in inspect.signature(flags_for).parameters
 
 
 def test_tier_a_ignores_the_threshold_entirely() -> None:

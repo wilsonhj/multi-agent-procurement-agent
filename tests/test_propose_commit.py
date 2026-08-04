@@ -55,6 +55,8 @@ def _claim(
     condition: Condition | None = None,
     field: str = "nameplate_power",
     page: int | None = None,
+    unit: str | None = "Wp",
+    verbatim: str | None = None,
 ) -> FieldClaim:
     return FieldClaim(
         document_id=doc,
@@ -62,7 +64,8 @@ def _claim(
         extractor_version=version,
         condition=condition or Condition(),
         value=value,
-        unit="Wp",
+        unit=unit,
+        verbatim_value=verbatim,
         source_tier=tier,
         source_ref=SourceRef(document_id=doc, page=page),
         confidence=confidence,
@@ -230,6 +233,77 @@ def test_two_values_under_one_condition_is_still_a_defect() -> None:
         canonical_claims([_claim(650.0), _claim(700.0)])
 
 
+def test_a_unit_mismatch_is_not_agreement() -> None:
+    """Review: `_status_for` compared `repr(value)` and nothing else, so two
+    claims reading `650 W` and `650 kW` were one answer and the field was stored
+    `NONE` — with whichever unit `_preferred` happened to pick.
+
+    `values_conflict` calls exactly this a `UNIT_NORMALIZATION` conflict that "is
+    never resolved by tolerance (FR-ING-08)", and `canonical_claims` already
+    counts the unit as part of the asserted value. The projection was the one
+    place that did not.
+    """
+    projected = project(
+        [
+            _claim(650.0, doc="contract", unit="W"),
+            _claim(650.0, doc="datasheet", unit="kW"),
+        ]
+    )
+    assert projected[0].conflict_status is ConflictStatus.OPEN
+
+
+def test_two_dicts_with_the_same_entries_are_one_assertion() -> None:
+    """Review: value identity was `repr`, and `repr` of a dict follows insertion
+    order. Two extractions of one cooling table that read the rows in different
+    orders produced values that are `==` and reprs that are not, so they counted
+    as a disagreement.
+
+    The contract has three dict-valued parameters - `rating_mva_by_cooling`,
+    `harmonic_spectrum` and `ercot_compliance_items` - and this module's own
+    docstring names the first of them.
+    """
+    left = {"onan": 100.0, "onaf": 125.0}
+    right = {"onaf": 125.0, "onan": 100.0}
+    assert left == right
+    projected = project(
+        [
+            _claim(left, field="rating_mva_by_cooling", doc="d-1"),
+            _claim(right, field="rating_mva_by_cooling", doc="d-2"),
+        ]
+    )
+    assert projected[0].conflict_status is ConflictStatus.NONE
+
+    # Same key, so the mismatch would have aborted the whole field rather than
+    # merely mis-reporting it.
+    assert len(canonical_claims([_claim(left, page=2), _claim(right, page=7)])) == 2
+
+
+def test_a_self_referential_value_does_not_blow_the_stack() -> None:
+    """Whatever renders a claim's value has to be total. `repr` guards its own
+    cycles; a hand-rolled canonical rendering has to guard them too."""
+    looping: list[object] = []
+    looping.append(looping)
+    assert len(canonical_claims([_claim(looping)])) == 1
+
+
+def test_the_same_figure_printed_twice_may_differ_in_source_text() -> None:
+    """Review: `verbatim_value` was part of the same-key contradiction signature,
+    so the summary table's `650 W` and the electrical table's `650` raised
+    `ProposalError` and the whole field was lost.
+
+    `test_the_same_figure_printed_twice_in_one_document_is_not_a_defect` passed
+    only because both claims carried `verbatim_value=None`: it varied `page`,
+    which was already excluded, and never the thing that still failed. Verbatim
+    text is the source text at a location, which is provenance in exactly the way
+    the page number is.
+    """
+    both = canonical_claims(
+        [_claim(650.0, page=2, verbatim="650 W"), _claim(650.0, page=7, verbatim="650")]
+    )
+    assert len(both) == 2
+    assert len(project(both)) == 1
+
+
 def test_re_extraction_appends_rather_than_overwrites() -> None:
     assert len(canonical_claims([_claim(650.0, version="v1"), _claim(655.0, version="v2")])) == 2
 
@@ -310,19 +384,101 @@ def test_the_reducer_applies_the_guard_per_condition() -> None:
 
 def test_a_web_value_under_a_new_condition_is_not_an_overwrite() -> None:
     """The guard is keyed per condition group: a web claim at 40 degC does not
-    overwrite a record claim at 30 degC, because it does not replace it."""
+    overwrite a record claim at 30 degC, because it does not replace it.
+
+    Review: this asserted only `store.writes == 2`, which a store that had just
+    *deleted* the 30 degC record value satisfies exactly as well as one that kept
+    it. `commit` replaces the whole field, so the write count says nothing about
+    what survived it. The end state is the claim, so the end state is what is
+    asserted.
+    """
     store = _Store()
-    commit_claims(
-        "rated_ac_power", [_claim(352.0, condition=Condition(temperature_c=30.0))], writer=store
-    )
+    record = _claim(352.0, field="rated_ac_power", condition=Condition(temperature_c=30.0))
+    commit_claims("rated_ac_power", [record], writer=store)
     commit_claims(
         "rated_ac_power",
         [
-            _claim(320.0, condition=Condition(temperature_c=40.0), tier=SourceTier.WEB_SUPPLEMENT),
+            record,
+            _claim(
+                320.0,
+                field="rated_ac_power",
+                condition=Condition(temperature_c=40.0),
+                tier=SourceTier.WEB_SUPPLEMENT,
+            ),
         ],
         writer=store,
     )
     assert store.writes == 2
+    stored = {
+        f.condition.temperature_c: (f.value, f.source_tier) for f in store.current("rated_ac_power")
+    }
+    assert stored == {
+        30.0: (352.0, SourceTier.SYSTEM_OF_RECORD),
+        40.0: (320.0, SourceTier.WEB_SUPPLEMENT),
+    }
+
+
+def test_a_later_run_may_not_drop_a_stored_condition_group() -> None:
+    """Review: `commit` replaces the whole field, and the guard is keyed on the
+    condition group, so it only ever saw groups present in *both*. A web claim
+    under a condition group the record does not have therefore reached
+    `writer.commit` unopposed and the record value was deleted with it — the
+    autonomous overwrite FR-WEB-03 and FR-HITL-02 forbid, achieved by changing
+    the condition rather than the value.
+
+    The projection is a pure function of the claim set, and claims are
+    append-only, so a group can only vanish because the caller passed a subset.
+    That is a programming error and it is raised as one; merging the leftovers
+    back in would make the store a function of commit history instead.
+    """
+    store = _Store()
+    commit_claims(
+        "rated_ac_power",
+        [_claim(352.0, field="rated_ac_power", condition=Condition(temperature_c=30.0))],
+        writer=store,
+    )
+    with pytest.raises(ProposalError, match="drop|complete"):
+        commit_claims(
+            "rated_ac_power",
+            [
+                _claim(
+                    320.0,
+                    field="rated_ac_power",
+                    condition=Condition(temperature_c=40.0),
+                    tier=SourceTier.WEB_SUPPLEMENT,
+                    doc="web-1",
+                )
+            ],
+            writer=store,
+        )
+    assert store.writes == 1
+    assert [f.value for f in store.current("rated_ac_power")] == [352.0]
+
+
+def test_the_projection_is_for_one_field_at_a_time() -> None:
+    """Review: `project` grouped by condition alone and ignored `field_name`
+    entirely, so two claims about *different parameters* with the same (commonly
+    empty) condition landed in one group. One of the two values was then silently
+    discarded and the survivor was reported OPEN — a conflict between a nameplate
+    and an efficiency, which is not a comparison at all.
+    """
+    with pytest.raises(ProposalError, match="one field"):
+        project(
+            [
+                _claim(650.0, field="nameplate_power"),
+                _claim(21.5, field="module_efficiency"),
+            ]
+        )
+
+
+def test_the_reducer_refuses_a_claim_about_another_field() -> None:
+    """The field name is the store key. Nothing checked that the claims agreed
+    with it, so a `module_efficiency` claim committed cleanly under
+    `nameplate_power` and the store held a percentage labelled as watts."""
+    store = _Store()
+    with pytest.raises(ProposalError, match="module_efficiency"):
+        commit_claims("nameplate_power", [_claim(21.5, field="module_efficiency")], writer=store)
+    assert store.writes == 0
 
 
 def test_a_store_satisfies_the_protocol_structurally() -> None:

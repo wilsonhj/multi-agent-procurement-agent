@@ -8,9 +8,10 @@ Stage 1 exit condition, so they belong in a follow-up rather than in scaffolding
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .enums import ComponentCategory, DocumentType
 from .field import CanonicalField
@@ -93,6 +94,27 @@ class ComponentInstance(BaseModel):
             "The contract keeps those; this is the general mechanism beside them."
         ),
     )
+
+    @field_validator("nameplate")
+    @classmethod
+    def _reject_non_finite(cls, value: float | None) -> float | None:
+        """Same reasoning as `ConditionDimensions` and `DeclaredBand`, applied to
+        the one float left in the total order.
+
+        NaN compares false against everything, so it is not a sort key at all:
+        three instances whose category, manufacturer and family tie come out in
+        four different orders depending on the order they arrive in, and AC-7
+        wants byte-identical output from an unchanged store. `-0.0` is folded for
+        the same repr-stability reason the other two give.
+
+        `None` stays legal - a nameplate is often not known yet, and
+        `ordering_key` maps it to `-inf`, which *is* totally ordered.
+        """
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("nameplate must be finite (no NaN or infinity)")
+        return value + 0.0
 
     def ordering_key(self) -> tuple[str, str, str, float, str]:
         """Canonical sort position for deterministic workbook regeneration.

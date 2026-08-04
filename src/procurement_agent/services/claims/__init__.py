@@ -132,10 +132,67 @@ class ProposalError(RuntimeError):
     """Raised when a claim set cannot be projected to canonical values."""
 
 
+class StoredValueLossError(ProposalError):
+    """Raised when committing a projection would delete a value already stored.
+
+    A subclass rather than a separate hierarchy, because it is the same
+    programming error as the rest: the reducer was handed something other than
+    the complete claim set for the field.
+    """
+
+
+def _render(value: object, _containers: tuple[int, ...] = ()) -> str:
+    """A textual rendering of a claim value that respects equality.
+
+    `repr` does not, and that is not a nicety: a dict reprs in *insertion* order,
+    so two extractions that read one cooling table's rows in different orders
+    give values that are `==` and reprs that are not. The contract has three
+    dict-valued parameters - `rating_mva_by_cooling`, `harmonic_spectrum`,
+    `ercot_compliance_items` - and under `repr` such a pair counted as a
+    disagreement: an OPEN conflict between two identical values, or a
+    `ProposalError` losing the whole field when the two shared a claim key.
+
+    Containers are walked rather than repr'd whole, so the canonicalisation
+    reaches a nested dict. The cycle guard is not tidiness: `repr` already
+    handles a self-referential value, and a hand-rolled walk that did not would
+    trade a false conflict for a `RecursionError`.
+    """
+    if id(value) in _containers:
+        return "..."
+    nested = (*_containers, id(value))
+    if isinstance(value, dict):
+        entries = sorted((_render(k, nested), _render(v, nested)) for k, v in value.items())
+        return "{" + ", ".join(f"{key}: {item}" for key, item in entries) + "}"
+    if isinstance(value, list | tuple):
+        return f"{type(value).__name__}[" + ", ".join(_render(v, nested) for v in value) + "]"
+    if isinstance(value, set | frozenset):
+        return (
+            f"{type(value).__name__}[" + ", ".join(sorted(_render(v, nested) for v in value)) + "]"
+        )
+    return repr(value)
+
+
+def _asserted(claim: FieldClaim) -> tuple[str, str]:
+    """What the claim actually *says*: a value, in a unit.
+
+    The unit belongs here because `650 W` and `650 kW` are two different answers.
+    `values_conflict` classes exactly that as a `UNIT_NORMALIZATION` conflict
+    which "is never resolved by tolerance (FR-ING-08)", so a projection that
+    compared values alone reported two claims a unit apart as agreement and then
+    stored one of the two units.
+
+    `verbatim_value` is deliberately **not** part of it. It is the source text at
+    a location, which is provenance in exactly the way `source_ref.page` is: a
+    datasheet printing `650 W` in a summary table and `650` in the electrical
+    table has stated one figure twice, not contradicted itself.
+    """
+    return (_render(claim.value), claim.unit or "")
+
+
 def _identity(claim: FieldClaim) -> tuple[str, ...]:
     """A hashable, total rendering of a claim's content.
 
-    `repr` rather than the object, because `FieldClaim.value` is typed
+    Rendered rather than the object itself, because `FieldClaim.value` is typed
     `object | None` and the contract has at least nine list- and dict-valued
     parameters - `certifications`, `ul_listing`, `standards`,
     `rating_mva_by_cooling`, `ercot_compliance_items`. An earlier version used
@@ -148,7 +205,7 @@ def _identity(claim: FieldClaim) -> tuple[str, ...]:
         claim.field_name,
         claim.extractor_version,
         repr(claim.condition.grouping_key()),
-        repr(claim.value),
+        _render(claim.value),
         claim.unit or "",
         claim.verbatim_value or "",
         claim.source_tier.value,
@@ -165,13 +222,14 @@ def canonical_claims(claims: Iterable[FieldClaim]) -> list[FieldClaim]:
     in provenance or confidence are also one assertion: a datasheet printing the
     same figure in a summary table and again in the electrical-characteristics
     table yields two claims differing in `source_ref.page`, and that is normal
-    rather than a defect. Only a difference in the **asserted value** - the value,
-    its unit, or its verbatim text - is a genuine same-key contradiction.
+    rather than a defect. Only a difference in the **asserted value** - see
+    `_asserted`: the value and the unit it is in - is a genuine same-key
+    contradiction.
     """
     ordered = sorted({_identity(c): c for c in claims}.values(), key=_identity)
-    asserted: dict[tuple[object, ...], tuple[str, str, str]] = {}
+    asserted: dict[tuple[object, ...], tuple[str, str]] = {}
     for claim in ordered:
-        signature = (repr(claim.value), claim.unit or "", claim.verbatim_value or "")
+        signature = _asserted(claim)
         previous = asserted.get(claim.claim_key())
         if previous is not None and previous != signature:
             raise ProposalError(
@@ -195,8 +253,13 @@ def _status_for(group: Sequence[FieldClaim]) -> ConflictStatus:
     out. "Extractor A found nothing, extractor B found 650 W" is the commonest
     real disagreement in this domain, and dropping the `None` first made it
     invisible.
+
+    Over `_asserted`, the same signature `canonical_claims` uses. Comparing
+    `repr(value)` alone read `650 W` and `650 kW` as one answer and stored the
+    pair as agreement, which is the unit conflict FR-ING-08 says tolerance may
+    never absorb.
     """
-    answers = {repr(claim.value) for claim in group}
+    answers = {_asserted(claim) for claim in group}
     return ConflictStatus.OPEN if len(answers) > 1 else ConflictStatus.NONE
 
 
@@ -237,7 +300,21 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
     Claims are grouped by `condition.grouping_key()`, which is the display
     partition and *not* the comparison relation. Deciding which stored values
     disagree is `comparison_pairs`' job; this only decides what is stored.
+
+    **One field per call, and it is checked.** The grouping key is the condition
+    and nothing else, so claims about two different parameters with the same
+    condition - and the commonest condition by far is the empty one - landed in
+    one group: one of the two values was discarded and the survivor came back
+    OPEN, reporting a conflict between a nameplate and an efficiency. That is not
+    a comparison, and it was silent.
     """
+    fields = sorted({claim.field_name for claim in claims})
+    if len(fields) > 1:
+        raise ProposalError(
+            f"a projection covers one field, not {fields}. Claims are grouped by "
+            "condition alone, so mixing fields silently discards values and "
+            "reports a conflict between two different parameters."
+        )
     ordered = canonical_claims(claims)
     if not ordered:
         return []
@@ -278,11 +355,43 @@ def commit_claims(
     catch - that is the point - but it stays because the projection can still be
     asked to replace a stored system-of-record value with a web-only one when the
     record claim is dropped from a later run.
+
+    **The claim set has to be complete, and both halves of that are checked.**
+    `commit` replaces the whole field, so a projection is a statement about every
+    condition group and not only the ones it mentions:
+
+    - A claim naming another field would be stored under this one, so the store
+      would hold a percentage labelled as watts.
+    - A stored group the projection does not cover is *deleted* by the commit,
+      and the guard could not see it: keyed on the condition group, it only ever
+      compared groups present in both. A web claim under a new condition
+      therefore removed a system-of-record value under the old one - the
+      autonomous overwrite FR-WEB-03 and FR-HITL-02 forbid, reached by changing
+      the condition instead of the value.
+
+    Raised rather than merged. Claims are append-only and `project` is a pure
+    function of them, so a group can only vanish because the caller passed a
+    subset; folding the leftovers back in would hide that and make the store a
+    function of commit history rather than of the claims.
     """
+    foreign = sorted({claim.field_name for claim in claims} - {field_name})
+    if foreign:
+        raise ProposalError(
+            f"claims about {foreign} cannot be committed under {field_name!r}; "
+            "the field name is the store key."
+        )
     projected = project(claims)
     if not projected:
         return []
     existing = {field.condition.grouping_key(): field for field in writer.current(field_name)}
+    covered = {field.condition.grouping_key() for field in projected}
+    dropped = sorted((key for key in existing if key not in covered), key=repr)
+    if dropped:
+        raise StoredValueLossError(
+            f"committing this projection would drop {len(dropped)} stored condition "
+            f"group(s) of {field_name!r}: {dropped}. The reducer takes the complete "
+            "claim set for a field, because `commit` replaces it."
+        )
     for field in projected:
         assert_no_autonomous_overwrite(existing.get(field.condition.grouping_key()), field)
     writer.commit(field_name, projected)

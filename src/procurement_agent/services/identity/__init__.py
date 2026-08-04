@@ -210,9 +210,23 @@ def manufacturer_key(name: str) -> str:
     Raises on an empty result rather than returning `""`: a key that folds a
     manufacturer to nothing merges it with every other such manufacturer, which
     is the false merge D-4 measured when descriptive tokens were included.
+
+    **Format characters are deleted, not carried through.** `schema.field.
+    _normalise_token` already strips these and the contract's Conditions section
+    says why: "the zero-width and byte-order marks PDF and XLSX extraction leaves
+    behind". Here they cost more than the rejected token they cost there - a
+    byte-order mark on the front of a name yields a *different key*, so the Trina
+    entity split D-4 names as the regression test reopens on any document whose
+    extractor left one behind, and a zero-width space inside `Co.,Ltd` defeats
+    the legal-form strip outright. Unicode category `Cf` rather than a
+    hand-listed set, because that is precisely what these characters are: BOM,
+    ZWSP, ZWNJ, ZWJ, word joiner, soft hyphen and the bidi marks all carry it,
+    and none of them is part of a name.
     """
     folded = unicodedata.normalize("NFKD", name).casefold()
-    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    folded = "".join(
+        ch for ch in folded if not unicodedata.combining(ch) and unicodedata.category(ch) != "Cf"
+    )
     # Punctuation becomes a separator rather than being stripped in place:
     # `Trina Solar Co.,Ltd` has no space between `Co.` and `Ltd`, so stripping
     # gives the single token `coltd`, which matches no legal suffix and leaves
@@ -276,9 +290,15 @@ class ModelParts(BaseModel):
     variant_tokens: tuple[str, ...] = Field(
         default=(),
         description=(
-            "The tokens *after* the bin. D-4's measured suffix rules are all "
-            "trailing modifiers, so with no bin there is no principled split "
-            "point and this stays empty rather than guessing one."
+            "The tokens *after* the bin, **numeric ones included**. D-4's measured "
+            "suffix rules are all trailing modifiers, so with no bin there is no "
+            "principled split point and this stays empty rather than guessing "
+            "one. Filtering digits out of it looked harmless and was not: "
+            "`family` stops at the bin, so a digit run behind the bin reached no "
+            "signal at all - not family, not bin, not variant - and two model "
+            "strings differing only there scored a clean 1.00 and auto-merged. "
+            "Jinko's format code is that shape, with the bin second in "
+            "`JKM605N-66HL4M-BDV` and the 66- or 78-cell code behind it."
         ),
     )
     verbatim: str = Field(description="Unfolded original. The decision reads this, not `family`.")
@@ -327,7 +347,7 @@ def decompose(model: str, *nameplates: float | None) -> ModelParts:
     return ModelParts(
         family=" ".join(masked[: bin_index + 1]),
         bin_watts=found,
-        variant_tokens=tuple(t for t in tokens[bin_index + 1 :] if not t.isdigit()),
+        variant_tokens=tuple(tokens[bin_index + 1 :]),
         verbatim=model,
     )
 
@@ -496,6 +516,18 @@ def score(left: Candidate, right: Candidate) -> MatchScore:
     reaches the threshold. Corroboration is therefore a **veto**, not a weight.
     The score says how similar; the veto says what may merge unattended.
 
+    **Variant agreement is the same kind of veto, for the same arithmetic
+    reason.** The five weights sum to 1.00 and the band is 0.90, so losing any
+    single 0.10 signal still lands exactly on the threshold: a pair differing by
+    a token with *no measured rule* scored 0.90 and auto-merged, while
+    `_variant_delta` recorded it as "treated as significant" and the note went
+    nowhere. That made the SAFE-versus-unknown distinction inert — the second way
+    `SUFFIX_RULES` could have no effect on any outcome, after the family/variant
+    overlap. It also contradicts what the middle band *means*: `VARIANT_MISMATCH`
+    is "same family, different variant", so a pair whose variant tokens differ is
+    that finding by definition, whatever the arithmetic says. `variant_veto`
+    (NEVER_STRIP) is a strictly stronger case and keeps its own note.
+
     **Case and punctuation folding is for retrieval, never the final decision.**
     108 within-manufacturer fold-collisions exist and 6 are genuinely different
     products: `SIL-380HC` vs `SIL-380HC+` differ at Isc 11.36 vs 10.28. `+` and
@@ -561,7 +593,7 @@ def score(left: Candidate, right: Candidate) -> MatchScore:
     total = round(sum(signals.values()), 10)
     corroborated = signals["electrical"] > 0.0
 
-    if total >= AUTO_MERGE_THRESHOLD and corroborated and not variant_veto:
+    if total >= AUTO_MERGE_THRESHOLD and corroborated and variants_agree:
         outcome = MatchOutcome.SAME_PRODUCT
     elif total >= VARIANT_THRESHOLD:
         outcome = MatchOutcome.VARIANT_MISMATCH
@@ -578,6 +610,12 @@ def score(left: Candidate, right: Candidate) -> MatchScore:
             "score reaches the auto-merge threshold but a variant token is "
             "measured different in every observed pair for this manufacturer; "
             "held at variant mismatch for review"
+        )
+    elif total >= AUTO_MERGE_THRESHOLD and not variants_agree:
+        notes.append(
+            "score reaches the auto-merge threshold but the variant tokens differ "
+            "with no measured rule for this manufacturer; held at variant "
+            "mismatch for review"
         )
     return MatchScore(score=total, outcome=outcome, signals=signals, notes=tuple(notes))
 

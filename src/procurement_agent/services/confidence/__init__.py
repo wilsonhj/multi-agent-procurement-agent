@@ -170,6 +170,27 @@ def tier_for(field_name: str) -> CriticalityTier:
     return FIELD_TIERS.get(field_name, DEFAULT_TIER)
 
 
+#: Where the tier decision cannot yet reach, recorded rather than left to silence.
+#:
+#: Same remedy as `identity.UNIMPLEMENTED_D4A`, for the same reason: the
+#: tolerance table's invented keys were invisible for four commits because
+#: nothing said what was missing.
+UNIMPLEMENTED_REVIEW_ROUTING: dict[str, str] = {
+    "flags_for has no tier notion": (
+        "`services.output.flags_for` takes a `CanonicalField` and a threshold, "
+        "not a field *name*, so it cannot ask `tier_for` anything. A Tier A field "
+        "extracted at 0.99 therefore carries no `CellFlag` at all: the workbook "
+        "would show it as clean while `requires_review` says no score can accept "
+        "it. Nothing is broken today because `write_workbook` raises "
+        "NotImplementedError and `flags_for` has no live caller - the hazard is "
+        "the next author wiring it up and believing the gate is enforced. "
+        "Closing it needs either a fifth `CellFlag` meaning 'gated, not scored' "
+        "or the field name threaded through, and which of those is right is the "
+        "workbook writer's decision rather than this module's."
+    ),
+}
+
+
 class ConfidenceSignals(BaseModel):
     """The deterministic signals available before any model is asked twice.
 

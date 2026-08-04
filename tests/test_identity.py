@@ -112,9 +112,32 @@ def test_the_en_space_entry_folds() -> None:
 
 
 def test_an_empty_key_raises_rather_than_merging_everything() -> None:
-    for name in ("Co., Ltd.", "   ", "Inc."):
+    for name in ("Co., Ltd.", "   ", "Inc.", "​‌"):
         with pytest.raises(ValueError, match="empty key"):
             manufacturer_key(name)
+
+
+def test_the_invisible_characters_extraction_leaves_behind_fold_away() -> None:
+    """Review: stage 1 folded NFKD, combining marks and unicode whitespace, and
+    then left every zero-width and format character in place.
+
+    `schema.field._normalise_token` strips exactly these, for exactly this
+    reason - the contract's Conditions section names "the zero-width and
+    byte-order marks PDF and XLSX extraction leaves behind", and a BOM was once a
+    hard validation failure one module over. Here the cost is worse than a
+    rejected token: a byte-order mark on the front of a name gives a *different
+    manufacturer key*, so the Trina entity split D-4 names as the regression test
+    reopens on any document whose extractor left one behind. A zero-width space
+    inside `Co.,Ltd` defeats the legal-suffix strip outright.
+    """
+    for name in (
+        "﻿Trina Solar Co.,Ltd",  # byte-order mark
+        "Trina Solar Co.,​Ltd",  # zero-width space inside the legal form
+        "Trina Solar Co.,Ltd‍",  # trailing zero-width joiner
+        "Trina Sol­ar Co.,Ltd",  # soft hyphen from a justified PDF line break
+        "‏Trina Solar Co.,Ltd",  # right-to-left mark
+    ):
+        assert manufacturer_key(name) == "trina solar", repr(name)
 
 
 def test_the_alias_table_is_applied() -> None:
@@ -237,6 +260,35 @@ def test_plus_is_significant_not_a_footnote() -> None:
     assert plain.variant_tokens != plus.variant_tokens
 
 
+def test_a_digit_run_after_the_bin_is_not_invisible() -> None:
+    """Review: `variant_tokens` dropped every numeric token (`if not
+    t.isdigit()`), and `family` stops at the bin. A digit run *after* the bin
+    therefore reached no signal at all - not the family, not the variant, not the
+    bin - so two model strings differing only there scored a clean 1.00 and
+    auto-merged.
+
+    Jinko's format code is exactly that shape: the bin is the second token of
+    `JKM605N-66HL4M-BDV`, so `66` (66-cell) and `78` (78-cell) sit behind it.
+    Those are physically different modules, and a false merge is the one outcome
+    D-4 optimises against.
+    """
+    sixty_six = decompose("JKM605N-66HL4M-BDV", 605.0)
+    seventy_eight = decompose("JKM605N-78HL4M-BDV", 605.0)
+    assert sixty_six.family == seventy_eight.family, "the bin is the second token"
+    assert sixty_six.variant_tokens != seventy_eight.variant_tokens
+
+    result = score(
+        Candidate(
+            manufacturer="Jinko Solar", model="JKM605N-66HL4M-BDV", nameplate=605.0, pmax=605.0
+        ),
+        Candidate(
+            manufacturer="Jinko Solar", model="JKM605N-78HL4M-BDV", nameplate=605.0, pmax=605.0
+        ),
+    )
+    assert result.signals["variant"] == 0.0
+    assert result.outcome is not MatchOutcome.SAME_PRODUCT
+
+
 def test_the_verbatim_original_is_kept() -> None:
     assert decompose("TSM-700NEG21C.20", 700.0).verbatim == "TSM-700NEG21C.20"
 
@@ -300,10 +352,32 @@ def test_a_never_strip_token_vetoes_auto_merge() -> None:
 
 def test_an_unmeasured_token_is_treated_as_significant() -> None:
     """`-V` 72/189, `-BB` 264/15 and `-BW` 412/9 are manufacturer-dependent and
-    deliberately absent from the table."""
+    deliberately absent from the table.
+
+    Review: this asserted the signal and the note and stopped there, and the
+    outcome was `SAME_PRODUCT`. The five weights sum to 1.00 against a 0.90 band,
+    so dropping the 0.10 variant signal lands exactly *on* the threshold — the
+    token was called significant and then auto-merged anyway, which made the
+    difference between a SAFE token and an unmeasured one invisible in every
+    outcome the matcher produces.
+    """
     result = score(_rec("Alpha Pure-R 410", pmax=410.0), _rec("Alpha Pure-R 410 BW", pmax=410.0))
     assert result.signals["variant"] == 0.0
     assert any("no measured rule" in n for n in result.notes)
+    assert result.score >= AUTO_MERGE_THRESHOLD
+    assert result.outcome is MatchOutcome.VARIANT_MISMATCH
+
+
+def test_a_safe_token_and_an_unmeasured_one_reach_different_outcomes() -> None:
+    """The suffix table has to change an outcome, or it is decoration. `blk` is
+    measured 22/0 identical for REC and `bw` is deliberately unmeasured, so the
+    two must not land in the same band."""
+    safe = score(_rec("Alpha Pure-R 410", pmax=410.0), _rec("Alpha Pure-R 410 BLK", pmax=410.0))
+    unmeasured = score(
+        _rec("Alpha Pure-R 410", pmax=410.0), _rec("Alpha Pure-R 410 BW", pmax=410.0)
+    )
+    assert safe.outcome is MatchOutcome.SAME_PRODUCT
+    assert unmeasured.outcome is MatchOutcome.VARIANT_MISMATCH
 
 
 def test_every_differing_token_is_reported() -> None:

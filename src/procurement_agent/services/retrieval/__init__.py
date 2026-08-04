@@ -1,7 +1,14 @@
 """Retrieval (FR-RAG-03, FR-RAG-04).
 
-Hybrid vector + BM25 retrieval, reranking, and metadata filtering by category,
-supplier, doc-type and source-tier.
+Hybrid retrieval, reranking, and metadata filtering by category, supplier,
+doc-type and source-tier.
+
+FR-RAG-03 says the lexical leg is **BM25**, which this docstring used to repeat.
+Plan Decision 3b reverses it: dense `pgvector` plus Postgres `tsvector`/GIN plus
+`pg_trgm`, fused with Reciprocal Rank Fusion (k=60), then reranked. There is no
+permissively licensed true-BM25 for PostgreSQL, and `pg_trgm` is the leg that
+actually matters here - it matches `JKM610N-66HL4M-V` against
+`JKM610N 66HL4M V`, which BM25 does not. Registered as A-24.
 """
 
 from __future__ import annotations

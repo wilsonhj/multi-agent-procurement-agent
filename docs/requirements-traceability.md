@@ -122,6 +122,15 @@ Status values:
 | AC-4 | Every cell resolves to a source | `tests/test_schema_invariants.py::test_source_ref_requires_a_source` | enforced |
 | AC-5 | Re-ingest creates no duplicates | — | open |
 | AC-6 | Inverter tab reports TRD against correct IEEE 2800 limit; tab 13 reports BABA/ITC/FEOC | — | open |
+| AC-7 | Two generations from an unchanged store are byte-identical | `tests/test_workbook_determinism.py` covers `normalize_archive` at archive level; `write_workbook` raises `NotImplementedError`, so no complete workbook is regenerated and the desktop Excel/LibreOffice gate (task G.6) is unrun | partial |
+| AC-8 | An uncleared user cannot influence any retrieved result | `ports.VectorStorePort.search(allowed_document_ids=...)` declares the parameter; no adapter, and no test imports `ports` | declared |
 
-AC-3 is partial: tab identity and cell-state logic are tested, workbook generation is not.
-AC-1, AC-5 and AC-6 need the ingestion path and a labelled corpus, which is Stage 1 work.
+AC-7 and AC-8 were absent from this table while `spec.md` listed eight criteria. They are the
+two the spec itself flags as "the kind of property that silently rots without a test", so
+omitting them from the traceability record was the specific failure they were added to prevent.
+
+AC-3 is partial: tab identity and cell-state logic are tested (`expected_tabs()` is pinned by
+`test_expected_tabs_returns_all_thirteen_in_order`), workbook generation is not.
+AC-1, AC-5 and AC-6 need the ingestion path and a labelled corpus — Stage 1 in the
+[README build plan](../README.md#build-plan). [`tasks.md`](../specs/001-procurement-agent/tasks.md)
+assigns owners per criterion and is the list to check before claiming one.

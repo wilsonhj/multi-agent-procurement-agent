@@ -4,8 +4,8 @@ Where this pipeline should fan out, where it must stay serial, and what a "team"
 differentiated agents actually buys.
 
 Scope note: the implementation spec under `specs/001-procurement-agent/` decides the
-*runner* — a Postgres stage state machine with a `SELECT … FOR UPDATE SKIP LOCKED`
-worker loop (Decision 1), synchronous ports (Decision 10). This document is about
+*runner* — a Postgres stage state machine driven by a single process over two
+pools (Decisions 1 and 1a), synchronous ports (Decision 10). This document is about
 what to hand that runner: which stages are worth parallelising, which must not be,
 and where differentiated agents earn their keep rather than being personas wrapped
 around function calls.
@@ -86,8 +86,12 @@ not survive majority voting.
 
 `assert_no_autonomous_overwrite` is a single chokepoint, and AC-2 tests the guard
 *function* — not that every writer calls it. With one serial writer that is
-academic; with N `SKIP LOCKED` workers it is the difference between an enforced
-invariant and an honour system N code paths must remember. Adopted as contract C8;
+academic; with N concurrent writers it is the difference between an enforced
+invariant and an honour system N code paths must remember. **Decision 1a did not
+make this academic**: it removed the `SKIP LOCKED` worker fleet this sentence
+originally named, but the driver still fans each stage out across
+`max_concurrent_parse` and `max_concurrent_llm`, so there are still N concurrent
+writers — they are pool members rather than worker processes. Adopted as contract C8;
 the test that a branch cannot bypass the guard is still owed (#8).
 
 ### The audit log needs an append order
@@ -99,7 +103,8 @@ Governed by **plan Decision 9**, not by this document. An earlier draft here
 proposed a `BIGSERIAL` sequence "scoped by `run_id`", which is not a thing a
 `BIGSERIAL` does — it is one table-level sequence, it is allocation order rather
 than commit order, and it carries no tamper evidence. Decision 9 specifies
-privilege separation as the boundary, per-document-stream hash chaining, and
+privilege separation as the boundary, per-document hash chaining keyed on
+`document_id` (there is no `stream` column — A-42), and
 audit insertion in the same transaction as the business write. Follow that.
 
 ### Deterministic merge

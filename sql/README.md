@@ -632,19 +632,29 @@ can check exactly these choices rather than re-deriving the whole schema.
     names only the three `table_*` kinds; `prose` is this schema's own name
     for everything else.
 
-17. **`job` has no dependency/DAG table.** Stage sequencing (e.g. do not
-    enqueue `extract` until the matching `ingest` job succeeded) is assumed to
-    be the worker's responsibility at enqueue time — a job succeeding triggers
-    the next stage's job being inserted — rather than a modelled graph. Decision
-    1's "hand-rolled state machine, not a workflow framework" reads as
-    consistent with keeping this out of the schema, but tasks.md does not say
-    so explicitly.
+17. **`job` has no dependency/DAG table.** Stage sequencing (e.g. do not start
+    `extract` until the matching `ingest` succeeded) lives in the runner rather
+    than in a modelled graph. Decision 1's "hand-rolled state machine, not a
+    workflow framework" reads as consistent with keeping this out of the schema,
+    but tasks.md does not say so explicitly. **Restated under Decision 1a**
+    (A-45): this originally read "the worker's responsibility at enqueue time —
+    a job succeeding triggers the next stage's job being inserted", which
+    described the retired queue. The single-process driver runs the stages in
+    order itself, so sequencing is a `for` loop rather than an enqueue
+    convention — which is *more* consistent with keeping the DAG out of the
+    schema, not less.
 
 18. **`job`'s 15-minute lease duration reuses D-12e's number.** D-12e is
     titled generically ("claim lease duration") and is cited explicitly by
     WP-F F.1 for the `conflict` table; tasks.md never gives `job` its own
     lease duration, so this schema reuses the same figure rather than
-    inventing a second one.
+    inventing a second one. **The lease columns are unused under Decision 1a**
+    (A-45): the driver takes no lease, and they are retained so that adopting a
+    second worker process is a runner change rather than a migration. The
+    borrowed figure is therefore not currently load-bearing — but it is still
+    the number a second worker would inherit by default, so the observation
+    stands rather than being deleted. `conflict`'s leases, which have genuine
+    multi-human contention, are unaffected.
 
 19. **`procurement_app`'s authentication is left unconfigured.** No password,
     certificate, or IAM binding is set anywhere in this file set; `00_roles.sql`

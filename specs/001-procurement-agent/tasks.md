@@ -315,7 +315,7 @@ All nine run concurrently once Phase 0 lands.
   the *database* refuse a duplicate. AC-5/NFR-05 require that constraint anyway; WP-I **consumes**
   it. If it is ever relaxed, the driver becomes unsound before AC-5 visibly fails.
 - **I.2** Stage idempotency from the store's natural keys — `document.content_hash`,
-  append-only claims under `claim_natural_key` (`sql/04_claim.sql:94-96`), composition a pure
+  append-only claims under `claim_natural_key` (`sql/04_claim.sql`), composition a pure
   function of the store (FR-OUT-06). **Every stage must still be independently idempotent**: that
   requirement is unchanged by the rescope, because a driver that re-runs needs it exactly as much
   as at-least-once delivery did. In-stage retry for transient faults stays; the *scheduled* retry

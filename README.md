@@ -92,8 +92,10 @@ The source-of-record rule is the other. `assert_no_autonomous_overwrite()` is im
 tested; the planned store makes it structural rather than a guard.
 
 The planned runtime — none of this exists yet — uses PostgreSQL as the single durable store for
-documents, claims, chunks, jobs, conflicts, resolutions, and an append-only audit log. Workers
-would claim jobs with `FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
+documents, claims, chunks, jobs, conflicts, resolutions, and an append-only audit log. A
+single-process driver would run the stages in order, using two configured pools for parallelism,
+and write progress to the `job` table as a ledger; no separate workflow framework and no leased
+worker queue is planned.
 Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
 parsers, OCR, models, and storage adapters without changing the domain core. Those six
 Protocols are declared; no adapter implements any of them.

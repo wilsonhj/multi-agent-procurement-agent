@@ -597,7 +597,11 @@ A-24 closed as **Fixed**: the FR-RAG-03 reversal was registered and the TRS `sha
 overridden inline rather than paraphrased away. That much held. What its inline note got wrong is
 the *replacement* — it read "lexical matching from the embedding model's sparse output, not BM25",
 and Decision 3b chose no such thing. The plan's lexical leg is Postgres `tsvector`/GIN full-text
-plus `pg_trgm` trigram, fused with Reciprocal Rank Fusion (k=60) (plan Decision 3b). The embedding
+plus `pg_trgm` trigram (plan Decision 3b). *(This sentence read "…fused with Reciprocal Rank Fusion
+(k=60)" until [A-43](#a-43-high--a-decision-no-declared-interface-could-reach) removed the fusion
+stage. Amended here rather than left standing, because it is written in the present tense about the
+plan's current content — see A-47, which counts this line as a carrier it had itself missed.)* The
+embedding
 model's sparse output is a *Decision 5 contingency* — swap Qwen3-Embedding-4B for `bge-m3` if
 Postgres full-text proves weak on part numbers — held in reserve and not adopted.
 
@@ -619,17 +623,24 @@ remained, now records the note as corrected and points here.
 # Round 5 — four parallel reviews of the unwritten half (2026-08-04)
 
 Six findings from four reviews run in parallel, each against a different seam, and the batch has a
-shape worth naming: **every one is in code or DDL that no caller has exercised yet.** The retrieval
-services raise `NotImplementedError`, `orchestrator.run` raises `NotImplementedError`, `write_workbook`
-raises `NotImplementedError`, and C4's Python half does not exist, so nothing has emitted an audit
-event. That is why five of the six cost a signature line, a constraint clause or a docstring here
-and would cost a migration, a re-embed of the corpus or a breaking interface change once the first
-real caller exists. A-41 is the exception: it is a live defect in shipped DDL.
+shape worth naming: **every one is against a component no caller has exercised yet.** The retrieval
+services raise `NotImplementedError`, `orchestrator.run` raises `NotImplementedError`,
+`write_workbook` raises `NotImplementedError`, and C4's Python half does not exist, so nothing has
+emitted an audit event. That is why these cost a signature line, a constraint clause, a docstring or
+a paragraph here and would cost a migration, a re-embed of the corpus or a breaking interface change
+once the first real caller exists.
+
+Two qualifications, since the sentence above is tidier than the facts. A-41 is a **live defect in
+shipped DDL** — the schema rejects claims C2 and D-1 exist to store, today, and only the absence of
+an ingest path keeps it from being hit. And A-45, A-46 and A-47 are findings in *prose* —
+`plan.md`, `spec.md`, `docs/` — rather than in code or DDL; they are cheap now for the different
+reason that no implementer has built against the wrong text yet.
 
 The four reviews were scoped to disjoint file sets and given pre-assigned ID ranges, because the
 register has been renumbered once already (A-23…A-27, Round 3) after parallel work collided in it.
-They still each opened a block titled *Round 5*; the three blocks are consolidated here, in ID
-order, rather than left as three rounds bearing one number.
+Three of the four still opened a block titled *Round 5* — the fourth was a behaviour-preserving
+cleanup and filed no finding — and those three blocks are consolidated here, in ID order, rather
+than left as three rounds bearing one number.
 
 A seventh finding, **A-47**, was made at the integration of these four rather than inside any of
 them: it is the `spec.md` edit A-43 identified and correctly refused to make from a branch that did
@@ -643,7 +654,8 @@ not own the file.
 | A-44 | **M** | **Decision 6's context prefix was LLM-generated: one call per chunk, on the one string that is baked into every embedding.** An imported ~67% figure bought an unbounded hallucination surface on the hot path — while D-11 states no benchmark exists for this task — and a prefix misstating a model number poisons dense retrieval for precisely the row-lookup queries C.2 exists to serve | **Fixed** — prefix built deterministically from the chunk row's own metadata; `table_summary` stays generated |
 | A-45 | **M** | **WP-I specified a leased job queue whose justification three of this design's own decisions had already removed.** `FOR UPDATE SKIP LOCKED`, 15-minute leases plus a sweeper, backoff scheduling, poison quarantine as a job-row lifecycle and `idempotency_key UNIQUE` — a second idempotency mechanism over a store whose natural keys already make replay a no-op, and a second concurrency mechanism on a node the plan calls single-node sufficient | **Fixed** — plan Decision 1a; WP-I rescoped to a single-process driver; `job` retained as a ledger; leases, sweeper and backoff deferred until a second worker process exists |
 | A-46 | **H** | **AC-7 was asserted against an artifact that cannot prove it.** "byte-identical files", universally read as the xlsx, while plan Decision 8c had *already* demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes. Two dependent contradictions travel with it: FR-OUT-06 mandates a "generated-on timestamp" that violates AC-7 outright if read as wall-clock, and Decision 8c/G.5's `ExcelWriter`-direct prescription had been superseded by the shipped, 15-test-covered `normalize_archive` | **Fixed** — AC-7 amended to name both layers; FR-OUT-06's stamp defined store-derived; the `ExcelWriter`-direct requirement deleted |
-| A-47 | **L** | **The FR-RAG-03 deviation note went stale a second time in eight days.** A-43 dropped RRF as a fusion stage but could not edit `spec.md`; the note there and the narrating paragraph in `docs/architecture.md` were left naming "fused with Reciprocal Rank Fusion (k=60)". One clause, five carriers, three register entries in eight days | **Fixed** at integration — both carriers now read union-and-dedup with no fusion stage, citing A-24, A-40 and A-43 |
+| A-48 | **H** | **The integration pass closed three of the four branches' owed-lists and skipped A-45's.** `plan.md` Decision 9 — newly added prose, present tense — instructed an implementer to add `UNIQUE(stream, prev_hash)` on a column A-42 deleted in the same change; Decision 10 contradicted Decision 1a within one file; `ports/__init__.py` contradicted `orchestrator/__init__.py` within one package. Two of the five carriers were in files the pass had itself edited | **Fixed** — all five corrected; the check is a grep for the retired identifier across the merged tree, not the branches' owed-lists |
+| A-47 | **L** | **The FR-RAG-03 deviation note went stale a second time in eight days.** A-43 dropped RRF as a fusion stage but could not edit `spec.md`; the note there and the narrating paragraph in `docs/architecture.md` were left naming "fused with Reciprocal Rank Fusion (k=60)". One clause, eight carriers — including a line of this register — and three entries about it in eight days | **Fixed** at integration — both carriers, plus A-40's own prose, now read union-and-dedup with no fusion stage, citing A-24, A-40 and A-43 |
 
 `sql/` was re-read against the contracts it stores rather than against itself. Round 4 established
 that the DDL's *behaviour* is now live-tested; this round asks the prior question — whether the
@@ -900,7 +912,7 @@ is the cheapest moment this finding could have been made.
    removed `AWAIT_HUMAN_RESOLUTION` from `Stage` for the same reason.
 2. **The store is already idempotent by natural key.** `document_content_hash_unique`
    (`sql/02_document.sql:50`, NFR-05/AC-5), append-only claims under `claim_natural_key`
-   (`sql/04_claim.sql:94-96`), and composition a pure function of the store (FR-OUT-06).
+   (`sql/04_claim.sql`, `claim_natural_key`), and composition a pure function of the store (FR-OUT-06).
    `job.idempotency_key` is therefore a *second* idempotency mechanism layered over a store whose
    own keys already make replay a no-op — which is the same duplication A-2 and A-3 were about,
    reached by a different route.
@@ -1003,7 +1015,7 @@ patch, or a G.6 desktop-Excel failure forcing A-9's alternative entry ordering o
 strictly better than the alternative outcome, which is a team quietly relaxing AC-7 under
 schedule pressure because the criterion as written could not absorb a renderer change.
 
-**Recorded as a deliberate amendment to a rank-2 artifact.** `docs/architecture.md:306-325` makes
+**Recorded as a deliberate amendment to a rank-2 artifact.** `docs/architecture.md`'s [Specification authority](../docs/architecture.md#specification-authority) section makes
 this the register's job — A-23, A-24 and A-25 are the precedents, each a normative `shall`
 reversed by a plan decision and filed here. The difference is that those three restored the TRS
 wording and marked the reversal inline, because the TRS was the source. AC-7 is **not** TRS
@@ -1100,17 +1112,79 @@ ranked artifact describing a stage the plan had removed.
 **This is the same sentence going stale for the second time in eight days**, and that is the part
 worth recording. A-24 reversed the requirement, A-40 corrected which replacement the note named,
 A-47 removes the fusion stage from it. Three entries, one clause, because the clause is duplicated
-across `spec.md`, `docs/architecture.md`, and three docstrings — five carriers for one decision,
-each free to drift. The structural answer already exists and is why this one was caught: the
-"where does this decision live" table at `docs/architecture.md:246` enumerates the carriers, and
-working that table is what surfaced the second file. The remaining exposure is that the table
-lists carriers for *this* decision only. Recorded, not fixed — generalising it is a documentation
-change with no requirement behind it yet.
+across **seven** carriers, each free to drift: `spec.md`'s FR-RAG-03 note, `plan.md` Decision 3b,
+`tasks.md` C.5, `docs/architecture.md`, and three docstrings (`ports/__init__.py`,
+`services/retrieval/__init__.py`, `services/indexing/__init__.py`).
+
+**An eighth was this register itself, and the first version of this entry missed it** while
+counting five. A-40's prose at the top of this file asserted the fused form in the present tense;
+it is now amended in place with the amendment marked. The lesson is not subtle: an entry whose
+whole argument is *"one clause, many carriers, nobody enumerated them"* enumerated them wrong, and
+did so while the correct enumeration sat in a table it cites. Counting carriers is exactly the step
+that gets skipped, including by the person writing the finding about skipping it.
+
+The structural answer already exists: the "where does this decision live" table at
+`docs/architecture.md:245` enumerates the carriers, and working that table is what surfaced the
+second file. The remaining exposure is that the table lists carriers for *this* decision only.
+Recorded, not fixed — generalising it is a documentation change with no requirement behind it yet.
 
 **Process note.** A-43 was written by a review scoped to `ports`/`services/retrieval`/
 `services/indexing`, which correctly declined to edit `spec.md` and recorded the remedy instead
 (A-39's rule). That worked: the finding survived the scope boundary and was closed by the one
 party who owned both files. A-39's precedent is now load-bearing twice.
+
+---
+
+## A-48 (High) — the integration pass closed three branches' owed-lists and skipped the fourth
+
+**Artifacts:** `specs/001-procurement-agent/plan.md` · `src/procurement_agent/ports/__init__.py` ·
+`docs/architecture.md` · `sql/README.md` · `sql/07_audit_event.sql`
+
+Found by a review of the integrated tree, after A-41…A-47 had been merged and pushed.
+
+Every branch in Round 5 was scoped to a file set, and each recorded what it could see but not
+reach under the heading **"in files this change does not own"** — A-39's rule, working as intended.
+Integration is where those become reachable, and the pass closed A-42's (`tasks.md` H.3/H.4),
+A-46's (the AC-7 scoring rows) and A-47's (both FR-RAG-03 carriers). **It did not close A-45's**,
+and A-45's list was the largest.
+
+The damage, in descending order:
+
+| Carrier | Said | Should say |
+|---|---|---|
+| `plan.md` Decision 9 | `UNIQUE(stream, prev_hash)` is "load-bearing under the driver" | the column was deleted by A-42 in the same integrated change |
+| `plan.md` Decision 10 | "Decision 1 makes the runner a … `SKIP LOCKED` worker loop — that pattern *is* the concurrency mechanism" | Decision 1a, ~600 lines earlier in the same file, retracts exactly that |
+| `ports/__init__.py:13` | same `SKIP LOCKED` claim, contradicting `orchestrator/__init__.py:13` in the same package | Decision 1a's two pools |
+| `docs/architecture.md:217` | "Workers claim jobs using `SELECT … FOR UPDATE SKIP LOCKED`" | the single-process driver; `job` as ledger |
+| `sql/README.md` 17, 18 | the DAG is "the worker's responsibility at enqueue time"; the 15-minute lease | sequencing is a `for` loop; the lease columns are unused |
+
+**Decision 9's is the one that matters**, and it is worse than staleness. It is *newly added* prose,
+present tense, inside a blockquote whose entire stated purpose is to assert what survives Decision
+1a — and it instructs an implementer to add a constraint on a column that no longer exists. That is
+a build failure, not a documentation defect. `tasks.md` H.4 carried the identical instruction and
+was caught; `plan.md` outranks `tasks.md`, and the higher-ranked copy was the one missed.
+
+**Two of the five were in files the integration pass had already opened and edited.**
+`docs/architecture.md` was edited for A-47 and `sql/README.md` for A-42, in the same sittings that
+left their stale queue paragraphs untouched. So the failure is not "these files were out of reach"
+— it is that *the owed-list was worked per-finding instead of per-file*. A-45's entries stayed
+filed under "does not own" long after that had stopped being true, and nothing re-read the
+justification once the merge made it false.
+
+**A-45's own list also omitted `plan.md` Decision 9 entirely**, so two of the five were not merely
+unclosed but unrecorded. A branch enumerating what it cannot reach will under-count, because the
+enumeration is bounded by what that branch happened to read.
+
+**The remedy is a check, not a resolution.** *Before merging a batch of scoped reviews, grep the
+combined tree for the retired identifier itself* — here `stream` and `SKIP LOCKED`, two greps —
+rather than working from the owed-lists the branches wrote. The lists are what each branch could
+see; the grep is what is actually there. Both greps run clean now, and both would have caught all
+five in seconds. Recorded as a check rather than added to CI: a literal grep for one retired name
+is not a durable test, and inventing one to look rigorous would be worse than naming the step.
+
+**Severity High** because Decision 9's clause is executable instruction in a rank-4 artifact, and
+because the class — *a scoped review's owed-list going stale at the moment of integration* — will
+recur every time this project fans work out, which it now does routinely.
 
 ---
 

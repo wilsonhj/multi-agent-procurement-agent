@@ -20,11 +20,14 @@ record of claims that were **checked and found false**, so they do not come back
 Two of those reverse recommendations made here. Both reversals are accepted:
 
 - **Async ports.** This document argued async was free now and breaking later.
-  That overweighted coroutine fan-out a process-worker runner never needs: with
-  Decision 1's Postgres `SELECT … FOR UPDATE SKIP LOCKED` loop, concurrency is
-  per-process, parse and OCR are CPU-bound, embedding and reranking batch inside
-  the payload, and Protocols are structural so an async variant stays additive.
-  Revisit only if Decision 1 is reversed.
+  That overweighted coroutine fan-out a process-pool runner never needs: under
+  Decision 1a's single-process driver, concurrency is per-process across
+  `max_concurrent_parse`, parse and OCR are CPU-bound, embedding and reranking
+  batch inside the payload, and Protocols are structural so an async variant
+  stays additive. This bullet originally cited Decision 1's `SELECT … FOR UPDATE
+  SKIP LOCKED` loop; A-45 retired the loop and the reversal is unaffected,
+  because it rested on the work being CPU-bound and process-distributed rather
+  than on the queue. Revisit only if Decision 10 is reversed.
 - **ANN index.** Superseded by a measurement this document did not have —
   pgvector silently under-returning on a filtered top-k.
 

@@ -1,7 +1,22 @@
--- public.job -- plan.md Decision 1 / tasks.md WP-I I.1.
+-- public.job -- plan.md Decision 1 / 1a, tasks.md WP-I I.1.
 --
--- The stage state machine: a Postgres table plus a
--- `SELECT ... FOR UPDATE SKIP LOCKED` worker loop, not a workflow framework.
+-- The stage state machine: a Postgres table, not a workflow framework.
+--
+-- **This table is a ledger, not a contended queue** (Decision 1a, register
+-- A-45). It was designed for a `SELECT ... FOR UPDATE SKIP LOCKED` worker fleet
+-- with 15-minute leases and a sweeper; that runner was retired before anything
+-- was written against it, and `orchestrator.run` is now a single-process driver
+-- that maps each stage over its work with two pools and writes progress here.
+--
+-- The lease columns (`lease_owner`, `lease_expires_at`) and the two indexes
+-- below that serve them are **deliberately retained and currently unused**, so
+-- that adopting a second worker process later is a runner change rather than a
+-- migration. The commented query shapes further down are what that second
+-- worker would run; they are a design record, not a description of the current
+-- caller. Do not read them as live.
+--
+-- None of this touches `05_conflict.sql`'s claim leases, which have genuine
+-- multi-human contention and are unaffected.
 --
 -- `stage` is keyed on orchestrator.Stage
 -- (src/procurement_agent/orchestrator/__init__.py) verbatim -- the same
@@ -71,7 +86,8 @@ COMMENT ON TABLE public.job IS
     'model exists in schema/ -- this table is this file''s own C8-consistent '
     'design, not a mapping of an existing frozen type.';
 
--- The worker loop's hot path: claim the next eligible job for a stage.
+-- Retained for a future second worker process; not run today (see the header).
+-- That worker's hot path would be: claim the next eligible job for a stage.
 --   SELECT job_id FROM job
 --     WHERE stage = $1 AND status = 'pending' AND next_attempt_at <= now()
 --     ORDER BY created_at
@@ -80,7 +96,7 @@ COMMENT ON TABLE public.job IS
 CREATE INDEX job_pending_by_stage_idx ON public.job (stage, next_attempt_at)
     WHERE status = 'pending';
 
--- The lease sweeper's hot path:
+-- Likewise retained, likewise unused today. The lease sweeper's hot path:
 --   UPDATE job SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
 --     WHERE status = 'running' AND lease_expires_at < now();
 CREATE INDEX job_running_lease_idx ON public.job (lease_expires_at)

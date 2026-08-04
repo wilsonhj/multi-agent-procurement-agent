@@ -191,7 +191,7 @@ or a human resolution.
 | AC-4 | Every output spec cell resolves to a source. No unsourced values. |
 | AC-5 | Re-ingesting an unchanged document creates no duplicates. |
 | AC-6 | The inverter tab reports **TRD** against the correct **IEEE 2800** voltage-class limit with a harmonic spectrum, and the tax tab reports each supplier's status across the three incentive frameworks. **TRD, not TDD** — the TRS calls this "the key correction from v1", and getting it wrong produces a compliance matrix that passes suppliers it should fail. |
-| AC-7 | Generating the workbook twice from an unchanged canonical store produces **(a)** a byte-identical **canonical projection** — sorted-key JSON with floats via `repr()` — which is the hashed artifact of record and the criterion itself; and **(b)** a byte-identical rendered `.xlsx`, whose hash is pinned in CI as a **renderer-regression check** rather than as this criterion, and whose golden value may be refreshed by a deliberate, recorded decision (a recorded openpyxl upgrade, say). A projection-hash change against an unchanged store is always a defect; a workbook-hash change is a defect **unless** a refresh is recorded. |
+| AC-7 | Generating the workbook twice from an unchanged canonical store produces **(a)** a byte-identical **canonical projection** — sorted-key JSON with floats via `repr()` — which is the hashed artifact of record and the criterion itself; and **(b)** a byte-identical rendered `.xlsx`, whose hash is pinned in CI as a **renderer-regression check** rather than as this criterion, and whose golden value may be refreshed by a deliberate, recorded decision (a recorded openpyxl upgrade, say). A projection-hash change against an unchanged store is always a defect; a workbook-hash change is a defect **unless** a refresh is recorded — **recorded as a numbered entry in [analysis.md](analysis.md)**, which is this repository's deviation register and the only place a relaxation of an acceptance criterion counts as recorded. Layer (b)'s **run-to-run** byte identity within one environment is *not* refreshable and is not covered by that escape hatch: only the cross-version golden value is. |
 | AC-8 | A user without clearance for a confidential document cannot cause its content to influence any retrieved result. |
 
 AC-7 and AC-8 are additions to the TRS's six. They are implied by FR-OUT-06 and NFR-03
@@ -202,10 +202,17 @@ that silently rots without a test.
 read "produces byte-identical files", universally read as the `.xlsx`, while plan Decision 8c had
 already demoted the workbook hash internally — `%.16g` maps `0.1+0.2` and `0.3` to identical
 bytes, so a workbook hash cannot distinguish two genuinely different stored numbers. The
-amendment does **not** weaken determinism: layer (a) is *stricter* than the text it replaces,
-because it catches exactly the float collision the xlsx hash cannot. What it buys is that a
+amendment does **not** weaken determinism, but the reason takes two halves rather than one. Layer
+(a) is *stricter* than the text it replaces at distinguishing **store states**, because it catches
+exactly the float collision the xlsx hash cannot. It is strictly **weaker** at catching renderer
+nondeterminism — a projection hash cannot see any of `normalize_archive`'s five sources (wall clock,
+library version, compression level, ZIP member order, platform), because it never touches the
+archive. So the guarantee is preserved only because layer (b) is **retained as a run-to-run
+byte-identity assertion**, not despite it. Stating just the first half would be the argument for
+dropping (b), which would be a real weakening. What the amendment buys is that a
 routine renderer change — an openpyxl security patch, or the alternative entry ordering that
-task G.6 may force — becomes a recorded hash refresh rather than an acceptance-criterion crisis.
+task G.6 may force — becomes a recorded refresh of (b)'s *golden* value rather than an
+acceptance-criterion crisis.
 Registered as [A-46](analysis.md); this is a deliberate amendment to a rank-2 normative artifact,
 not a silent edit.
 

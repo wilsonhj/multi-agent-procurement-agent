@@ -57,9 +57,9 @@
 -- Removed *now* because C4's Python half does not exist yet: tasks.md marks C4
 -- partial -- "the bytes the `hash` column is computed over are still undefined;
 -- nothing may emit an event". After the first real chain exists, the column is
--- frozen into it. tasks.md H.3 still writes the chain as `stream = 'doc:1234'`;
--- that is spec-side wording this file cannot edit, and A-42 in
--- specs/001-procurement-agent/analysis.md records it as outstanding.
+-- frozen into it. tasks.md H.3 and H.4, and plan.md Decision 9, all named the
+-- removed column; A-42 in specs/001-procurement-agent/analysis.md recorded them
+-- as outstanding from this file and they were corrected at integration.
 --
 -- Depends on: 01_extensions_and_settings.sql (schema audit), 02_document.sql.
 

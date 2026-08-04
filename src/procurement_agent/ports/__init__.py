@@ -11,9 +11,13 @@ optional extra declared in pyproject.toml, never on the core - the extras
 there currently declare dependency groups only.
 
 **These Protocols are synchronous, deliberately.** Concurrency in this system is
-per-process, not per-coroutine: the runner is a Postgres job table with a
-`SELECT ... FOR UPDATE SKIP LOCKED` worker loop (plan.md Decision 1), so scaling
-means more worker processes. Parse and OCR are CPU-bound in-process; embedding
+per-process, not per-coroutine: the runner is a single-process driver that maps
+each stage over its work with two pools - `max_concurrent_parse` across a
+process pool, `max_concurrent_llm` across a thread pool (plan.md Decision 1a).
+This sentence cited Decision 1's `SELECT ... FOR UPDATE SKIP LOCKED` worker
+fleet until A-45 retired it; the conclusion never depended on the fleet, only on
+the CPU-bound work being spread across processes rather than coroutines, which
+the pools still do. Parse and OCR are CPU-bound in-process; embedding
 and reranking already take batches, so their parallelism is inside the payload
 rather than at the call boundary; and the vector store is a local Postgres
 round-trip under Decision 3a. A caller that needs overlap can wrap any of these

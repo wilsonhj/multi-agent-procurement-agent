@@ -214,9 +214,14 @@ The target deployment uses one PostgreSQL instance, with pgvector, for:
 - conflicts and resolutions; and
 - a privilege-separated audit schema.
 
-Workers claim jobs using `SELECT … FOR UPDATE SKIP LOCKED`. Delivery is at least once, so each
-stage must be independently idempotent. Poison messages are quarantined instead of retried
-forever.
+A single-process driver maps each stage over its work and writes progress to the `job` table as a
+ledger (`plan.md` Decision 1a, [A-45](../specs/001-procurement-agent/analysis.md)). Each stage must
+still be independently idempotent — recovery from an interrupted batch is "re-run it", which is
+sound because the store's natural keys (`document.content_hash`, append-only claims) make completed
+work a no-op. Documents that fail a stage are quarantined instead of retried forever. This paragraph
+previously described workers claiming jobs with `SELECT … FOR UPDATE SKIP LOCKED`; the lease columns
+remain in the DDL, unused, so adopting a second worker process later is a runner change rather than
+a migration.
 
 Audit events are planned as per-document hash chains. The application role receives insert
 and select privileges only; an advisory lock is acquired before each insert and a uniqueness

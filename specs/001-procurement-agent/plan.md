@@ -131,7 +131,7 @@ necessary.**
    is a compose-time query (`orchestrator.compose_gate_blocks`), not an interrupt.
 2. **The store is already idempotent by natural key.** `document.content_hash` carries
    `document_content_hash_unique` (`sql/02_document.sql:50`, required by NFR-05/AC-5); claims are
-   append-only under `claim_natural_key` (`sql/04_claim.sql:94-96`); composition is a pure
+   append-only under `claim_natural_key` (`sql/04_claim.sql`); composition is a pure
    function of the store (FR-OUT-06). `job.idempotency_key` is therefore a **second** idempotency
    mechanism layered over a store whose own keys already make replay a no-op.
 3. **Concurrency already lives elsewhere.** `Settings.max_concurrent_parse` and
@@ -684,7 +684,7 @@ say that; it is recorded here because that file is outside this change's scope.
 
 ## Decision 9 — Immutable audit log
 
-**Chosen:** privilege separation as the boundary, hash chaining per document stream, trigger as a
+**Chosen:** privilege separation as the boundary, hash chaining per document, trigger as a
 secondary tripwire. **Confidence: high.**
 
 Measured attack matrix:
@@ -719,23 +719,28 @@ cannot make the chain re-verify.
 
 **The concurrency trap, reproduced:** a naive chain trigger under 8 concurrent writers produced
 **160 rows with 118 distinct `prev_hash` — 42 silent forks.** Fixes in the order tested:
-`UNIQUE(stream, prev_hash)` turns silent forks into loud errors (necessary, insufficient); an
+`UNIQUE(stream, prev_hash)` — as the chain was keyed *at the time of this measurement*; it is
+`UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)` now — turns silent forks into loud errors
+(necessary, insufficient); an
 advisory lock *inside the trigger* **does not work** (the statement snapshot is taken before the
 trigger acquires the lock, so the waiter still reads a stale tip); an advisory lock **as its own
 statement before the INSERT** works — 0 forks.
 
-Chain **per document** (`stream = 'doc:1234'`), not globally, so cross-document concurrency stays
-unconstrained. Canonicalise payloads in Python (RFC 8785), not SQL: `jsonb` normalises key order
-but **preserves numeric formatting**, so `1.0` and `1.00` stay textually distinct.
+Chain **per document**, not globally, so cross-document concurrency stays unconstrained. The chain
+identity is `document_id` itself — earlier drafts of this decision carried a separate `stream`
+column holding `'doc:1234'`; it was pinned to `'doc:' || document_id` by a CHECK and dropped once
+that left it no degree of freedom ([A-42](analysis.md)). Canonicalise payloads in Python (RFC 8785),
+not SQL: `jsonb` normalises key order but **preserves numeric formatting**, so `1.0` and `1.00` stay
+textually distinct.
 
 > **Decision 1a does not retire any of this.** Collapsing the runner to a single-process driver
 > removes the `SKIP LOCKED` worker *fleet*, not concurrency: `max_concurrent_parse` fans ingest
 > out across a process pool and `max_concurrent_llm` fans extraction out across a thread pool, so
 > there are still several concurrent appenders and they are still the writers whose audit events
 > would fork the chain. The advisory-lock-as-its-own-statement discipline and
-> `UNIQUE(stream, prev_hash)` are load-bearing under the driver exactly as they were under the
-> queue. Per-document streaming is what keeps the cost of that lock proportional to real
-> contention rather than to pool width.
+> `UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)` are load-bearing under the driver exactly as
+> they were under the queue. Per-document chaining is what keeps the cost of that lock proportional
+> to real contention rather than to pool width.
 
 **Write audit entries in the same transaction as the business write.** Rollback erasing the audit
 record is *correct*: if the extraction rolled back, it did not happen, and logging that it did
@@ -750,10 +755,14 @@ autonomous-transaction trick — it re-introduces exactly the failure it is mean
 **Chosen:** all six stay `def`, not `async def`. **Confidence: medium-high.** Recorded here so it
 stops being re-litigated.
 
-Concurrency in this system is **per-process, not per-coroutine**. Decision 1 makes the runner a
-Postgres job table with a `SELECT … FOR UPDATE SKIP LOCKED` worker loop — that pattern *is* the
-concurrency mechanism, and scaling it means more worker processes, which sidesteps the GIL
-entirely.
+Concurrency in this system is **per-process, not per-coroutine**. Decision 1a makes the runner a
+single-process driver that maps each stage over its work with two pools — `max_concurrent_parse`
+across a process pool, `max_concurrent_llm` across a thread pool — so the parallelism is in the
+pools and, for the CPU-bound half, across processes, which sidesteps the GIL entirely. This
+paragraph previously cited Decision 1's `SELECT … FOR UPDATE SKIP LOCKED` worker fleet as "the
+concurrency mechanism"; Decision 1a retired the fleet, and the conclusion is unaffected because it
+never rested on the fleet — it rests on the work being distributed across processes rather than
+coroutines, which is still true.
 
 Taking the six in turn:
 

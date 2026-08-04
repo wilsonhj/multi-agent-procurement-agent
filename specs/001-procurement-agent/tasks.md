@@ -269,11 +269,17 @@ All nine run concurrently once Phase 0 lands.
 - **H.1** DDL + privilege separation (`NOLOGIN` owner role, app gets `INSERT, SELECT` only).
 - **H.2** RFC 8785 canonicalisation **in Python, not SQL** — `jsonb` normalises key order but
   preserves numeric formatting, so `1.0` and `1.00` stay textually distinct.
-- **H.3** Per-document hash chaining (`stream = 'doc:1234'`).
+- **H.3** Per-document hash chaining. The chain identity is `document_id` itself — there is no
+  `stream` column ([A-42](analysis.md)). This line previously wrote it as `stream = 'doc:1234'`;
+  that column existed, was pinned to `'doc:' || document_id` by a CHECK, and was dropped once its
+  single degree of freedom turned out to be constrained to zero.
 - **H.4** ⚠️ **Advisory lock as its own statement before the INSERT** — a lock *inside* the trigger
   does not work, because the statement snapshot is taken before the trigger acquires it. Measured:
-  8 concurrent writers produced **42 silent forks** without this. Add `UNIQUE(stream, prev_hash)`
-  so any remaining fork is loud.
+  8 concurrent writers produced **42 silent forks** without this. The idiom is
+  `SELECT pg_advisory_xact_lock(hashtext(document_id));`. Add
+  `UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)` so any remaining fork is loud —
+  `NULLS NOT DISTINCT` because two genesis rows both carry `prev_hash IS NULL` and an ordinary
+  UNIQUE would let one document's chain grow two unrelated roots.
 - **H.5** Chain verification CLI.
 - **H.6** `BEFORE TRUNCATE` statement-level trigger as a secondary tripwire — **not** the boundary.
   Document that `session_replication_role='replica'` bypasses triggers entirely and leaves no DDL

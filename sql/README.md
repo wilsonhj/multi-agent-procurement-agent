@@ -508,9 +508,10 @@ can check exactly these choices rather than re-deriving the whole schema.
    tasks.md marks C4 partial, "the bytes the `hash` column is computed over are
    still undefined; nothing may emit an event" — so there is no chain to
    migrate. After the first real chain exists the column would be frozen into
-   it. **Left outstanding:** tasks.md H.3 still writes per-document chaining as
-   `stream = 'doc:1234'`. That file is not this change's to edit; A-42 records
-   the wording as needing to follow.
+   it. **Was left outstanding, now closed:** tasks.md H.3 wrote per-document
+   chaining as `stream = 'doc:1234'` and H.4 told a reader to add
+   `UNIQUE(stream, prev_hash)`. Neither file was this change's to edit; both
+   were corrected at integration and A-42 records it.
 
 9. **C7 (the ACL/labelling model) is implemented at its frozen minimum, not
    guessed at in full.** Tasks.md marks C7 "partial... undecided", and it stays

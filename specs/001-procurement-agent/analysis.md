@@ -747,6 +747,14 @@ previously asserted.
 same words: a finding made in a file you cannot edit is still a finding. The wording needs to follow
 the schema.
 
+**Closed at integration**, in the same pass that closed A-43's equivalent note as A-47. H.3 now
+names `document_id` as the chain identity, and H.4's `UNIQUE(stream, prev_hash)` — which would have
+had a reader adding a constraint on a column that no longer exists — is now
+`UNIQUE NULLS NOT DISTINCT (document_id, prev_hash)`, with the advisory-lock idiom spelled out.
+Filed under A-42 rather than as a new ID because the finding is A-42's and nothing new was
+discovered; A-47 is a separate ID only because *it* required a `spec.md` edit, which the register
+requires be entered on its own.
+
 ---
 
 Decisions 3b and 6 were read against the interfaces that have to carry them —

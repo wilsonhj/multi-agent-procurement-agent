@@ -171,16 +171,25 @@ a signature exists, **open** means there is no home in the code yet.
 | AC-2 | A web value contradicting a record value raises a conflict, record unchanged | `assert_no_autonomous_overwrite()` at unit level. Nothing drives a contradiction from ingestion through to a queue entry | partial |
 | AC-3 | All 13 tabs, with conditional formatting for the four cell states | Tab identity and order (`expected_tabs()`), and the four states (`flags_for()`). No workbook is generated, so no formatting is applied | partial |
 | AC-4 | Every output cell resolves to a source | The `SourceRef` validator, at model level | enforced |
-| AC-5 | Re-ingesting an unchanged document creates no duplicates | Nothing. `content_hash` exists but carries no uniqueness constraint | open |
+| AC-5 | Re-ingesting an unchanged document creates no duplicates | `sql/02_document.sql`'s `UNIQUE (content_hash)`, exercised against a live server by `test_a_duplicate_content_hash_is_refused`. The store half only: `services/ingestion.ingest`, the thing that would re-ingest, raises `NotImplementedError` | partial |
 | AC-6 | Inverter TRD against the IEEE 2800 limit; tax status per supplier | Nothing | open |
 | AC-7 | Two generations from an unchanged store are byte-identical | `normalize_archive()`, at archive level only. Without a writer there is no complete workbook to regenerate, and the desktop Excel/LibreOffice gate is unrun | partial |
 | AC-8 | An uncleared user cannot influence any retrieved result | `VectorStorePort.search(allowed_document_ids=...)` declares the parameter. No adapter, no enforcement, no test imports `ports` | declared |
 
 Read that table as three groups, because they fail differently. AC-4 is genuinely covered.
-AC-2, AC-3 and AC-7 each have a tested *policy half* and an unbuilt *pipeline half* — that
-split is the pattern to distrust in any status claim about this repository, because the tested
-half is the one that gets quoted. AC-1, AC-5, AC-6 and AC-8 have no test at all; of those, only
-AC-8 has so much as a signature.
+AC-2, AC-3, AC-5 and AC-7 each have a tested *half* and an unbuilt one — that split is the
+pattern to distrust in any status claim about this repository, because the tested half is the
+one that gets quoted. AC-5 is the variant worth naming separately: its tested half is the
+*store*, not a policy function, so the thing under test is a live database constraint and the
+missing half is the caller. AC-1, AC-6 and AC-8 have no test at all; of those, only AC-8 has so
+much as a signature.
+
+> **Corrected 2026-08-05.** This row read "Nothing. `content_hash` exists but carries no
+> uniqueness constraint / **open**". The constraint had landed in `e7da9ad`, an ancestor of this
+> audit's own stated baseline, so the row was wrong when written rather than merely stale — and
+> [requirements-traceability.md](requirements-traceability.md) already carried the correct
+> `partial`. Two status documents disagreeing about one criterion is worse than either being
+> wrong alone, because the disagreement is invisible unless someone reads both.
 
 See [requirements-traceability.md](requirements-traceability.md) for the requirement-level
 mapping behind these.
@@ -238,7 +247,7 @@ there is enough of it to build against and not enough to be stable:
 |---|---|---|
 | C1 | Postgres schema (`document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event`) | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08` |
 | C2 | Claim/extraction record | partial — `condition` has landed; per-category models still do not exist |
-| C3 | Provenance reference `(document_id, page, span, extractor_version)` | **done** — all four elements on `SourceRef` |
+| C3 | Provenance reference `(document_id, page, span, extractor_version)` | **done** — all four on `SourceRef`; `span` is the `section` field |
 | C4 | Audit event envelope and `event_type` taxonomy | partial — SQL half only; no Python envelope or canonicalisation library |
 | C5 | Conflict record and the five resolution action shapes | **done** |
 | C6 | Canonical workbook projection | ☐ not started |

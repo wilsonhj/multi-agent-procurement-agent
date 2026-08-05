@@ -95,8 +95,9 @@ class FieldClaim(BaseModel):
     def provenance(self) -> SourceRef:
         """This claim's `source_ref` with contract C3's fourth element stamped on.
 
-        C3 is `(document_id, page, span, extractor_version)`. The first three
-        already lived on `SourceRef`; the fourth lived only on the claim, so the
+        C3 is `(document_id, page, span, extractor_version)`, where `span` is
+        spelled `section` on `SourceRef`. The first three already lived there
+        under those names; the fourth lived only on the claim, so the
         projection dropped it and a stored value could not be traced back to the
         code that produced it. Stamping rather than requiring callers to set it
         twice keeps the claim's own `extractor_version` the single authority.

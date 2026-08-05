@@ -89,11 +89,18 @@ jobs:
     services:
       postgres:
         # pgvector's own image, so the extension is present without a build
-        # step. The tag pins the major version and the extension version
-        # together; `01_extensions_and_settings.sql` needs pgvector >= 0.8.0 for
-        # the `hnsw.iterative_scan` GUC and skips it with a NOTICE below that,
-        # which this image exercises.
-        image: pgvector/pgvector:pg16
+        # step. Pinned to an exact extension version, which needs the
+        # `<pgvector>-pg<major>` tag form: a bare `pg16` pins only the
+        # PostgreSQL major and rolls forward on pgvector, so the live suite
+        # would drift onto a new extension version under an unchanged workflow
+        # file. An earlier version of this comment claimed `pg16` pinned both.
+        #
+        # `01_extensions_and_settings.sql` needs pgvector >= 0.8.0 for the
+        # `hnsw.iterative_scan` GUC and skips it with a NOTICE below that. This
+        # image is 0.8.6, so **CI does not exercise that skip path** - the same
+        # earlier comment claimed it did, and no `pg16`-family tag has ever been
+        # below 0.8.0. The branch was verified by hand on pgvector 0.6.0.
+        image: pgvector/pgvector:0.8.6-pg16
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: procurement

@@ -62,7 +62,10 @@ class SourceRef(BaseModel):
         default=None,
         description=(
             "The code and prompt that produced the value. Contract C3 is "
-            "`(document_id, page, span, extractor_version)` and this was the "
+            "`(document_id, page, span, extractor_version)`, whose `span` is the "
+            "`section` field above - the one element of the four whose contract "
+            "name matches no attribute here, so grepping for `span` finds nothing "
+            "and reads as a missing element. This was the "
             "missing quarter: `FieldClaim` carried it, and the projection to a "
             "`CanonicalField` dropped it, so a stored value could not be traced "
             "to the extractor that produced it. A regression is then invisible "

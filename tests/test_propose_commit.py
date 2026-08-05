@@ -493,9 +493,31 @@ def test_no_claims_is_no_value() -> None:
 # --- contract C3: provenance survives the projection -----------------------------
 
 
+def test_source_ref_carries_c3s_four_elements() -> None:
+    """C3 is `(document_id, page, span, extractor_version)`, and `span` is the
+    only one of the four whose contract name is not the attribute name: it is
+    spelled `section`.
+
+    That mismatch is not cosmetic. An audit of this repository grepped `src/`
+    for a `span` field, found none, and concluded C3 had been marked **done**
+    with an element missing — a reasonable inference from four of the five
+    places C3 was cited, none of which mentioned the rename. The mapping was
+    recorded in exactly one paragraph of `current-state.md`, which is not where
+    someone checking the claim looks.
+
+    So this pins the mapping somewhere executable. It also fails if `section` is
+    ever renamed away without the contract being renamed with it, which is the
+    direction that would make the audit's conclusion retroactively correct.
+    """
+    fields = set(SourceRef.model_fields)
+    assert {"document_id", "page", "section", "extractor_version"} <= fields
+    assert "span" not in fields
+
+
 def test_the_extractor_version_reaches_the_store() -> None:
-    """C3 is `(document_id, page, span, extractor_version)`. The first three lived
-    on `SourceRef`; the fourth lived only on the claim, so `project` dropped it
+    """C3 is `(document_id, page, span, extractor_version)`, whose `span` is the
+    `section` field on `SourceRef`. The first three lived there; the fourth lived
+    only on the claim, so `project` dropped it
     and a stored value could not be traced to the code that produced it. A
     regression is then invisible in the store while the claim recording it is
     still sitting there."""

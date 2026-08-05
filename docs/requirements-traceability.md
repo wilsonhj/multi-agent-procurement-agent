@@ -163,14 +163,14 @@ does.
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator | enforced |
+| NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator (`test_source_ref_requires_a_source`) | enforced |
 | NFR-02 | Immutable audit log | **The store is built.** The previous "store not yet built" predated `sql/`. `sql/07_audit_event.sql` implements the hash chain and `sql/04_claim.sql` / `sql/06_resolution.sql` the append-only tables, all three with row-level and statement-level tripwires, and the chain is walked against a live server: `test_a_valid_chain_appends`, `test_a_fabricated_parent_is_refused`, `test_a_second_disconnected_root_is_refused`, `test_a_chain_loop_is_refused`, `test_truncate_is_refused` (all three tables), `test_the_row_level_tripwire_still_raises`. `schema.Resolution` is frozen and tested. Not `enforced`: nothing in Python writes an audit event, so no application path is protected — only the schema is | partial |
 | NFR-03 | Access control at retrieval time; confidential path self-hosted | **RLS is implemented on all seven tables that hold document content**, with `FORCE` so the owner is not exempt, an `app.allow_restricted` entitlement GUC, and a separate `procurement_ingest` role so making a row *more* restricted is not the failing direction. Structural: `test_every_table_holding_document_content_forces_rls`, `test_every_such_table_has_a_confidentiality_select_policy` (both ×7). Live: `test_the_app_role_cannot_declassify_rows_it_cannot_read`, `test_the_write_policy_alone_protects_an_unreadable_row`, `test_the_document_write_policy_alone_protects_an_unreadable_row`, `test_the_app_role_cannot_delete_rows_it_cannot_read`, `test_a_chunk_inherits_its_parent_documents_restriction`, `test_restriction_can_only_increase`, `test_claims_do_not_leak_a_restricted_documents_values`, `test_the_app_role_cannot_escalate_to_the_ingest_role`. Not `enforced`: `VectorStorePort.search(allowed_document_ids=...)` has no adapter and `services/retrieval.retrieve` raises `NotImplementedError`, so the *retrieval-time* clause the TRS actually writes is unexercised. Self-hosted endpoints remain a `.env.example` convention with no check | partial |
 | NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols; **no test imports `ports` at all** (re-verified 2026-08-04) | declared |
 | NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` plus `sql/02_document.sql`'s `UNIQUE (content_hash)`, live-tested by `test_a_duplicate_content_hash_is_refused` and by `test_a_restricted_document_can_be_ingested_idempotently`, which runs the documented `ON CONFLICT (content_hash) DO NOTHING` idiom as the ingest role. Not `enforced`: `services/ingestion.ingest` raises `NotImplementedError`, so nothing re-ingests | partial |
 | NFR-06 | Hundreds of documents | — | open |
 | NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
-| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
+| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` (`tests/test_compose_gate.py`) | enforced |
 
 ---
 

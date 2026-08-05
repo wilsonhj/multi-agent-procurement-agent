@@ -47,7 +47,8 @@ source of truth. If the two disagree, that document is right and this one is sta
 | Output flag calculation and deterministic XLSX archive normalization | Implemented and tested |
 | Parser, OCR, embedder, vector-store, reranker, and LLM interfaces | Declared as Protocols |
 | Ingestion, indexing, retrieval, web enrichment | Stubs; raise `NotImplementedError` |
-| PostgreSQL schema, audit log, worker runner, ACL enforcement | Designed, not implemented |
+| PostgreSQL schema, audit hash chain, row-level ACL enforcement | SQL implemented; applied and asserted against a live server in CI |
+| Python persistence layer, worker runner | Not implemented; nothing in `src/` opens a connection |
 | Conflict queue service and review UI | Data model only |
 | 13-tab workbook writer | Stub; archive normalizer exists |
 | CLI or deployable service | Not implemented |
@@ -91,9 +92,11 @@ that disables it.
 The source-of-record rule is the other. `assert_no_autonomous_overwrite()` is implemented and
 tested; the planned store makes it structural rather than a guard.
 
-The planned runtime — none of this exists yet — uses PostgreSQL as the single durable store for
-documents, claims, chunks, jobs, conflicts, resolutions, and an append-only audit log. Workers
-would claim jobs with `FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
+The runtime uses PostgreSQL as the single durable store for documents, claims, chunks, jobs,
+conflicts, resolutions, and an append-only audit log. **The schema exists and the Python half
+does not**: `sql/00`–`08` define every one of those tables and are applied against a live server
+on each CI run, while nothing in `src/` opens a connection to them. Workers will claim jobs with
+`FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
 Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
 parsers, OCR, models, and storage adapters without changing the domain core. Those six
 Protocols are declared; no adapter implements any of them.
@@ -135,8 +138,12 @@ Run the validation suite:
 ```bash
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy
 ```
+
+All four, not three: `ruff format --check` is the one that gets dropped from an informal
+retelling, and leaving it off once shipped a file the other three accepted.
 
 The package currently exposes domain models and pure policy helpers; there is no working
 pipeline command yet. This example exercises the system-of-record guard:
@@ -173,8 +180,16 @@ except AutonomousOverwriteError:
     pass
 ```
 
-Copy `.env.example` to `.env` only when developing an adapter. Do not send contract,
-pricing, or other confidential material to an endpoint that permits third-party training.
+Copy `.env.example` to `.env` only when developing an adapter. For contract and pricing
+documents the LLM **and embedding** endpoints must be self-hosted or enterprise, with no
+third-party training on contract data. Both endpoints, not just the generative one: an embedder
+receives the same contract text and is the easier of the two to point at a public API by
+accident.
+
+Nothing under `docs/source/` is committed — the source requirements documents are marked
+"Confidential — internal & supplier use" (FRD) and "Confidential — engineering" (TRS). See
+[`.gitignore`](.gitignore), which also excludes ingested supplier material and generated
+workbooks per NFR-03.
 
 ### Optional dependency groups
 
@@ -230,9 +245,17 @@ src/procurement_agent/
 │   ├── indexing/            chunking and index entry points
 │   ├── retrieval/           retrieval entry point
 │   ├── web_search/          gap-only public-source enrichment
+│   ├── claims/              append-only claim record and its projection
+│   ├── confidence/          confidence fusion and the Tier A review gate
+│   ├── identity/            deterministic supplier and model matching
 │   ├── conflict_hitl/       implemented comparison and conflict policy
 │   └── output/              flags, archive normalization, workbook stub
 └── orchestrator/            stage vocabulary and compose-time gate
+
+sql/                         nine numbered DDL files, applied in lexical order,
+                             plus a README recording the decisions the specs
+                             did not settle. No Python reaches them yet.
+.github/workflows/ci.yml     four blocking gates, plus a live-PostgreSQL job
 
 docs/
 ├── current-state.md         what works today; the source of truth for status
@@ -279,9 +302,10 @@ documents.
 
 ## Build plan
 
-Five stages, each with the threshold that has to be met before the next one starts. Nothing
-below is done; the current position is "before Stage 1", and Phase 0 of
-[tasks.md](specs/001-procurement-agent/tasks.md) gates all of it.
+Five stages, each with the threshold that has to be met before the next one starts. No stage
+below is complete; the current position is "before Stage 1", and Phase 0 of
+[tasks.md](specs/001-procurement-agent/tasks.md) gates all of it. Phase 0 is itself part-done —
+three of the eight contracts are frozen — so the gate has moved, but it has not opened.
 
 | Stage | Scope | Exit threshold |
 |---|---|---|
@@ -314,22 +338,33 @@ record, audit envelope, or workbook projection require a written contract decisi
 a new dependency must clear the license gate above.
 
 The project’s most important near-term milestone is to freeze the remaining shared contracts —
-seven of the eight are still open — and land one end-to-end, fixture-backed path from document
-ingestion to a reviewable claim.
+five of the eight are still unfinished (C1, C3 and C5 are done) — and land one end-to-end,
+fixture-backed path from document ingestion to a reviewable claim. Read the four partials by
+their evidence rather than their marker: C4 and C8 each have a finished SQL half and an
+unstarted Python one, which is the pair most easily mistaken for done.
 
 ## Security and data handling
 
 The intended workload contains confidential contracts and prices. The production design
 requires:
 
-- self-hosted or enterprise inference for confidential material;
+- self-hosted or enterprise inference **and embedding** for confidential material;
 - document-level access labels applied at ingest and enforced during retrieval;
 - a non-owner, non-superuser application database role;
 - immutable, hash-chained audit events; and
 - no secrets, source documents, or generated procurement workbooks in git.
 
-These controls are **designed but not implemented**. Do not use the current repository with
-real confidential procurement data.
+Three of those five exist in the database schema and are asserted against a live server on every
+CI run: the access labels (row-level security on all seven tables holding document content,
+`FORCE`d so the owner is not exempt), the restricted application role, and the audit hash chain.
+The last one is in force today and is not conditional on anything shipping — `.gitignore`
+excludes `docs/source/`, ingested supplier material, and generated workbooks.
+
+**What does not exist is the Python half.** Nothing in `src/` opens a database connection, so no
+application code path is subject to any of it, and `services/retrieval.retrieve` — where the
+access labels would be enforced *at retrieval time*, which is what NFR-03 actually asks for —
+raises `NotImplementedError`. Self-hosted endpoints remain an `.env.example` convention with no
+check. Do not use the current repository with real confidential procurement data.
 
 ## Scope boundaries and regulatory disclaimer
 

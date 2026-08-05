@@ -131,7 +131,7 @@ does.
 |---|---|---|---|
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` — raises `NotImplementedError` | declared |
 | FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | tier tagging enforced; `SourceRef.retrieved_at` optional and still never asserted by any test, query logging has no code | partial |
-| FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
+| FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` (`tests/test_source_of_record_rule.py`) | enforced |
 | FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` implemented against `conflict_hitl/tolerance.FIELD_TOLERANCES`, the [D-2](../specs/001-procurement-agent/clarifications.md) table transcribed (`tests/test_values_conflict.py`) | enforced |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` — no test reads it. (`SourceRef.source_authority` *is* exercised, but by `tolerance`'s CEC-list discriminator, which is a different claim) | declared |
 
@@ -140,7 +140,7 @@ does.
 | ID | Requirement | Where | Status |
 |---|---|---|---|
 | FR-HITL-01 | Five conflict classes | All five `schema.ConflictClass` members are now produced by `conflict_hitl._classify` / `values_conflict` and asserted individually — `RECORD_VS_WEB`, `INTER_DOCUMENT` and `INTRA_DOCUMENT` in `test_the_conflict_class_is_derived_from_the_candidates`, `TEMPORAL` in `test_an_edition_difference_is_temporal_not_a_string_mismatch`, `UNIT_NORMALIZATION` in `test_a_unit_mismatch_is_never_resolved_by_tolerance`. Still **no test asserts the count**, so a sixth class could be added with nothing going red | partial |
-| FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
+| FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` (`tests/test_source_of_record_rule.py`) | enforced |
 | FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`, `component_category` is the closed vocabulary); `conflict_hitl.conflict_groupings` fixes what an entry may hold and is tested (`test_a_queue_entry_never_holds_two_incomparable_candidates`, `test_the_bridging_candidate_appears_in_two_entries`), and `claims.FieldClaim.as_candidate()` builds the candidate half with its provenance stamped (`test_the_queue_entry_carries_it_too`). No production path builds an *entry* | partial |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count. `sql/06_resolution.sql` pins the same five strings in a CHECK constraint, but no test inserts a resolution row, so neither list is protected | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `ComponentInstance.unresolved_conflicts()` reads every conditioned value rather than the first (`test_unresolved_conflicts_reads_every_conditioned_value` — a mutation of the inner loop previously survived the whole suite) and `orchestrator.blocking_conflicts` names the blockers for the completeness manifest. `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |
@@ -163,14 +163,14 @@ does.
 
 | ID | Requirement | Where | Status |
 |---|---|---|---|
-| NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator | enforced |
+| NFR-01 | Traceability, no unsourced values | `schema.SourceRef` validator (`test_source_ref_requires_a_source`) | enforced |
 | NFR-02 | Immutable audit log | **The store is built.** The previous "store not yet built" predated `sql/`. `sql/07_audit_event.sql` implements the hash chain and `sql/04_claim.sql` / `sql/06_resolution.sql` the append-only tables, all three with row-level and statement-level tripwires, and the chain is walked against a live server: `test_a_valid_chain_appends`, `test_a_fabricated_parent_is_refused`, `test_a_second_disconnected_root_is_refused`, `test_a_chain_loop_is_refused`, `test_truncate_is_refused` (all three tables), `test_the_row_level_tripwire_still_raises`. `schema.Resolution` is frozen and tested. Not `enforced`: nothing in Python writes an audit event, so no application path is protected — only the schema is | partial |
 | NFR-03 | Access control at retrieval time; confidential path self-hosted | **RLS is implemented on all seven tables that hold document content**, with `FORCE` so the owner is not exempt, an `app.allow_restricted` entitlement GUC, and a separate `procurement_ingest` role so making a row *more* restricted is not the failing direction. Structural: `test_every_table_holding_document_content_forces_rls`, `test_every_such_table_has_a_confidentiality_select_policy` (both ×7). Live: `test_the_app_role_cannot_declassify_rows_it_cannot_read`, `test_the_write_policy_alone_protects_an_unreadable_row`, `test_the_document_write_policy_alone_protects_an_unreadable_row`, `test_the_app_role_cannot_delete_rows_it_cannot_read`, `test_a_chunk_inherits_its_parent_documents_restriction`, `test_restriction_can_only_increase`, `test_claims_do_not_leak_a_restricted_documents_values`, `test_the_app_role_cannot_escalate_to_the_ingest_role`. Not `enforced`: `VectorStorePort.search(allowed_document_ids=...)` has no adapter and `services/retrieval.retrieve` raises `NotImplementedError`, so the *retrieval-time* clause the TRS actually writes is unexercised. Self-hosted endpoints remain a `.env.example` convention with no check | partial |
 | NFR-04 | Six swap points behind stable interfaces | `ports/` — all six Protocols; **no test imports `ports` at all** (re-verified 2026-08-04) | declared |
 | NFR-05 | Idempotent re-ingest | `schema.SourceDocument.content_hash` plus `sql/02_document.sql`'s `UNIQUE (content_hash)`, live-tested by `test_a_duplicate_content_hash_is_refused` and by `test_a_restricted_document_can_be_ingested_idempotently`, which runs the documented `ON CONFLICT (content_hash) DO NOTHING` idiom as the ingest role. Not `enforced`: `services/ingestion.ingest` raises `NotImplementedError`, so nothing re-ingests | partial |
 | NFR-06 | Hundreds of documents | — | open |
 | NFR-07 | Batch ingestion; interactive ops in seconds-to-minutes | `orchestrator` docstring | open |
-| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` | enforced |
+| NFR-08 | Human retains final authority | `orchestrator.compose_gate_blocks` / `blocking_conflicts`, `schema.Severity` (`tests/test_compose_gate.py`) | enforced |
 
 ---
 

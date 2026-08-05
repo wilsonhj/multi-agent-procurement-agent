@@ -21,7 +21,7 @@ an unfrozen contract.
 |---|---|---|---|
 | **C1** | Postgres schema: `document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event` | Every WP | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08`; both T0.1 checks recorded live-verified in `sql/README.md`, and CI reapplies all nine files each run |
 | **C2** | Claim/extraction record — Pydantic + JSON Schema, including `condition` per D-1 | B, E, G | **partial** — `condition` landed on `FieldClaim` and `CanonicalField`; per-category models still do not exist |
-| **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **done** — all four elements on `SourceRef`, stamped by `FieldClaim.provenance()` |
+| **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **done** — all four on `SourceRef`, **`span` under the name `section`**, stamped by `FieldClaim.provenance()` and pinned by `test_source_ref_carries_c3s_four_elements` |
 | **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial** — SQL half only (`audit.event`, the `event_type` CHECK, `payload_canonical`); no Python envelope and no canonicalisation library |
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
 | **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ — `write_workbook()` raises `NotImplementedError` and no projection function exists |

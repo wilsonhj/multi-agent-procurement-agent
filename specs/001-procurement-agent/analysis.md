@@ -394,7 +394,6 @@ re-reproduced after; the commands and results are in `sql/README.md`.
 | A-33 | **H** | `_gross_divergence` could not fire for 105 of 124 contract keys, including 22 of 24 Tier A and all 12 CRITICAL fields, while its docstring named the decimal-comma trap as its purpose | **Fixed** — order-of-magnitude fallback |
 | A-34 | **M** | Five further routes reached the forbidden RESOLVED-with-no-`Resolution` state, and `evolve()` silently replaced a recorded `Resolution` | **Fixed**, except one undefendable route — see below |
 | A-35 | **M** | 81 of 120 one-step mutants of the `CRITICALITY` table survived the suite: membership was checked both ways, values were pinned for ~36 keys | **Fixed** — all 124 pinned |
-| A-40 | **L** | A-24 restored the FR-RAG-03 reversal but its inline note named the *replacement* wrongly — "the embedding model's sparse output", a Decision 5 reserve, where Decision 3b chose Postgres `tsvector`/`pg_trgm` fused with RRF (k=60). The `⚠️` note shipped as the register's own closed remedy | **Fixed** — `spec.md` note corrected against Decision 3b; A-24's row kept intact |
 
 ## A-28 (Medium) — the traceability table stopped at AC-6
 
@@ -468,6 +467,7 @@ plus the 8 FRD requirements and 8 NFRs.
 | A-37 | **H** | **The traceability table understated merged work — A-16 with the sign reversed.** Ten rows sat below what the code and tests support, including NFR-02 reading "store not yet built" beside a nine-file schema whose tripwires run against a live server on every pull request | **Fixed** |
 | A-38 | **M** | The table had no rule for weighing a live-database test against a structural one, and the two are not interchangeable: two of four reintroduced defects were invisible to `test_sql_schema.py` | **Fixed** — rule stated once, applied uniformly |
 | A-39 | **M** | **A-31's fix covers role *attributes* and not role *memberships*.** `GRANT procurement_ingest TO procurement_app` survives a clean re-run of `00_roles.sql`, defeating the Decision 9 boundary, and no test names the cause | **Fixed** |
+| A-40 | **L** | A-24 restored the FR-RAG-03 reversal but its inline note named the *replacement* wrongly — "the embedding model's sparse output", a Decision 5 reserve, where Decision 3b chose Postgres `tsvector`/`pg_trgm` fused with RRF (k=60). The `⚠️` note shipped as the register's own closed remedy | **Fixed** — `spec.md` note corrected against Decision 3b; A-24's row kept intact |
 
 ## A-36 (High) — five finding IDs each named two findings
 
@@ -611,6 +611,212 @@ The three code docstrings that had repeated one or other stale position — `por
 Decision 3b. The `spec.md` note was the last carrier, and this change corrects it; `docs/
 architecture.md`'s "inaccuracy" table, which had flagged the note and pointed at it as what
 remained, now records the note as corrected and points here.
+
+---
+
+
+# Round 5 — the post-merge documentation audit (2026-08-05)
+
+Prompted by pulling `main` at `30d1198` after #19 and #21–#27 merged, and re-reading every
+status-claiming artifact against the code. Four parallel readers covered the service modules,
+`sql/` + CI, the prose documentation, and the traceability table.
+
+**Read the method note before the findings, because half of this round's raw output was wrong.**
+Four of the eight candidate findings did not survive verification, and every one of the four
+failed the same way: **the reader diffed against a base commit that was not the one the artifact
+was written against.**
+
+- C3 was reported as marked **done** with an element missing, because `grep -rn span src/` finds
+  nothing. `section` *is* C3's span; the mapping was recorded in one paragraph of
+  `current-state.md`. The real defect was the naming, not the status — registered as A-45.
+- `current-state.md`'s "23 skipped" was reported as an off-by-one. It is correct at commit
+  `72deacf`, which that file **names in its own second line**. A dated snapshot is not a stale
+  claim.
+- A-34 was reported as misquoting FR-HITL-06's "three routes remain open" as "two". A-34 audits
+  the code that shipped in #19, and at `e7da9ad` the row said **two**. The quote is exact; the
+  reader compared against `17b9c90`.
+- The traceability table was searched for `enforced` inflation and has none: the `enforced` row
+  set is byte-identical across the whole changeset, and all ten raises stop at `partial`.
+
+**Lesson, and it is A-27's in a new place.** A-27 recorded that a count asserted rather than
+computed is how an audit certifies itself wrong. This round adds the companion: *a diff taken
+against a base the artifact never claimed is how an audit invents defects that were never there.*
+The check is one line — read the baseline the document declares before diffing it — and three of
+the four false positives would have died on it. A register that recorded only the confirmed
+findings would leave the next reader to rediscover all four.
+
+> **Postscript, added in review of the pull request that carried this round.** Five parallel
+> reviewers were run over the branch before merge. They found three defects **in this round's own
+> work**, and two of the three are A-27's failure verbatim — a universal asserted from partial
+> data, by the same author who had just written the note above warning against it.
+>
+> - A-44 and the `ci.yml` comment claimed *"no `pg16`-family tag has ever shipped below 0.8.0."*
+>   Eight such tags exist. The claim came from one unfiltered page of a registry listing.
+> - The commit message claimed NFR-01 and NFR-08 were *"the only `enforced` rows naming no test."*
+>   FR-WEB-03 and FR-HITL-02 had the same gap; both are now A-47.
+> - The round audited three of the four status-claiming documents and missed the fourth —
+>   registered as A-46.
+>
+> Two conclusions worth more than the fixes. First, **writing the lesson down does not confer
+> immunity to it**: the note above was already in the file when both false universals were
+> written. Second, the thing that caught all three was *review by readers who did not write the
+> work* — every one of the three had survived the author's own verification pass, and the two
+> false universals had each been "verified" by a command whose output the author had read.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-41 | **H** | **`README.md` was frozen at `ce6a8bb` while the Phase 0 substrate landed**, so six claims went stale at once: the contract count ("seven of the eight are still open"), the status table's "PostgreSQL schema … designed, not implemented", "the planned runtime — none of this exists yet", the build-plan position, a repository tree with no `sql/` and none of the three new service packages, and a validation block listing three of the four gates. All six understate the repository, which is the safer direction and still leaves the file self-contradictory against `current-state.md` — which it names, two lines in, as the source of truth that wins | **Fixed** |
+| A-42 | **H** | **The `docs/source/` confidentiality rule was deleted in the README rewrite and restored nowhere.** `.gitignore` was left as its only trace, so the mechanism survived and the rule and its rationale did not. The same rewrite dropped "embedding" from the endpoint constraint, narrowing a two-endpoint rule to one — and the embedder is the easier of the two to point at a public API by accident | **Fixed** |
+| A-43 | **M** | **Two status documents disagreed about AC-5.** `current-state.md` read "Nothing. `content_hash` exists but carries no uniqueness constraint / **open**" while `requirements-traceability.md` and this register both had `partial` with a live-database test named. The constraint landed in `e7da9ad`, an ancestor of the audit's own declared baseline, so the row was wrong when written rather than stale | **Fixed** |
+| A-44 | **M** | **CI asserted a pin it did not have and coverage it did not provide.** `ci.yml` said the `pgvector/pgvector:pg16` tag "pins the major version and the extension version together" and that the image exercises `01_extensions_and_settings.sql`'s sub-0.8.0 skip path. `pg16` pins only the PostgreSQL major — pinned-extension tags take the `<pgvector>-pg<major>` form — and the pinned image is 0.8.6, so the branch is not exercised | **Fixed** — pinned to `0.8.6-pg16`, verified by applying all nine files and running the 24 live tests green against that exact image; comment now records that the skip path is *not* covered, and that it is coverable |
+| A-45 | **M** | **Contract C3's `span` is spelled `section`, and four of the five places C3 is cited did not say so.** `tasks.md`, `current-state.md`'s contract table, `field.py` and `claims/__init__.py` all recited the four-tuple and claimed "all four elements on `SourceRef`"; only one paragraph of `current-state.md` recorded the rename. An audit consequently grepped for `span`, found nothing, and concluded an element was missing — a correct inference from four fifths of the evidence | **Fixed** — mapping named at every site, pinned by `test_source_ref_carries_c3s_four_elements` |
+| A-46 | **M** | **The drift audit drifted: it corrected three of the four status-claiming documents and skipped `docs/architecture.md`.** `development.md`'s own documentation-expectations table names that file, says what it claims ("design-versus-implementation boundary, and the services table") and when to update it ("a service stops being a stub"). Both halves were stale: the audit-event section read "This design has not been implemented yet" beside a hash chain that is live-tested on every pull request, and the services table omitted `claims`, `confidence` and `identity` — three fully implemented modules | **Fixed** — persistence section re-scoped to schema-built/Python-absent, audit-event paragraph rewritten against `sql/07_audit_event.sql`, three rows added to the services table |
+| A-47 | **M** | **Two `enforced` rows have named no test since the file's first commit.** FR-WEB-03 and FR-HITL-02 both cite `assert_no_autonomous_overwrite` bare, while FR-4 cites the *same function* and does name its test — so the citation existed and was simply never copied across. `enforced` promises a regression test protects the requirement; a row that does not say which one cannot be checked without re-deriving it, which is the work the vocabulary exists to save | **Fixed** — both now cite `tests/test_source_of_record_rule.py` |
+
+## A-41 (High) — the summary outlived the thing it summarised
+
+`README.md` opens its status table by saying it is "a summary derived from
+[Current state](docs/current-state.md), which is the source of truth. If the two disagree, that
+document is right and this one is stale." That sentence is the correct design, and it is also
+what made the drift invisible: a reader who hits a wrong claim has no signal that they are
+holding the stale copy, because staleness is only detectable by opening the other file.
+
+`docs/development.md` already anticipated this exactly — its documentation-expectations table
+names `README.md` § Current state among the four documents a status-changing PR must update, and
+adds that it "is the one that gets forgotten." It was. The gap is that nothing *executes* that
+expectation; every other gate in this repository that matters is a test or a CI job.
+
+**Not fixed here, and worth stating as the residual:** a derived summary with no mechanical link
+to its source will drift again. The options are to delete the table and link out, or to generate
+it. Both are larger changes than this round, and the second needs `current-state.md` to carry
+machine-readable status markers it does not have today.
+
+## A-42 (High) — a control whose only remaining trace was its enforcement
+
+The deleted sentence was: "Nothing under `docs/source/` is committed — the source requirements
+documents are marked confidential. See `.gitignore`."
+
+What survived is `.gitignore:4`. That is the enforcement, and it is doing its job — but a rule
+that exists only as a mechanism cannot be reasoned about, extended, or defended in review. The
+nearest survivors after the rewrite were both weaker and differently scoped: `CONTRIBUTING.md`'s
+do-not-commit list names "supplier-confidential documents" without naming the FRD, the TRS, or
+the ignored path, and `README.md`'s own security section had folded its git rule into a list
+prefixed "the production design **requires**" and closed "these controls are **designed but not
+implemented**" — which reads as aspirational, and is the one framing under which a contributor
+might conclude the rule is not yet in force.
+
+This is precisely the category `ce6a8bb` was written to catch — "content deleted with nothing
+left defining it" — and it slipped through that same commit. The lesson is that the check has to
+run against *deletions*, not just against surviving text; a grep for what a document still says
+cannot find what it stopped saying.
+
+## A-43 (Medium) — the disagreement mattered more than the error
+
+Either document being wrong alone is an ordinary staleness bug. Both being present and
+disagreeing is worse in a specific way: the contradiction is only visible to someone who opens
+both files and compares one row, which is exactly what nobody does. A reader who consults one
+document gets a confident answer either way.
+
+The `enforced`/`partial`/`declared`/`open` vocabulary was introduced so that a status word would
+be a promise a reader could rely on without re-deriving it. That promise is per-vocabulary, not
+per-file, and it is broken the moment two files using the same vocabulary disagree about the same
+ID. `requirements-traceability.md` is the one that defines the vocabulary, so it wins ties by
+construction; `current-state.md` has been corrected to match, with the correction recorded inline
+rather than silently overwritten.
+
+## A-44 (Medium) — the comment was the specification, and it was wrong twice
+
+Two independent false claims in one five-line comment, and they fail in opposite directions. The
+pin claim **overstates** reproducibility: CI was riding a rolling tag, so the live suite could
+change its extension version with no diff in the workflow file — the author plainly intended a
+pin and did not get one. The coverage claim **overstates** verification: the sub-0.8.0 branch of
+`01_extensions_and_settings.sql` is asserted to be exercised by an image well above 0.8.0.
+
+The second is the more dangerous of the two, because it is the shape A-16 named: a comment
+asserting that something is covered is treated as evidence that it is covered, and it survives
+review precisely because it is adjacent to a real, passing job. The fix pins the tag *and* says
+plainly that the branch is uncovered — the coverage gap is left open deliberately, to keep the
+job to one container, and the comment now says so rather than implying the gap is forced.
+
+Verified rather than assumed: the pinned image was pulled, all nine files applied to it, and
+`test_sql_behaviour.py` run against it — 24 passed, pgvector reporting `0.8.6`.
+
+> **Corrected in review, before this landed.** The first version of this finding — and of the
+> `ci.yml` comment it describes — asserted that *"no `pg16`-family tag has ever shipped below
+> 0.8.0, so the branch is unreachable in CI."* That is false: `0.6.0-pg16` through `0.7.4-pg16`
+> are published and still pullable, eight tags. The branch is **coverable and uncovered**, which
+> is a choice, not a limit. The error came from reading one unfiltered, recency-ordered page of
+> the registry's tag list and generalising from it — *asserted rather than computed*, which is
+> the exact failure this round's method note names. See the postscript there.
+
+## A-45 (Medium) — the one contract element whose name is not its name
+
+C3 is `(document_id, page, span, extractor_version)`. Three of those four are attribute names on
+`SourceRef`. The fourth is not: `span` is `section`.
+
+There is no separate contract file for C3 — the tuple in `tasks.md` *is* the definition — so
+nothing anywhere resolves `span` to an attribute except one paragraph of `current-state.md`. Four
+other sites recited the tuple and then asserted "all four elements on `SourceRef`", which is true
+and unverifiable in the same breath: the reader cannot confirm it without already knowing the
+mapping the sentence omits.
+
+The failure this produced is worth recording precisely, because it is the *inverse* of the usual
+one. The register's standing worry is a status marker claiming more than the artifact supports.
+Here the artifact genuinely supported the marker, and the documentation was written so that a
+careful reader checking the claim would conclude it did not — an audit did exactly that and filed
+C3 as inflated. Documentation that cannot survive being checked is a defect even when the thing
+it documents is correct.
+
+The mapping is now stated at all five sites and pinned by a test that fails if `section` is
+renamed away without the contract being renamed with it. Whether `section` — a table/section
+locator — is the right *granularity* for C3's span, as against character offsets into the source
+text, is a contract question this round does not settle. `bounding_box` already carries the fine
+locator for the OCR path (FR-ING-04), which is the argument that `section` is sufficient for the
+text path; nobody has written that argument down, and C1/C3 are the expensive contracts to
+change.
+
+## A-46 (Medium) — the drift audit drifted
+
+`docs/development.md`'s documentation-expectations table exists precisely to prevent this. It
+names four documents that make status claims, says a behaviour change "goes stale in all four at
+once", and instructs: "Update every one that your change falsifies." This round read three of
+them and did not open the fourth.
+
+Both of `architecture.md`'s status-bearing halves were stale, and the table names both:
+
+- **The design-versus-implementation boundary.** "Audit events are planned as per-document hash
+  chains … This design has not been implemented yet" — written when `sql/07_audit_event.sql`
+  already existed, and left standing after four separate constraints were added to that chain and
+  wired to live tests that run on every pull request.
+- **The services table.** `services.claims`, `services.confidence` and `services.identity` were
+  absent entirely — three modules with no `NotImplementedError` in them at all, and the table's
+  own update trigger is "a service stops being a stub."
+
+The interesting part is *why* the omission happened, because the reader that found
+`architecture.md`'s staleness in the first place was one of this round's own four, and reported
+it. It was dropped between that report and the fix list. So the failure was not detection, it was
+**the hand-off from finding to fixing** — and nothing in the process checks that the second list
+is a superset of the first. That is a gap the documentation-expectations table cannot close,
+because it governs which documents to update, not whether the audit's own findings all survive
+triage.
+
+## A-47 (Medium) — two rows that never named a test, and one that did
+
+`enforced` is defined in the traceability doc's own header as "implemented **and covered by a
+test**", and the audit note beneath it says the vocabulary is worth more than a flattering count
+because a reader must be able to trust it without re-deriving it. A row that says `enforced` and
+names no test hands that re-derivation straight back.
+
+FR-WEB-03 and FR-HITL-02 had done so since the file's first commit. Neither was a judgement call
+about weak coverage: **FR-4 cites the same function, `assert_no_autonomous_overwrite`, and does
+name its test.** The citation existed the whole time and was never copied across, through two
+separate passes (`791201b`, `ce6a8bb`) that re-read the table row by row for exactly this.
+
+Recorded rather than quietly fixed because of how it was found. The pull request carrying this
+round claimed in its commit message that NFR-01 and NFR-08 were "the only `enforced` rows naming
+no test" — an assertion, not the output of `grep '| enforced |'`, and wrong by two. The same
+one-line check that A-36 and A-27 both prescribe would have produced the right answer and the
+complete fix in one step.
 
 ---
 

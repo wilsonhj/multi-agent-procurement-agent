@@ -190,7 +190,10 @@ level security with a non-owner application role.
 | `services.indexing` | structure-aware chunks and incremental indexing | Stub |
 | `services.retrieval` | filtered hybrid retrieval and reranking | Stub |
 | `services.web_search` | gap-only public-source lookup and authority ranking | Stub |
-| `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts | Implemented policy core |
+| `services.claims` | append-only claim record, canonical projection, single-reducer commit | Implemented; no production caller |
+| `services.confidence` | signal fusion into a confidence score, and the Tier A review gate | Implemented; used by `conflict_hitl.severity` |
+| `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; no production caller |
+| `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts, severity assignment | Implemented policy core |
 | `services.output` | flags, canonical workbook rendering, archive normalization | Flags and normalization only |
 | `orchestrator` | jobs, retries, stage state, compose gate | Gate only |
 
@@ -202,7 +205,12 @@ Synchronous interfaces are deliberate. The target runner scales with worker proc
 CPU-heavy parse and OCR work can use process pools; remote model calls can use bounded thread
 pools; embedding and reranking adapters batch internally.
 
-## Planned persistence and execution
+## Persistence and execution
+
+**The schema half of this section is built; the Python half is not.** `sql/00`–`08` define every
+table described below and are applied to a live server on every CI run, while nothing in `src/`
+opens a connection to them. Read each claim here for which half it belongs to — the design is
+target-state, the DDL is not.
 
 The target deployment uses one PostgreSQL instance, with pgvector, for:
 
@@ -218,9 +226,19 @@ Workers claim jobs using `SELECT … FOR UPDATE SKIP LOCKED`. Delivery is at lea
 stage must be independently idempotent. Poison messages are quarantined instead of retried
 forever.
 
-Audit events are planned as per-document hash chains. The application role receives insert
-and select privileges only; an advisory lock is acquired before each insert and a uniqueness
-constraint makes a fork loud. This design has not been implemented yet.
+Audit events are per-document hash chains, and the schema implements them:
+`sql/07_audit_event.sql` grants the application role `SELECT, INSERT` and nothing else, and makes
+a fork loud with `UNIQUE NULLS NOT DISTINCT (stream, prev_hash)`, `UNIQUE (stream, hash)` and a
+self-referencing foreign key from each event to its parent. The chain is walked against a live
+server by `test_a_valid_chain_appends`, `test_a_fabricated_parent_is_refused`,
+`test_a_second_disconnected_root_is_refused` and `test_a_chain_loop_is_refused`.
+
+**The advisory lock is the part that is not implemented, and it is deliberately not in the DDL.**
+Decision 9's measured finding is that a lock taken inside a trigger on this table is acquired too
+late to serialise the read of the previous hash, so `pg_advisory_xact_lock` must be its own
+statement issued by the caller *before* the `INSERT`. That caller does not exist yet — nothing in
+`src/` writes an audit event — so the constraints above are currently the whole of the
+enforcement, and they turn a lost race into a loud failure rather than preventing one.
 
 ## Retrieval design
 

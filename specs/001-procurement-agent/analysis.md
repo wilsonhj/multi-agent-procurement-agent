@@ -645,13 +645,33 @@ The check is one line — read the baseline the document declares before diffing
 the four false positives would have died on it. A register that recorded only the confirmed
 findings would leave the next reader to rediscover all four.
 
+> **Postscript, added in review of the pull request that carried this round.** Five parallel
+> reviewers were run over the branch before merge. They found three defects **in this round's own
+> work**, and two of the three are A-27's failure verbatim — a universal asserted from partial
+> data, by the same author who had just written the note above warning against it.
+>
+> - A-44 and the `ci.yml` comment claimed *"no `pg16`-family tag has ever shipped below 0.8.0."*
+>   Eight such tags exist. The claim came from one unfiltered page of a registry listing.
+> - The commit message claimed NFR-01 and NFR-08 were *"the only `enforced` rows naming no test."*
+>   FR-WEB-03 and FR-HITL-02 had the same gap; both are now A-47.
+> - The round audited three of the four status-claiming documents and missed the fourth —
+>   registered as A-46.
+>
+> Two conclusions worth more than the fixes. First, **writing the lesson down does not confer
+> immunity to it**: the note above was already in the file when both false universals were
+> written. Second, the thing that caught all three was *review by readers who did not write the
+> work* — every one of the three had survived the author's own verification pass, and the two
+> false universals had each been "verified" by a command whose output the author had read.
+
 | ID | Severity | Finding | Status |
 |---|---|---|---|
 | A-41 | **H** | **`README.md` was frozen at `ce6a8bb` while the Phase 0 substrate landed**, so six claims went stale at once: the contract count ("seven of the eight are still open"), the status table's "PostgreSQL schema … designed, not implemented", "the planned runtime — none of this exists yet", the build-plan position, a repository tree with no `sql/` and none of the three new service packages, and a validation block listing three of the four gates. All six understate the repository, which is the safer direction and still leaves the file self-contradictory against `current-state.md` — which it names, two lines in, as the source of truth that wins | **Fixed** |
 | A-42 | **H** | **The `docs/source/` confidentiality rule was deleted in the README rewrite and restored nowhere.** `.gitignore` was left as its only trace, so the mechanism survived and the rule and its rationale did not. The same rewrite dropped "embedding" from the endpoint constraint, narrowing a two-endpoint rule to one — and the embedder is the easier of the two to point at a public API by accident | **Fixed** |
 | A-43 | **M** | **Two status documents disagreed about AC-5.** `current-state.md` read "Nothing. `content_hash` exists but carries no uniqueness constraint / **open**" while `requirements-traceability.md` and this register both had `partial` with a live-database test named. The constraint landed in `e7da9ad`, an ancestor of the audit's own declared baseline, so the row was wrong when written rather than stale | **Fixed** |
-| A-44 | **M** | **CI asserted a pin it did not have and coverage it did not provide.** `ci.yml` said the `pgvector/pgvector:pg16` tag "pins the major version and the extension version together" and that the image exercises `01_extensions_and_settings.sql`'s sub-0.8.0 skip path. `pg16` pins only the PostgreSQL major — pinned-extension tags take the `<pgvector>-pg<major>` form — and no `pg16`-family tag has ever shipped below 0.8.0, so the branch is unreachable in CI | **Fixed** — pinned to `0.8.6-pg16`, verified by applying all nine files and running the 24 live tests green against that exact image; comment now records that the skip path is *not* covered |
+| A-44 | **M** | **CI asserted a pin it did not have and coverage it did not provide.** `ci.yml` said the `pgvector/pgvector:pg16` tag "pins the major version and the extension version together" and that the image exercises `01_extensions_and_settings.sql`'s sub-0.8.0 skip path. `pg16` pins only the PostgreSQL major — pinned-extension tags take the `<pgvector>-pg<major>` form — and the pinned image is 0.8.6, so the branch is not exercised | **Fixed** — pinned to `0.8.6-pg16`, verified by applying all nine files and running the 24 live tests green against that exact image; comment now records that the skip path is *not* covered, and that it is coverable |
 | A-45 | **M** | **Contract C3's `span` is spelled `section`, and four of the five places C3 is cited did not say so.** `tasks.md`, `current-state.md`'s contract table, `field.py` and `claims/__init__.py` all recited the four-tuple and claimed "all four elements on `SourceRef`"; only one paragraph of `current-state.md` recorded the rename. An audit consequently grepped for `span`, found nothing, and concluded an element was missing — a correct inference from four fifths of the evidence | **Fixed** — mapping named at every site, pinned by `test_source_ref_carries_c3s_four_elements` |
+| A-46 | **M** | **The drift audit drifted: it corrected three of the four status-claiming documents and skipped `docs/architecture.md`.** `development.md`'s own documentation-expectations table names that file, says what it claims ("design-versus-implementation boundary, and the services table") and when to update it ("a service stops being a stub"). Both halves were stale: the audit-event section read "This design has not been implemented yet" beside a hash chain that is live-tested on every pull request, and the services table omitted `claims`, `confidence` and `identity` — three fully implemented modules | **Fixed** — persistence section re-scoped to schema-built/Python-absent, audit-event paragraph rewritten against `sql/07_audit_event.sql`, three rows added to the services table |
+| A-47 | **M** | **Two `enforced` rows have named no test since the file's first commit.** FR-WEB-03 and FR-HITL-02 both cite `assert_no_autonomous_overwrite` bare, while FR-4 cites the *same function* and does name its test — so the citation existed and was simply never copied across. `enforced` promises a regression test protects the requirement; a row that does not say which one cannot be checked without re-deriving it, which is the work the vocabulary exists to save | **Fixed** — both now cite `tests/test_source_of_record_rule.py` |
 
 ## A-41 (High) — the summary outlived the thing it summarised
 
@@ -710,17 +730,24 @@ Two independent false claims in one five-line comment, and they fail in opposite
 pin claim **overstates** reproducibility: CI was riding a rolling tag, so the live suite could
 change its extension version with no diff in the workflow file — the author plainly intended a
 pin and did not get one. The coverage claim **overstates** verification: the sub-0.8.0 branch of
-`01_extensions_and_settings.sql` is asserted to be exercised by an image that has never been
-below 0.8.0.
+`01_extensions_and_settings.sql` is asserted to be exercised by an image well above 0.8.0.
 
 The second is the more dangerous of the two, because it is the shape A-16 named: a comment
 asserting that something is covered is treated as evidence that it is covered, and it survives
 review precisely because it is adjacent to a real, passing job. The fix pins the tag *and* says
-plainly that the branch is uncovered, because a pinned image makes the branch permanently
-unreachable in CI — pinning does not close the coverage gap, it fixes it open.
+plainly that the branch is uncovered — the coverage gap is left open deliberately, to keep the
+job to one container, and the comment now says so rather than implying the gap is forced.
 
 Verified rather than assumed: the pinned image was pulled, all nine files applied to it, and
 `test_sql_behaviour.py` run against it — 24 passed, pgvector reporting `0.8.6`.
+
+> **Corrected in review, before this landed.** The first version of this finding — and of the
+> `ci.yml` comment it describes — asserted that *"no `pg16`-family tag has ever shipped below
+> 0.8.0, so the branch is unreachable in CI."* That is false: `0.6.0-pg16` through `0.7.4-pg16`
+> are published and still pullable, eight tags. The branch is **coverable and uncovered**, which
+> is a choice, not a limit. The error came from reading one unfiltered, recency-ordered page of
+> the registry's tag list and generalising from it — *asserted rather than computed*, which is
+> the exact failure this round's method note names. See the postscript there.
 
 ## A-45 (Medium) — the one contract element whose name is not its name
 
@@ -747,6 +774,49 @@ text, is a contract question this round does not settle. `bounding_box` already 
 locator for the OCR path (FR-ING-04), which is the argument that `section` is sufficient for the
 text path; nobody has written that argument down, and C1/C3 are the expensive contracts to
 change.
+
+## A-46 (Medium) — the drift audit drifted
+
+`docs/development.md`'s documentation-expectations table exists precisely to prevent this. It
+names four documents that make status claims, says a behaviour change "goes stale in all four at
+once", and instructs: "Update every one that your change falsifies." This round read three of
+them and did not open the fourth.
+
+Both of `architecture.md`'s status-bearing halves were stale, and the table names both:
+
+- **The design-versus-implementation boundary.** "Audit events are planned as per-document hash
+  chains … This design has not been implemented yet" — written when `sql/07_audit_event.sql`
+  already existed, and left standing after four separate constraints were added to that chain and
+  wired to live tests that run on every pull request.
+- **The services table.** `services.claims`, `services.confidence` and `services.identity` were
+  absent entirely — three modules with no `NotImplementedError` in them at all, and the table's
+  own update trigger is "a service stops being a stub."
+
+The interesting part is *why* the omission happened, because the reader that found
+`architecture.md`'s staleness in the first place was one of this round's own four, and reported
+it. It was dropped between that report and the fix list. So the failure was not detection, it was
+**the hand-off from finding to fixing** — and nothing in the process checks that the second list
+is a superset of the first. That is a gap the documentation-expectations table cannot close,
+because it governs which documents to update, not whether the audit's own findings all survive
+triage.
+
+## A-47 (Medium) — two rows that never named a test, and one that did
+
+`enforced` is defined in the traceability doc's own header as "implemented **and covered by a
+test**", and the audit note beneath it says the vocabulary is worth more than a flattering count
+because a reader must be able to trust it without re-deriving it. A row that says `enforced` and
+names no test hands that re-derivation straight back.
+
+FR-WEB-03 and FR-HITL-02 had done so since the file's first commit. Neither was a judgement call
+about weak coverage: **FR-4 cites the same function, `assert_no_autonomous_overwrite`, and does
+name its test.** The citation existed the whole time and was never copied across, through two
+separate passes (`791201b`, `ce6a8bb`) that re-read the table row by row for exactly this.
+
+Recorded rather than quietly fixed because of how it was found. The pull request carrying this
+round claimed in its commit message that NFR-01 and NFR-08 were "the only `enforced` rows naming
+no test" — an assertion, not the output of `grep '| enforced |'`, and wrong by two. The same
+one-line check that A-36 and A-27 both prescribe would have produced the right answer and the
+complete fix in one step.
 
 ---
 

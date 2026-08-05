@@ -131,7 +131,7 @@ does.
 |---|---|---|---|
 | FR-WEB-01 | Search only on gap or user request | `services/web_search.search_for_gap` — raises `NotImplementedError` | declared |
 | FR-WEB-02 | Tag `web_supplement` + URL, title, timestamp; log queries | tier tagging enforced; `SourceRef.retrieved_at` optional and still never asserted by any test, query logging has no code | partial |
-| FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` | enforced |
+| FR-WEB-03 | Fill empty fields only, never overwrite | `assert_no_autonomous_overwrite` (`tests/test_source_of_record_rule.py`) | enforced |
 | FR-WEB-04 | Divergence beyond tolerance raises a conflict | `services/conflict_hitl.values_conflict` implemented against `conflict_hitl/tolerance.FIELD_TOLERANCES`, the [D-2](../specs/001-procurement-agent/clarifications.md) table transcribed (`tests/test_values_conflict.py`) | enforced |
 | FR-WEB-05 | Prefer and record source authority | `services/web_search.SOURCE_AUTHORITY_ORDER` — no test reads it. (`SourceRef.source_authority` *is* exercised, but by `tolerance`'s CEC-list discriminator, which is a different claim) | declared |
 
@@ -140,7 +140,7 @@ does.
 | ID | Requirement | Where | Status |
 |---|---|---|---|
 | FR-HITL-01 | Five conflict classes | All five `schema.ConflictClass` members are now produced by `conflict_hitl._classify` / `values_conflict` and asserted individually — `RECORD_VS_WEB`, `INTER_DOCUMENT` and `INTRA_DOCUMENT` in `test_the_conflict_class_is_derived_from_the_candidates`, `TEMPORAL` in `test_an_edition_difference_is_temporal_not_a_string_mismatch`, `UNIT_NORMALIZATION` in `test_a_unit_mismatch_is_never_resolved_by_tolerance`. Still **no test asserts the count**, so a sixth class could be added with nothing going red | partial |
-| FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` | enforced |
+| FR-HITL-02 | Never auto-arbitrate web vs record | `assert_no_autonomous_overwrite` (`tests/test_source_of_record_rule.py`) | enforced |
 | FR-HITL-03 | Queue entry payload | `schema.ConflictQueueEntry` shape enforced (severity required, candidates carry `condition`, `component_category` is the closed vocabulary); `conflict_hitl.conflict_groupings` fixes what an entry may hold and is tested (`test_a_queue_entry_never_holds_two_incomparable_candidates`, `test_the_bridging_candidate_appears_in_two_entries`), and `claims.FieldClaim.as_candidate()` builds the candidate half with its provenance stamped (`test_the_queue_entry_carries_it_too`). No production path builds an *entry* | partial |
 | FR-HITL-04 | Five resolution actions | `schema.ResolutionAction` — no test asserts the count. `sql/06_resolution.sql` pins the same five strings in a CHECK constraint, but no test inserts a resolution row, so neither list is protected | declared |
 | FR-HITL-05 | Unresolved and low-confidence flagged, never dropped | `services/output.flags_for` computes all four states and is tested; `ComponentInstance.unresolved_conflicts()` reads every conditioned value rather than the first (`test_unresolved_conflicts_reads_every_conditioned_value` — a mutation of the inner loop previously survived the whole suite) and `orchestrator.blocking_conflicts` names the blockers for the completeness manifest. `write_workbook` still raises `NotImplementedError`, so nothing puts a flag in front of a human | partial |

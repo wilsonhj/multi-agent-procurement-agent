@@ -97,9 +97,14 @@ jobs:
         #
         # `01_extensions_and_settings.sql` needs pgvector >= 0.8.0 for the
         # `hnsw.iterative_scan` GUC and skips it with a NOTICE below that. This
-        # image is 0.8.6, so **CI does not exercise that skip path** - the same
-        # earlier comment claimed it did, and no `pg16`-family tag has ever been
-        # below 0.8.0. The branch was verified by hand on pgvector 0.6.0.
+        # image is 0.8.6, so **CI does not exercise that skip path** - an earlier
+        # version of this comment claimed it did.
+        #
+        # The branch is coverable here, and deliberately not covered: pgvector
+        # publishes `0.6.0-pg16` through `0.7.4-pg16` and they are still
+        # pullable, so a second service or a matrix entry would exercise it at
+        # the cost of doubling this job. Verified by hand on 0.6.0 instead. Do
+        # not restate this as "unreachable" - it is a choice, not a limit.
         image: pgvector/pgvector:0.8.6-pg16
         env:
           POSTGRES_PASSWORD: postgres

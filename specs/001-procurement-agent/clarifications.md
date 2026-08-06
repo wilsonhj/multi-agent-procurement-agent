@@ -612,6 +612,185 @@ quality dominates dataset size for the confidence model.
 
 ---
 
+## D-13 — Audit canonicalisation and the hash preimage (contract C4) ⚠️ PROPOSED, NOT RATIFIED
+
+> **Status.** Drafted 2026-08-06 to close C4's decision half. It is a default, not a conclusion
+> — but note the deadline: **the version marker in §3 must exist before the first event is ever
+> emitted**, so this needs ratifying before WP-H writes anything, not after.
+>
+> **Relationship to `sql/07_audit_event.sql`: one adoption, one change, four new pins.**
+> *Adopted* — that file's caller-sequence comment already specifies "canonicalise the payload
+> (RFC 8785, NOT jsonb)" and already explains why jsonb fails: it normalises key order but
+> preserves whatever numeric literal text it was given, so `1.0` and `1.00` stay textually
+> distinct. §Scheme takes that as given rather than re-deciding it.
+> *Changed* — the layout. It sketches `hash := sha256(prev_hash || canonical_payload || ...)`;
+> the trailing `...` leaves the field set unenumerated and the form is a delimiter-free
+> concatenation. §2 replaces both with one canonical object.
+> *New* — nothing in the DDL settles the digest (§1: `sql/07:67-70` flags it explicitly, since
+> plan Decision 9 measures chain performance without pinning an algorithm), the version marker
+> (§3), who supplies `recorded_at` (§4), or whether the `event_type` list is frozen (§5). Those
+> four are additions, not ratifications.
+>
+> One consequence for the DDL: §2 makes `payload_canonical` an *input to* the hash rather than
+> the hashed bytes themselves, so `sql/07`'s comment should be updated to match on ratification.
+
+**Scheme: RFC 8785 (JCS), via the `rfc8785` PyPI package** — adopting the scheme `sql/07` already
+names, with a concrete implementation. [V] for the package metadata only — read from the PyPI
+JSON API on 2026-08-06: version 0.1.4, Apache-2.0 (so it clears the dependency licence gate),
+**zero runtime dependencies** (everything in `requires_dist` is an extra).
+
+**The package has not been installed, locked, or executed against this repo's data** — it is not
+in `pyproject.toml` or `uv.lock`. Ratifying this decision should be paired with adding the
+dependency and a conformance test against RFC 8785's own published test vectors, because the
+whole argument for using a library rather than hand-rolling is that its conformance is somebody
+else's problem *only once you have checked it*.
+
+**Do not hand-roll this with `json.dumps(sort_keys=True)`.** [V] — the two disagree in at least
+two ways that matter, both verified in this repo's own venv: JCS sorts keys by **UTF-16 code
+units** where Python sorts by code point, and JCS serialises numbers by ECMAScript rules
+(shortest round-trip, so `10.0` → `10`) where Python emits `float.__repr__` (`10.0` → `10.0`).
+A hand-rolled near-JCS produces chains that verify under the local implementation and fail under
+any conformant one — the worst available outcome, because it is silent until someone else audits.
+
+1. **Digest: SHA-256**, frozen by name. The two `octet_length = 32` CHECKs in `sql/07` already
+   assume it; this states it rather than leaving it inferred from a column width.
+2. **Preimage: one JCS object, never a concatenation.** ⚠️ **This changes `sql/07`'s sketch.**
+   `hash = SHA-256(JCS({"v": 1, "stream", "seq", "event_type", "actor", "recorded_at",
+   "prev_hash": lowercase-hex or null, "payload": {…}}))`.
+
+   The sketched `sha256(prev_hash || canonical_payload || ...)` has two problems. The trailing
+   `...` leaves the field set unenumerated, so two implementations can disagree about what is
+   covered while both believing they follow the comment. And concatenation without a delimiter
+   is ambiguous by construction: distinct field values can produce identical bytes, which is the
+   classic length-extension-adjacent framing bug. Wrapping the whole envelope in one canonical
+   object removes both — JCS gives unambiguous framing for free, and the object's keys *are* the
+   enumeration. `payload_canonical` stores JCS of the payload alone; a verifier recomputes the
+   envelope object around it.
+
+   The `sql/07` comment should be updated to match once this is ratified, since it is the thing
+   a WP-H implementer will read first.
+3. **`"v": 1` is inside the preimage, and this is the load-bearing part.** Without a version
+   marker, changing the hashed field set later invalidates **every existing chain**, because a
+   verifier can no longer recompute historical hashes — [tasks.md](tasks.md) already warns that
+   changing the hashed field set "invalidates every existing chain". With the marker, evolution
+   is additive: the verifier dispatches per event version, and chains still link across the
+   boundary because `prev_hash` is only bytes.
+4. **The caller supplies `recorded_at`** (RFC 3339 UTC, fixed microsecond precision) rather than
+   relying on the `clock_timestamp()` default. A hashed timestamp is tamper-evident; a defaulted
+   one cannot be pre-computed by the caller, and a superuser could edit it without breaking the
+   chain. No DDL change — the default simply goes unused.
+5. **Taxonomy: freeze the seven values already in the CHECK**, and register the two known NFR-02
+   gaps as deviations in [analysis.md](analysis.md) rather than widening the constraint:
+   (a) cross-document retrieval queries, structurally excluded by the
+   `stream = 'doc:' || document_id` CHECK; (b) the compose-gate `--accept-incomplete` override,
+   which plan Decision 2 requires to be "recorded, audited" and which has no document-scoped
+   home. Both belong in a future `audit.run_event` table. **Do not widen `audit.event`'s stream
+   CHECK** — it was made structural deliberately.
+
+**Confidence: High** on the scheme and preimage; **Medium** on the taxonomy, which is the DDL's
+own proposal and has never been reviewed against a full event inventory.
+
+**Strongest objection.** This puts two canonicalisation schemes in one codebase — JCS here,
+repr-JSON in [D-14](#d-14) — and someone will eventually "unify" them. They are not unifiable:
+one is an interop-stable signature format, the other a Python-native lossless projection, and
+§Why not JCS in D-14 gives the reason. Both are injective on float64, so integrity holds in
+both. Document the boundary in WP-H's module docstring.
+
+**Cost of getting it wrong.** C4 gates every stage's side effects, and a wrong preimage is the
+worst kind of wrong: chains that verify today under the buggy implementation and fail under any
+correct one, converting the audit log's only superuser-surviving property into noise.
+
+**Needs the maintainer, not this document:** whether a non-hash-chained `run_event` table
+satisfies NFR-02's "every query logged immutably". It is a deviation from a normative *shall*
+either way, so it needs an `A-n` register entry whichever way it goes.
+
+---
+
+## D-14 — The canonical workbook projection (contract C6) ⚠️ PROPOSED, NOT RATIFIED
+
+> **Status.** Drafted 2026-08-06 to close T0.5. C6 is the only contract at zero — `write_workbook()`
+> raises and no *workbook* projection function exists — and it blocks WP-G entirely, including
+> the gating G.6 desktop-Excel test. (`services.claims.project` is a different projection: claims
+> to canonical fields, contract C8. C6 is the projection of the whole store to the hashed
+> artifact.) A default, not a conclusion.
+
+**Bytes:** UTF-8 output of
+`json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
+
+This **is** the "sorted-key JSON, floats via `repr()`" already frozen in tasks.md and plan
+Decision 8c — Python's JSON encoder uses `float.__repr__` — so it needs no new serialisation
+code. [V] — verified in this repo's venv:
+
+| Check | Result |
+|---|---|
+| `'%.16g'` collides `0.1+0.2` with `0.3` | **yes** — both print `0.3`; this is plan 8c's own motivating case |
+| `repr` distinguishes them | yes — `0.30000000000000004` vs `0.3` |
+| `json.dumps` uses `float.__repr__` | yes |
+| values round-trip exactly | yes |
+| `allow_nan=False` rejects NaN | yes, raises `ValueError` — a stray NaN is loud, not silently `NaN` |
+
+**Why not JCS here**, when [D-13](#d-13) mandates it for audit: ECMAScript number rules collapse
+`650.0` → `650`, erasing the int/float distinction the store's `value: object` genuinely carries.
+repr-JSON keeps it. The two contracts want different things — cross-language verifiability there,
+lossless Python round-trip here.
+
+**Shape.** Top level
+`{projection_version: 1, policy: {...}, components: [...], conflicts: [...], sources: [...]}`.
+Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
+fields by name, condition groups by `repr(grouping_key())` matching `project()`, candidates in
+existing candidate order.
+
+**One frozen `encode_value()`** for `value: object` — `DeclaredBand` via `model_dump`, datetimes
+as RFC 3339 UTC with microseconds **always** printed (`isoformat()` omits `.000000` when zero, so
+pin a formatter rather than relying on it), enums via `.value`, frozensets sorted as `derived`
+already is.
+
+**Two decisions here are judgement calls, not mechanics:**
+
+1. **Policy version and computed `CellFlag`s go inside the projection.** `flags_for` takes a
+   threshold, and τ is B.10 policy data — so the workbook is a function of *(store, policy)*.
+   A projection that hashes only the store certifies AC-7 while the artifact silently varies with
+   configuration, which is exactly the false-integrity claim C6 exists to prevent. **Recommended:
+   yes, inside. Defensible both ways** — the counter-argument is that policy is not data and
+   re-tuning τ should not invalidate historical projection hashes.
+2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands a generated-on
+   stamp; AC-7 and G.5's `sleep(1.1)` re-run demand byte-identity. Wall clock cannot satisfy
+   both, and a store-derived stamp satisfies both **without any normative edit**.
+
+   This rule is not new — `services/output/__init__.py:151-153` already states it ("no timestamps
+   or ordering derived from anything but the store itself, plus an explicit generated-on stamp").
+   What is new is promoting it out of a docstring on an unimplemented function into a ratified
+   decision, because an implementer reading only `spec.md` would reach for `datetime.now()` and
+   break AC-7 with nothing to warn them. Registered as [A-48](analysis.md).
+
+   **What still needs deciding is the derivation**, not the principle: max `ingested_at` over
+   covered documents, or the latest audit `seq`, or something else. Each has different behaviour
+   when a document is re-ingested with unchanged content.
+
+**Two hashes stored**, per plan 8c: `sha256(projection)` is the artifact of record;
+`sha256(normalized xlsx)` is a renderer-regression check only, never the integrity claim.
+
+**Golden fixture (T0.5):** one committed projection plus its hash for a synthetic two-supplier PV
+store containing D-1's Sungrow trio, so the fixture exercises list-valued fields rather than the
+easy one-value-per-key case. Note `tests/fixtures/` deliberately ships **no** projection fixture
+until this decision is ratified — see `tests/fixtures/README.md`.
+
+**Confidence: High** on the byte format; **Medium** on the shape; the two items above are
+explicitly the maintainer's call.
+
+**Strongest objection.** A Python-repr format is unverifiable from any other language, which is
+the problem JCS was standardised to solve. Counter: the projection's only consumers are this
+repo's renderer and its CI, injectivity on float64 is the property that actually matters and it
+holds, and `projection_version` exists precisely so a second-language consumer can force the
+question later.
+
+**Cost of getting it wrong.** Lowest of the five unfinished contracts *if* wrong in shape —
+projections are regenerable, so a format change re-baselines golden hashes rather than losing
+data. The expensive mistake is decision 1 above: leave policy outside the hash and the artifact
+procurement decisions are cited from carries a false integrity claim.
+
+---
+
 ## Carried forward as genuinely unresolved
 
 These could not be settled and are assigned in [tasks.md](tasks.md):

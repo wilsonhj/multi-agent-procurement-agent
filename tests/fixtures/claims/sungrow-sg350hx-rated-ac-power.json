@@ -1,0 +1,107 @@
+[
+  {
+    "condition": {
+      "base_mva": null,
+      "basis": null,
+      "derived": [],
+      "duration_h": null,
+      "note": null,
+      "reference_temperature_c": null,
+      "rte_boundary": null,
+      "side": null,
+      "standards_regime": null,
+      "tap_position_pct": null,
+      "temperature_c": 30.0,
+      "weighting": null
+    },
+    "confidence": 0.95,
+    "document_id": "sungrow-eu-ds",
+    "extractor_version": "fixture@1",
+    "field_name": "rated_ac_power",
+    "source_ref": {
+      "bounding_box": null,
+      "document_id": "sungrow-eu-ds",
+      "extractor_version": "fixture@1",
+      "page": 2,
+      "page_title": null,
+      "retrieved_at": null,
+      "section": "Table 2: AC Output",
+      "source_authority": null,
+      "url": null
+    },
+    "source_tier": "system_of_record",
+    "unit": "kVA",
+    "value": 352.0,
+    "verbatim_value": "352 kVA @30°C"
+  },
+  {
+    "condition": {
+      "base_mva": null,
+      "basis": null,
+      "derived": [],
+      "duration_h": null,
+      "note": null,
+      "reference_temperature_c": null,
+      "rte_boundary": null,
+      "side": null,
+      "standards_regime": null,
+      "tap_position_pct": null,
+      "temperature_c": 40.0,
+      "weighting": null
+    },
+    "confidence": 0.95,
+    "document_id": "sungrow-eu-ds",
+    "extractor_version": "fixture@1",
+    "field_name": "rated_ac_power",
+    "source_ref": {
+      "bounding_box": null,
+      "document_id": "sungrow-eu-ds",
+      "extractor_version": "fixture@1",
+      "page": 2,
+      "page_title": null,
+      "retrieved_at": null,
+      "section": "Table 2: AC Output",
+      "source_authority": null,
+      "url": null
+    },
+    "source_tier": "system_of_record",
+    "unit": "kVA",
+    "value": 320.0,
+    "verbatim_value": "320 kVA @40°C"
+  },
+  {
+    "condition": {
+      "base_mva": null,
+      "basis": null,
+      "derived": [],
+      "duration_h": null,
+      "note": null,
+      "reference_temperature_c": null,
+      "rte_boundary": null,
+      "side": null,
+      "standards_regime": null,
+      "tap_position_pct": null,
+      "temperature_c": 50.0,
+      "weighting": null
+    },
+    "confidence": 0.95,
+    "document_id": "sungrow-eu-ds",
+    "extractor_version": "fixture@1",
+    "field_name": "rated_ac_power",
+    "source_ref": {
+      "bounding_box": null,
+      "document_id": "sungrow-eu-ds",
+      "extractor_version": "fixture@1",
+      "page": 2,
+      "page_title": null,
+      "retrieved_at": null,
+      "section": "Table 2: AC Output",
+      "source_authority": null,
+      "url": null
+    },
+    "source_tier": "system_of_record",
+    "unit": "kVA",
+    "value": 295.0,
+    "verbatim_value": "295 kVA @50°C"
+  }
+]

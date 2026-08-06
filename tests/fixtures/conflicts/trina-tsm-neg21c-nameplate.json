@@ -1,0 +1,78 @@
+{
+  "candidates": [
+    {
+      "condition": {
+        "base_mva": null,
+        "basis": null,
+        "derived": [],
+        "duration_h": null,
+        "note": null,
+        "reference_temperature_c": null,
+        "rte_boundary": null,
+        "side": null,
+        "standards_regime": null,
+        "tap_position_pct": null,
+        "temperature_c": null,
+        "weighting": null
+      },
+      "confidence": 0.97,
+      "source_ref": {
+        "bounding_box": null,
+        "document_id": "trina-datasheet",
+        "extractor_version": "fixture@1",
+        "page": 1,
+        "page_title": null,
+        "retrieved_at": null,
+        "section": "Electrical Data",
+        "source_authority": null,
+        "url": null
+      },
+      "source_tier": "system_of_record",
+      "unit": "Wp",
+      "value": 650.0,
+      "verbatim_value": "650 Wp"
+    },
+    {
+      "condition": {
+        "base_mva": null,
+        "basis": null,
+        "derived": [],
+        "duration_h": null,
+        "note": null,
+        "reference_temperature_c": null,
+        "rte_boundary": null,
+        "side": null,
+        "standards_regime": null,
+        "tap_position_pct": null,
+        "temperature_c": null,
+        "weighting": null
+      },
+      "confidence": 0.88,
+      "source_ref": {
+        "bounding_box": null,
+        "document_id": null,
+        "extractor_version": "fixture@1",
+        "page": null,
+        "page_title": "CEC listing",
+        "retrieved_at": null,
+        "section": null,
+        "source_authority": null,
+        "url": "https://example.invalid/cec/TSM-NEG21C.20"
+      },
+      "source_tier": "web_supplement",
+      "unit": "Wp",
+      "value": 655.0,
+      "verbatim_value": "655 Wp"
+    }
+  ],
+  "component_category": "pv_modules",
+  "conflict_class": "record_vs_web",
+  "detected_at": "2026-01-01T00:00:00Z",
+  "entry_id": "fixture-conflict-1",
+  "explanation": "Datasheet states 650 Wp; the CEC listing states 655 Wp under the same unstated condition.",
+  "field_name": "nameplate_power",
+  "model": "TSM-NEG21C.20",
+  "resolution": null,
+  "severity": 2,
+  "supplier": "Trina Solar"
+}

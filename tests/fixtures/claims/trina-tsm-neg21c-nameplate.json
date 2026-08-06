@@ -1,0 +1,72 @@
+[
+  {
+    "condition": {
+      "base_mva": null,
+      "basis": null,
+      "derived": [],
+      "duration_h": null,
+      "note": null,
+      "reference_temperature_c": null,
+      "rte_boundary": null,
+      "side": null,
+      "standards_regime": null,
+      "tap_position_pct": null,
+      "temperature_c": null,
+      "weighting": null
+    },
+    "confidence": 0.97,
+    "document_id": "trina-datasheet",
+    "extractor_version": "fixture@1",
+    "field_name": "nameplate_power",
+    "source_ref": {
+      "bounding_box": null,
+      "document_id": "trina-datasheet",
+      "extractor_version": "fixture@1",
+      "page": 1,
+      "page_title": null,
+      "retrieved_at": null,
+      "section": "Electrical Data",
+      "source_authority": null,
+      "url": null
+    },
+    "source_tier": "system_of_record",
+    "unit": "Wp",
+    "value": 650.0,
+    "verbatim_value": "650 Wp"
+  },
+  {
+    "condition": {
+      "base_mva": null,
+      "basis": null,
+      "derived": [],
+      "duration_h": null,
+      "note": null,
+      "reference_temperature_c": null,
+      "rte_boundary": null,
+      "side": null,
+      "standards_regime": null,
+      "tap_position_pct": null,
+      "temperature_c": null,
+      "weighting": null
+    },
+    "confidence": 0.88,
+    "document_id": "cec-listing",
+    "extractor_version": "fixture@1",
+    "field_name": "nameplate_power",
+    "source_ref": {
+      "bounding_box": null,
+      "document_id": null,
+      "extractor_version": "fixture@1",
+      "page": null,
+      "page_title": "CEC listing",
+      "retrieved_at": null,
+      "section": null,
+      "source_authority": null,
+      "url": "https://example.invalid/cec/TSM-NEG21C.20"
+    },
+    "source_tier": "web_supplement",
+    "unit": "Wp",
+    "value": 655.0,
+    "verbatim_value": "655 Wp"
+  }
+]

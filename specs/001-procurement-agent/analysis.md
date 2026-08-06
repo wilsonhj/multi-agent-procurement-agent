@@ -830,6 +830,7 @@ D-14](clarifications.md).
 | ID | Severity | Finding | Status |
 |---|---|---|---|
 | A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Open** — D-14 proposes promoting that docstring's rule to a decision (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Needs the maintainer to confirm the derivation |
+| A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Open** — D-13 now records both; where these events live is the maintainer's call |
 
 ## A-48 (Medium) — a constraint that only one docstring knows about
 
@@ -867,6 +868,38 @@ register does not get to pick the derivation.
 
 ---
 
+
+## A-49 (Medium) — an event type with nowhere to go
+
+`sql/07_audit_event.sql` is unusually careful about making its guarantees structural: `stream` is
+tied to `document_id` by CHECK so a stream can never name a document that does not exist, and the
+FK is `ON DELETE RESTRICT`. Those are the file's two strongest properties and neither should be
+weakened.
+
+The consequence nobody traced is that they make one of the taxonomy's own seven values
+unstorable. A gap-triggered web search has no originating document:
+
+- FR-WEB-01 fires it only "when a required field has no system-of-record value";
+- `services/web_search.search_for_gap(field_name, supplier, model)` takes no `document_id`, and
+  its docstring already cites NFR-02 for query logging;
+- the eight `DocumentType` members are all supplier-document kinds, so the web source cannot be
+  registered as a `document` row to satisfy the FK either.
+
+**Why this matters more than the gap D-13 originally cited.** NFR-02 enumerates "web queries,
+extractions, conflicts and resolutions" — web queries are named explicitly. Retrieval queries are
+not, and `plan.md:66` only appears to require them because it paraphrases NFR-02 with the word
+*web* dropped. So the register had recorded a gap the spec does not create, while missing one it
+does.
+
+**Options, none free.** Fan one search out to each involved document's stream with a shared
+correlation id — full chain coverage, no new table, N rows per search, and it only works where
+*some* document is involved. Or put web searches in the `audit.run_event` table D-13 recommends
+for the compose-gate override, accepting that they are then chained per run rather than per
+document. Or register web sources as documents, which needs a ninth `DocumentType` and changes
+what `document` means.
+
+**Not decided here.** All three are defensible and the choice interacts with D-13's taxonomy
+question, so it belongs with the maintainer.
 
 ## Consistency checks that passed
 

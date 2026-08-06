@@ -829,11 +829,11 @@ D-14](clarifications.md).
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and nothing had named the conflict.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. Any wall-clock stamp fails AC-7; omitting the stamp fails FR-OUT-06 | **Open** — resolution proposed in D-14 (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Either answer edits a normative requirement, so it needs the maintainer |
+| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Open** — D-14 proposes promoting that docstring's rule to a decision (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Needs the maintainer to confirm the derivation |
 
-## A-48 (Medium) — two normative requirements that cannot both hold as written
+## A-48 (Medium) — a constraint that only one docstring knows about
 
-The contradiction is exact, not a matter of interpretation:
+The tension is exact, and it is only a *contradiction* under the reading nobody wrote down:
 
 - `spec.md:144` (FR-OUT-06): the workbook "carries a generated-on timestamp plus the vintage of
   every source."
@@ -842,20 +842,28 @@ The contradiction is exact, not a matter of interpretation:
   exists *because* a naive timestamp would otherwise pass by accident on a fast machine.
 
 A wall-clock stamp changes between those two runs, so it fails AC-7. Removing the stamp fails
-FR-OUT-06. The pair has been in the spec since AC-7 was added and no artifact records the
-tension, which is why it surfaced only when C6's byte format was being frozen — the first task
-that has to write the stamp.
+FR-OUT-06. **A store-derived stamp satisfies both texts with no normative edit at all** — which
+is what makes this a documentation defect rather than a spec defect.
 
-**Why it stayed hidden.** Both requirements are individually testable and neither test exists
-yet: `write_workbook()` raises, so nothing has ever emitted a `generated_on` value, and AC-7 is
-covered only at the archive level by `normalize_archive`. Two requirements can contradict each
-other indefinitely while both sit at `partial` — the traceability table tracks whether each row
-is *supported*, and has no mechanism for noticing that two supported rows are mutually
-exclusive. That is a real gap in the technique, not just in this instance.
+**The resolution already exists, in exactly one place, and it is the wrong place.**
+`services/output/__init__.py:151-153` says the workbook "must be deterministically regenerable
+from the canonical store (FR-OUT-06), which means no timestamps or ordering derived from
+anything but the store itself, plus an explicit generated-on stamp." That sentence *is* the
+answer. But it is a docstring on a function that raises `NotImplementedError`, and nothing in
+`spec.md`, the traceability table or this register repeats it. An implementer reading only the
+normative artifacts would reach for `datetime.now()` and satisfy FR-OUT-06 while breaking AC-7,
+with no document telling them otherwise until G.5 went red.
 
-**Not fixed here.** D-14 proposes deriving the stamp from the store, which satisfies both by
-making the stamp a function of the data rather than of the run. It is a spec edit either way and
-the register does not get to make it.
+**Why it stayed invisible.** Both requirements are individually testable and neither test exists
+yet: nothing has ever emitted a `generated_on` value, and AC-7 is covered only at the archive
+level by `normalize_archive`. Two requirements can sit in tension indefinitely while both are
+marked `partial` — the traceability table tracks whether each row is *supported*, and has no
+mechanism for noticing that two supported rows constrain each other. That is a real gap in the
+technique, not just in this instance, and it is the part worth keeping.
+
+**Not fixed here.** D-14 proposes promoting the docstring's rule to a ratified decision and
+naming the derivation (max `ingested_at`, or latest audit `seq` over covered documents). The
+register does not get to pick the derivation.
 
 ---
 

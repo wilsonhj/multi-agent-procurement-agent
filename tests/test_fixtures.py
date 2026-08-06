@@ -5,46 +5,74 @@ against **committed fixture files** matching the frozen schemas. WP-B ships gold
 claim JSON; WP-E consumes it and ships golden conflict JSON; WP-F and WP-G consume
 that. Nobody waits on anybody's service."
 
-That only works if the fixtures are *known* to still match the schemas. A fixture
-nothing asserts against is worse than no fixture, because a downstream package
-builds on it and discovers the drift at integration time - which is precisely the
-coupling the technique exists to remove. So every file here is checked three ways:
+That only works if the fixtures are *known* to still match the schemas, so every
+file here is checked three ways, and the rationale lives here rather than being
+repeated on each test:
 
-1. **It validates** against its model. Catches a schema change that the fixture
-   was never updated for.
-2. **It round-trips byte-for-byte.** Catches drift in the *other* direction - a
-   field added to the model, or a serialisation alias changed, would leave the
-   committed JSON a valid-but-incomplete instance, which `model_validate` alone
-   accepts silently because every added field so far has had a default.
-3. **It still means what it was written to mean.** Schema-valid JSON encoding the
-   wrong worked example is the failure mode neither check above can see.
+1. **It validates** against its model — catches a schema change the fixture was
+   never updated for.
+2. **Its canonical bytes are unchanged.** Not a structural compare: an earlier
+   version of this module asserted `model_dump() == json.loads(file)`, which is
+   blind to serialisation drift. Regenerating with `json.dumps`' default
+   `ensure_ascii=True` rewrites the Sungrow fixture's `°` to `\\u00b0` — different
+   bytes, identical structure, and the structural check passed. Comparing bytes
+   subsumes the structural check and closes that hole.
+3. **It still means what it was written to mean.** Schema-valid, byte-canonical
+   JSON encoding the wrong worked example is the failure neither check above sees.
 
-Only contracts that are actually frozen get fixtures. C2/C3 (claims) and C5
-(conflicts) are covered. **C6 deliberately is not**: the canonical workbook
-projection is unfrozen (T0.5), and publishing a golden projection now would freeze
-by accident the one decision `tasks.md` says must be made deliberately.
+Only frozen contracts get fixtures. C2/C3 (claims) and C5 (conflicts) are covered.
+**C6 deliberately is not**: the canonical workbook projection is unfrozen (T0.5),
+and publishing a golden projection now would freeze by accident the one decision
+`tasks.md` says must be made deliberately.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from procurement_agent.schema import ConflictClass, ConflictQueueEntry, Severity
+from procurement_agent.schema import (
+    ConflictClass,
+    ConflictQueueEntry,
+    Severity,
+    SourceTier,
+)
 from procurement_agent.services.claims import FieldClaim
-from procurement_agent.services.conflict_hitl import assign_severity, comparison_pairs
+from procurement_agent.services.conflict_hitl import (
+    assign_severity,
+    comparison_pairs,
+    tolerance_for,
+    values_conflict,
+)
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
-#: Subdirectory -> the contract it carries. A directory absent from this map is a
-#: fixture nothing validates, so `test_every_fixture_lives_in_a_known_directory`
-#: fails rather than letting it sit there unchecked.
-FIXTURE_KINDS: dict[str, str] = {
-    "claims": "C2/C3 - a list of FieldClaim",
-    "conflicts": "C5 - a single ConflictQueueEntry",
+#: The one serialisation these files are written in. `ensure_ascii=False` is part
+#: of the contract, not a preference - see the module docstring.
+CANONICAL_JSON: dict[str, Any] = {"indent": 2, "sort_keys": True, "ensure_ascii": False}
+
+
+def _load_claims(raw: Any) -> Any:
+    assert isinstance(raw, list), "a claims fixture is a list of FieldClaim"
+    return [FieldClaim.model_validate(c).model_dump(mode="json") for c in raw]
+
+
+def _load_conflict(raw: Any) -> Any:
+    return ConflictQueueEntry.model_validate(raw).model_dump(mode="json")
+
+
+#: Subdirectory -> the loader that validates it. A directory absent from this map
+#: is a fixture nothing validates. It is a *dispatch* table rather than a set of
+#: labels because the previous version fell through to `ConflictQueueEntry` for
+#: any unrecognised kind: adding `workbooks/` here would have validated a golden
+#: projection as a queue entry and reported coverage it did not have.
+FIXTURE_LOADERS: dict[str, Callable[[Any], Any]] = {
+    "claims": _load_claims,
+    "conflicts": _load_conflict,
 }
 
 
@@ -52,62 +80,60 @@ def _fixture_files() -> list[Path]:
     return sorted(FIXTURE_ROOT.rglob("*.json"))
 
 
-def _load(path: Path) -> Any:
-    return json.loads(path.read_text())
-
-
 def _ids(paths: list[Path]) -> list[str]:
     return [str(p.relative_to(FIXTURE_ROOT)) for p in paths]
 
 
-def test_the_fixture_root_is_not_empty() -> None:
-    """T0.6 asks for fixture sets to exist at all.
+def _claims(name: str) -> list[FieldClaim]:
+    path = FIXTURE_ROOT / "claims" / name
+    return [FieldClaim.model_validate(c) for c in json.loads(path.read_text())]
 
-    Without this, every parametrised test below would collect zero cases and the
-    suite would pass green over a deleted directory - the vacuous-pass shape that
-    `sql/README.md` already records twice.
-    """
+
+def _conflict(name: str) -> ConflictQueueEntry:
+    path = FIXTURE_ROOT / "conflicts" / name
+    return ConflictQueueEntry.model_validate(json.loads(path.read_text()))
+
+
+TRINA = "trina-tsm-neg21c-nameplate.json"
+SUNGROW = "sungrow-sg350hx-rated-ac-power.json"
+
+
+def test_the_fixture_root_is_not_empty() -> None:
+    """Without this, the parametrised test below collects zero cases and the suite
+    passes green over a deleted directory - the vacuous-pass shape `sql/README.md`
+    already records twice."""
     assert FIXTURE_ROOT.is_dir()
     assert _fixture_files(), "no fixtures found; the parametrised tests would be vacuous"
 
 
 def test_every_fixture_lives_in_a_known_directory() -> None:
-    """A new fixture directory must be wired into `FIXTURE_KINDS` to be validated.
-
-    Adding `tests/fixtures/workbooks/` and committing a golden projection would
-    otherwise be checked by nothing at all, while *looking* covered because this
-    module exists.
-    """
+    """A new fixture directory must be given a loader to be validated at all."""
     unknown = {
         str(p.relative_to(FIXTURE_ROOT))
         for p in _fixture_files()
-        if p.relative_to(FIXTURE_ROOT).parts[0] not in FIXTURE_KINDS
+        if p.relative_to(FIXTURE_ROOT).parts[0] not in FIXTURE_LOADERS
     }
     assert not unknown, f"fixtures in unmapped directories: {sorted(unknown)}"
 
 
 @pytest.mark.parametrize("path", _fixture_files(), ids=_ids(_fixture_files()))
-def test_a_fixture_round_trips_through_its_model(path: Path) -> None:
-    """Validate, re-dump, and compare against what is on disk.
+def test_a_fixture_is_byte_identical_to_its_canonical_form(path: Path) -> None:
+    """Validate, re-dump canonically, and compare the actual bytes on disk.
 
-    `model_validate` alone is a weak check: every field added to these models so
-    far has carried a default, so a fixture written before the addition still
-    validates and silently encodes the default rather than a considered value.
-    Comparing the re-dump against the committed bytes catches that.
+    See the module docstring for why this is a byte compare and not a structural
+    one. The practical consequence: a fixture regenerated with different
+    `json.dumps` options fails here rather than sitting on disk in a second,
+    undeclared serialisation.
     """
-    raw = _load(path)
+    raw_text = path.read_text()
     kind = path.relative_to(FIXTURE_ROOT).parts[0]
+    dumped = FIXTURE_LOADERS[kind](json.loads(raw_text))
 
-    if kind == "claims":
-        assert isinstance(raw, list), "a claims fixture is a list of FieldClaim"
-        dumped: Any = [FieldClaim.model_validate(c).model_dump(mode="json") for c in raw]
-    else:
-        dumped = ConflictQueueEntry.model_validate(raw).model_dump(mode="json")
-
-    assert dumped == raw, (
-        f"{path.name} no longer round-trips; the model and the committed JSON have "
-        "diverged. Regenerate the fixture and re-check the behavioural assertions "
-        "below - do not just overwrite it."
+    assert json.dumps(dumped, **CANONICAL_JSON) + "\n" == raw_text, (
+        f"{path.name} is not byte-identical to its canonical form. Either the model "
+        "and the committed JSON have diverged, or it was regenerated with different "
+        f"json.dumps options - the contract is {CANONICAL_JSON}. Regenerate and "
+        "re-check the behavioural assertions; do not just overwrite it."
     )
 
 
@@ -115,58 +141,54 @@ def test_the_sungrow_trio_still_raises_no_conflict() -> None:
     """D-1's worked example, loaded from disk rather than built in code.
 
     One datasheet stating one parameter at three ambients is three legitimate
-    values, not "four apparent conflicts and zero real ones". `comparison_pairs`
-    returning anything non-empty here means the condition gate has been defeated
-    again - the defect `test_the_sungrow_trio_raises_no_conflict` in
-    `test_propose_commit.py` was written for, now also pinned against the
-    committed artifact every other work package builds on.
+    values, not "four apparent conflicts and zero real ones". The values and
+    temperatures are pinned so the fixture cannot drift into a different example
+    while still parsing - parity with `_sungrow()` in `test_propose_commit.py`.
     """
-    path = FIXTURE_ROOT / "claims" / "sungrow-sg350hx-rated-ac-power.json"
-    claims = [FieldClaim.model_validate(c) for c in _load(path)]
-    assert len(claims) == 3
+    claims = _claims(SUNGROW)
+    assert [(c.value, c.condition.temperature_c) for c in claims] == [
+        (352.0, 30.0),
+        (320.0, 40.0),
+        (295.0, 50.0),
+    ]
     candidates = [c.as_candidate() for c in claims]
     assert not any(c.condition.is_unstated() for c in candidates)
     assert comparison_pairs(candidates) == []
 
 
-def test_the_trina_pair_still_raises_exactly_one_conflict() -> None:
+def test_the_trina_pair_still_disagrees_beyond_tolerance() -> None:
     """The other direction: a record value and a web value that genuinely disagree.
 
-    A fixture set that only contains the no-conflict case would let a change
-    suppressing *all* conflicts pass green, which is the more dangerous failure -
-    FR-5 is about surfacing disagreement, not hiding it.
+    Asserting only "one comparison pair" would be too weak. `comparison_pairs`
+    reports *comparability*, not disagreement - widening `nameplate_power`'s
+    tolerance from 1 Wp to 10 would leave the pair intact while the conflict
+    silently vanished. So this asserts the verdict, and that the two candidates
+    sit on opposite source tiers, which is what makes it RECORD_VS_WEB rather
+    than two record values disagreeing.
     """
-    path = FIXTURE_ROOT / "claims" / "trina-tsm-neg21c-nameplate.json"
-    claims = [FieldClaim.model_validate(c) for c in _load(path)]
-    assert len(claims) == 2
-
-    pairs = comparison_pairs([c.as_candidate() for c in claims])
-    assert len(pairs) == 1
-    left, right = pairs[0]
-    # The pair is specifically record-against-web, which is what makes it a
-    # RECORD_VS_WEB conflict rather than two record values disagreeing.
-    assert {left.source_tier, right.source_tier} == {
-        claims[0].source_tier,
-        claims[1].source_tier,
+    claims = _claims(TRINA)
+    assert {c.source_tier for c in claims} == {
+        SourceTier.SYSTEM_OF_RECORD,
+        SourceTier.WEB_SUPPLEMENT,
     }
+
+    candidates = [c.as_candidate() for c in claims]
+    pairs = comparison_pairs(candidates)
+    assert len(pairs) == 1
+
+    left, right = pairs[0]
+    verdict = values_conflict(left, right, tolerance=tolerance_for("nameplate_power"))
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.RECORD_VS_WEB
     assert {left.value, right.value} == {650.0, 655.0}
 
 
 def test_the_conflict_fixture_matches_the_claims_it_was_derived_from() -> None:
-    """The queue entry is the projection of the claim pair, so the two must agree.
-
-    WP-E consumes the claim fixture and produces the conflict fixture. If they
-    drift apart, a downstream package building on the conflict fixture is building
-    on something the upstream one no longer produces - the exact integration
-    failure committed fixtures exist to prevent.
-    """
-    claims = [
-        FieldClaim.model_validate(c)
-        for c in _load(FIXTURE_ROOT / "claims" / "trina-tsm-neg21c-nameplate.json")
-    ]
-    entry = ConflictQueueEntry.model_validate(
-        _load(FIXTURE_ROOT / "conflicts" / "trina-tsm-neg21c-nameplate.json")
-    )
+    """WP-E consumes the claim fixture and produces the conflict fixture, so if the
+    two drift apart a downstream package is building on something upstream no
+    longer produces."""
+    claims = _claims(TRINA)
+    entry = _conflict(TRINA)
     assert entry.field_name == claims[0].field_name
     assert [c.value for c in entry.candidates] == [c.value for c in claims]
     assert [c.source_tier for c in entry.candidates] == [c.source_tier for c in claims]
@@ -175,30 +197,24 @@ def test_the_conflict_fixture_matches_the_claims_it_was_derived_from() -> None:
 def test_the_conflict_fixtures_severity_is_what_the_policy_computes_today() -> None:
     """Pins the *semantics*, not just the shape.
 
-    `assign_severity` is a pure function of four arguments; this asserts the
-    committed severity is still the one it returns. A deliberate policy change
-    turns this red, which is correct - the fixture is what WP-F and WP-G triage
-    against, so a severity change is a change to their input and should require
-    someone to look at it rather than propagating silently.
+    `conflict_class` is read off the fixture rather than hardcoded: passing a
+    literal would let the committed class drift while severity still recomputed
+    green, which is the same shape of blind spot as asserting a pair instead of a
+    verdict above. The expected class is then asserted separately.
     """
-    entry = ConflictQueueEntry.model_validate(
-        _load(FIXTURE_ROOT / "conflicts" / "trina-tsm-neg21c-nameplate.json")
-    )
+    entry = _conflict(TRINA)
+    assert entry.conflict_class is ConflictClass.RECORD_VS_WEB
+
     candidates = list(entry.candidates)
-    recomputed = assign_severity(
-        entry.field_name, ConflictClass.RECORD_VS_WEB, candidates, candidates
-    )
+    recomputed = assign_severity(entry.field_name, entry.conflict_class, candidates, candidates)
     assert entry.severity is recomputed
     assert entry.severity is Severity.MEDIUM
 
 
 def test_no_fixture_carries_a_resolution() -> None:
-    """FR-HITL-06: a resolution is a human decision, and no fixture may ship one.
-
-    A committed `resolution` would be a decision with no human behind it, and any
-    package seeding a store from these fixtures would import it as though a
-    reviewer had made it.
-    """
+    """FR-HITL-06: a resolution is a human decision. A committed one is a decision
+    with nobody behind it, and anything seeding a store from these fixtures would
+    import it as though a reviewer had made it."""
     for path in (FIXTURE_ROOT / "conflicts").glob("*.json"):
-        entry = ConflictQueueEntry.model_validate(_load(path))
+        entry = _conflict(path.name)
         assert entry.resolution is None, f"{path.name} ships a fabricated resolution"

@@ -618,20 +618,32 @@ quality dominates dataset size for the confidence model.
 > — but note the deadline: **the version marker in §3 must exist before the first event is ever
 > emitted**, so this needs ratifying before WP-H writes anything, not after.
 >
-> **This mostly ratifies what `sql/07_audit_event.sql` already sketches, and changes one thing.**
-> That file's caller-sequence comment already specifies "canonicalise the payload (RFC 8785, NOT
-> jsonb)" and already explains why jsonb fails — it normalises key order but preserves whatever
-> numeric literal text it was given, so `1.0` and `1.00` stay textually distinct. What it leaves
-> open is the *layout*: it sketches `hash := sha256(prev_hash || canonical_payload || ...)`, and
-> that trailing `...` is the gap — the field set is unenumerated and the form is a concatenation.
-> §2 below closes the first and **changes** the second. Separately, `sql/07:67-70` flags the
-> digest itself as one of the file's undecided items, since plan Decision 9 measures chain
-> performance without ever pinning an algorithm; §1 pins it.
+> **Relationship to `sql/07_audit_event.sql`: one adoption, one change, four new pins.**
+> *Adopted* — that file's caller-sequence comment already specifies "canonicalise the payload
+> (RFC 8785, NOT jsonb)" and already explains why jsonb fails: it normalises key order but
+> preserves whatever numeric literal text it was given, so `1.0` and `1.00` stay textually
+> distinct. §Scheme takes that as given rather than re-deciding it.
+> *Changed* — the layout. It sketches `hash := sha256(prev_hash || canonical_payload || ...)`;
+> the trailing `...` leaves the field set unenumerated and the form is a delimiter-free
+> concatenation. §2 replaces both with one canonical object.
+> *New* — nothing in the DDL settles the digest (§1: `sql/07:67-70` flags it explicitly, since
+> plan Decision 9 measures chain performance without pinning an algorithm), the version marker
+> (§3), who supplies `recorded_at` (§4), or whether the `event_type` list is frozen (§5). Those
+> four are additions, not ratifications.
+>
+> One consequence for the DDL: §2 makes `payload_canonical` an *input to* the hash rather than
+> the hashed bytes themselves, so `sql/07`'s comment should be updated to match on ratification.
 
 **Scheme: RFC 8785 (JCS), via the `rfc8785` PyPI package** — adopting the scheme `sql/07` already
-names, with a concrete implementation. [V] — verified at PyPI: version 0.1.4, Apache-2.0 (so it
-clears the dependency licence gate), **zero runtime dependencies** (everything in
-`requires_dist` is an extra).
+names, with a concrete implementation. [V] for the package metadata only — read from the PyPI
+JSON API on 2026-08-06: version 0.1.4, Apache-2.0 (so it clears the dependency licence gate),
+**zero runtime dependencies** (everything in `requires_dist` is an extra).
+
+**The package has not been installed, locked, or executed against this repo's data** — it is not
+in `pyproject.toml` or `uv.lock`. Ratifying this decision should be paired with adding the
+dependency and a conformance test against RFC 8785's own published test vectors, because the
+whole argument for using a library rather than hand-rolling is that its conformance is somebody
+else's problem *only once you have checked it*.
 
 **Do not hand-roll this with `json.dumps(sort_keys=True)`.** [V] — the two disagree in at least
 two ways that matter, both verified in this repo's own venv: JCS sorts keys by **UTF-16 code
@@ -697,8 +709,10 @@ either way, so it needs an `A-n` register entry whichever way it goes.
 ## D-14 — The canonical workbook projection (contract C6) ⚠️ PROPOSED, NOT RATIFIED
 
 > **Status.** Drafted 2026-08-06 to close T0.5. C6 is the only contract at zero — `write_workbook()`
-> raises and no projection function exists anywhere in `src/` — and it blocks WP-G entirely,
-> including the gating G.6 desktop-Excel test. A default, not a conclusion.
+> raises and no *workbook* projection function exists — and it blocks WP-G entirely, including
+> the gating G.6 desktop-Excel test. (`services.claims.project` is a different projection: claims
+> to canonical fields, contract C8. C6 is the projection of the whole store to the hashed
+> artifact.) A default, not a conclusion.
 
 **Bytes:** UTF-8 output of
 `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
@@ -739,13 +753,19 @@ already is.
    configuration, which is exactly the false-integrity claim C6 exists to prevent. **Recommended:
    yes, inside. Defensible both ways** — the counter-argument is that policy is not data and
    re-tuning τ should not invalidate historical projection hashes.
-2. **`generated_on` must be store-derived, not wall clock.** ⚠️ **This is a latent spec
-   contradiction nobody has previously named.** FR-OUT-06 demands a generated-on stamp; AC-7 and
-   G.5's `sleep(1.1)` re-run demand byte-identity. Wall clock cannot satisfy both. The only
-   reconciliation is deriving the stamp from the store — e.g. max `ingested_at`, or the latest
-   audit `seq` over covered documents — and labelling it as such in the workbook. **This needs an
-   `A-n` register entry regardless of which way it is resolved**, because either answer edits a
-   normative requirement.
+2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands a generated-on
+   stamp; AC-7 and G.5's `sleep(1.1)` re-run demand byte-identity. Wall clock cannot satisfy
+   both, and a store-derived stamp satisfies both **without any normative edit**.
+
+   This rule is not new — `services/output/__init__.py:151-153` already states it ("no timestamps
+   or ordering derived from anything but the store itself, plus an explicit generated-on stamp").
+   What is new is promoting it out of a docstring on an unimplemented function into a ratified
+   decision, because an implementer reading only `spec.md` would reach for `datetime.now()` and
+   break AC-7 with nothing to warn them. Registered as [A-48](analysis.md).
+
+   **What still needs deciding is the derivation**, not the principle: max `ingested_at` over
+   covered documents, or the latest audit `seq`, or something else. Each has different behaviour
+   when a document is re-ingested with unchanged content.
 
 **Two hashes stored**, per plan 8c: `sha256(projection)` is the artifact of record;
 `sha256(normalized xlsx)` is a renderer-regression check only, never the integrity claim.
@@ -764,7 +784,7 @@ repo's renderer and its CI, injectivity on float64 is the property that actually
 holds, and `projection_version` exists precisely so a second-language consumer can force the
 question later.
 
-**Cost of getting it wrong.** Lowest of the four unfinished contracts *if* wrong in shape —
+**Cost of getting it wrong.** Lowest of the five unfinished contracts *if* wrong in shape —
 projections are regenerable, so a format change re-baselines golden hashes rather than losing
 data. The expensive mistake is decision 1 above: leave policy outside the hash and the artifact
 procurement decisions are cited from carries a false integrity claim.

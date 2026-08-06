@@ -37,7 +37,8 @@ The gaps, verified against the working tree:
 - **Observability is the emptiest quadrant.** The audit DDL is live-tested — six chain
   tests at `tests/test_sql_behaviour.py:387-429` — but nothing can emit an event:
   `sql/README.md` (design decision 5) records that the Python envelope and canonicalisation
-  do not exist, so "nothing may emit an event yet".
+  do not exist, so "nothing may emit an event yet". The canonicalisation half is now
+  drafted — D-13, proposed and not ratified — but no code emits an event either way.
 - **The gold set is the acknowledged blocker.** The 30–50 labelled-document set
   (tasks.md B.9, clarifications D-11) gates any accuracy claim; every figure in the plan is
   extrapolated from other domains.
@@ -164,10 +165,19 @@ emitter, adopting avalanche's stance that observability is a control-plane conce
 than an afterthought. **Confidence: medium-high.**
 
 This is the repository's emptiest quadrant — no `logging` import in `src/`, no event
-emitter — and the only one with no competing decision on record: every other gap has a plan
-decision, a task, or a contract claiming it. The Python advisory-lock statement for the
-audit hash chain — recorded in `sql/README.md` ("Still unproven by the above") as
-must-be-written-and-load-tested — belongs to this work item, not to a later one.
+emitter. The *logging* half has no competing decision on record at all. The *audit-emitter*
+half now does, and it is a prerequisite rather than a conflict: **D-13** (contract C4,
+`specs/001-procurement-agent/clarifications.md`, drafted 2026-08-06, marked ⚠️ PROPOSED, NOT
+RATIFIED) settles the canonicalisation scheme and hash preimage this emitter would write
+against. Its own deadline is binding on this decision: *"the version marker in §3 must exist
+before the first event is ever emitted"* — so **D-13 must be ratified before this work item
+writes anything**, not after. Sequencing, restated plainly: ratify D-13 → write the emitter
+against its preimage → then the load test below.
+
+The Python advisory-lock statement for the audit hash chain — recorded in `sql/README.md`
+("Still unproven by the above") as must-be-written-and-load-tested — belongs to this work
+item, not to a later one. D-13 does not cover it; it settles what is hashed, not what
+prevents two writers forking the chain.
 
 ### 8 — A design-methodology skill encoding a smallest-extension-point ladder
 

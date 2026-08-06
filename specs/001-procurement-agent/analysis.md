@@ -821,6 +821,45 @@ complete fix in one step.
 ---
 
 
+# Round 6 — the contract advisory pass (2026-08-06)
+
+Prompted by an advisory review of C1–C7 ahead of Phase 0's remaining freezes. One new finding;
+the rest of that review produced recommendations rather than defects, drafted as [D-13 and
+D-14](clarifications.md).
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and nothing had named the conflict.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. Any wall-clock stamp fails AC-7; omitting the stamp fails FR-OUT-06 | **Open** — resolution proposed in D-14 (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Either answer edits a normative requirement, so it needs the maintainer |
+
+## A-48 (Medium) — two normative requirements that cannot both hold as written
+
+The contradiction is exact, not a matter of interpretation:
+
+- `spec.md:144` (FR-OUT-06): the workbook "carries a generated-on timestamp plus the vintage of
+  every source."
+- `spec.md` AC-7: two generations from an unchanged store are byte-identical — and
+  `tasks.md:229` (G.5) verifies precisely that with `sleep(1.1)` between the two runs. The sleep
+  exists *because* a naive timestamp would otherwise pass by accident on a fast machine.
+
+A wall-clock stamp changes between those two runs, so it fails AC-7. Removing the stamp fails
+FR-OUT-06. The pair has been in the spec since AC-7 was added and no artifact records the
+tension, which is why it surfaced only when C6's byte format was being frozen — the first task
+that has to write the stamp.
+
+**Why it stayed hidden.** Both requirements are individually testable and neither test exists
+yet: `write_workbook()` raises, so nothing has ever emitted a `generated_on` value, and AC-7 is
+covered only at the archive level by `normalize_archive`. Two requirements can contradict each
+other indefinitely while both sit at `partial` — the traceability table tracks whether each row
+is *supported*, and has no mechanism for noticing that two supported rows are mutually
+exclusive. That is a real gap in the technique, not just in this instance.
+
+**Not fixed here.** D-14 proposes deriving the stamp from the store, which satisfies both by
+making the stamp a function of the data rather than of the run. It is a spec edit either way and
+the register does not get to make it.
+
+---
+
+
 ## Consistency checks that passed
 
 - All **32** FR IDs in spec.md match the TRS analysis; none invented, none dropped. (An earlier version of this line said 26, which is the count with FR-OUT-01..06 omitted — see A-27. The sweep itself was correct; the total was not.)

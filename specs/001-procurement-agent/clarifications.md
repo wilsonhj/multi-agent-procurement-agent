@@ -612,11 +612,15 @@ quality dominates dataset size for the confidence model.
 
 ---
 
-## D-13 — Audit canonicalisation and the hash preimage (contract C4) ⚠️ PROPOSED, NOT RATIFIED
+## D-13 — Audit canonicalisation and the hash preimage (contract C4)
 
-> **Status.** Drafted 2026-08-06 to close C4's decision half; a default, not a conclusion.
-> **The deadline is real:** §3's version marker must exist before the first event is ever
-> emitted, so this needs ratifying before WP-H writes anything.
+> **Status: ADOPTED 2026-08-07** by the lead architect, as recommended. Drafted 2026-08-06 to
+> close C4's decision half. Like every decision in this file it can still be overruled, but WP-H
+> should now be written against it rather than waiting on it.
+>
+> **The deadline it carried is now discharged in one direction only:** §3's version marker must
+> exist before the first event is ever emitted. Nothing has been emitted yet, so the window is
+> still open — it closes the moment WP-H writes its first row.
 >
 > It adopts the scheme `sql/07_audit_event.sql` already names (RFC 8785), **changes** its
 > `sha256(prev_hash || canonical_payload || ...)` sketch (§2), and adds four pins the DDL leaves
@@ -697,7 +701,7 @@ in this document.
 worst kind of wrong: chains that verify today under the buggy implementation and fail under any
 correct one, converting the audit log's only superuser-surviving property into noise.
 
-**Where the run-scoped events live — recommended, and the maintainer's to confirm.**
+**Where the run-scoped events live — ADOPTED 2026-08-07.**
 NFR-02's judged-by criterion is "log entries cannot be altered or deleted after write", so an
 *unchained* append-only table with the same NOLOGIN-owner grants and TRUNCATE tripwires already
 satisfies it — plan Decision 9's own attack matrix shows privilege separation is the enforcing
@@ -722,13 +726,14 @@ events at all under the normative text. `spec.md` governs. See A-49.
 
 ---
 
-## D-14 — The canonical workbook projection (contract C6) ⚠️ PROPOSED, NOT RATIFIED
+## D-14 — The canonical workbook projection (contract C6)
 
-> **Status.** Drafted 2026-08-06 to close T0.5. C6 is the only contract at zero — `write_workbook()`
-> raises and no *workbook* projection function exists — and it blocks WP-G entirely, including
-> the gating G.6 desktop-Excel test. (`services.claims.project` is a different projection: claims
-> to canonical fields, contract C8. C6 is the projection of the whole store to the hashed
-> artifact.) A default, not a conclusion.
+> **Status: ADOPTED 2026-08-07** by the lead architect, as recommended, including both calls in
+> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero —
+> `write_workbook()` raises and no *workbook* projection function exists — and it blocked WP-G
+> entirely, including the gating G.6 desktop-Excel test. (`services.claims.project` is a
+> different projection: claims to canonical fields, contract C8. C6 is the projection of the
+> whole store to the hashed artifact.)
 
 **Bytes:** UTF-8 output of
 `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
@@ -772,7 +777,7 @@ as RFC 3339 UTC with microseconds **always** printed (`isoformat()` omits `.0000
 pin a formatter rather than relying on it), enums via `.value`, frozensets sorted as `derived`
 already is.
 
-**Two decisions here are judgement calls, not mechanics:**
+**Two judgement calls, both decided 2026-08-07 as recommended:**
 
 1. **Policy version and the computed `CellFlag`s both go inside the projection.** The workbook is
    a function of *(store, policy)*; hashing only the store certifies AC-7 while the artifact
@@ -826,9 +831,10 @@ already is.
    detector. And reclassification (`UPDATE access_restricted`) has no store timestamp at all, so
    no derivation captures it; that is a known limit, not a defect in this choice.
 
-   **Still open:** the zero-document sentinel. An empty store has no maximum, and the value must
-   be an explicit null or "no sources" — never an epoch-like date that reads as data. This must
-   be settled before the golden fixture is written.
+   **Zero-document sentinel — decided:** an empty store has no maximum, so `generated_on`
+   renders as an explicit null, which the workbook shows as *no sources*. Never a placeholder
+   date. An epoch-like value would be indistinguishable from a real vintage to a reader, and the
+   whole point of the field is that a reader can trust what it says.
 
 **Two hashes stored**, per plan 8c: `sha256(projection)` is the artifact of record;
 `sha256(normalized xlsx)` is a renderer-regression check only, never the integrity claim.
@@ -851,6 +857,72 @@ question later.
 projections are regenerable, so a format change re-baselines golden hashes rather than losing
 data. The expensive mistake is decision 1 above: leave policy outside the hash and the artifact
 procurement decisions are cited from carries a false integrity claim.
+
+---
+
+## D-15 — The confidentiality label model (contract C7, task T0.4) ⚠️ PROVISIONAL
+
+> **Status: ADOPTED PROVISIONALLY 2026-08-07.** The model below is ratified and is what the
+> schema already enforces. It is marked provisional because **two facts, not two preferences,
+> are outstanding** — see *What would overturn this*. A decision-maker cannot settle them by
+> choosing; somebody has to read the NDAs and check the evaluation roster.
+
+**Adopted: one document-level label, two values**, stored as the existing `access_restricted`
+boolean, with a per-principal clearance resolved from the OIDC subject (D-12a) and applied as
+`SET LOCAL app.allow_restricted` per transaction. Labelling happens at ingest (task A.10),
+derived from FR-ING-06's classification: contract/TOS, purchase order, pricing, terms and
+warranty are restricted; spec sheets, technical documentation and environmental regulation are
+general. **Classification below its confidence threshold labels restricted** — the failure
+direction has to be closed, not open.
+
+`allowed_document_ids` on the retrieval port is **scoping within** an entitlement, never the
+boundary. RLS is the boundary. AC-8's test is the RLS path, never the allowlist alone.
+
+**Why one boolean and not per-supplier groups.** Systematic evaluator separation by supplier is
+not standard practice in utility-scale equipment procurement, and it cannot be, because
+side-by-side comparison is the deliverable — FR-OUT-01 puts eight suppliers on one tab. The
+separations that *are* standard run along axes this model already covers:
+
+| Axis | Practice | Covered? |
+|---|---|---|
+| Document type | technical scored without sight of pricing — the two-envelope convention | yes, via the classification map above |
+| Time | pricing sealed until technical scoring closes | yes, a policy on the same label |
+| Person | conflict-of-interest recusal from one named bidder | **no** |
+
+ERCOT is the permissive regulatory case: Texas restructured in 1999, so a private merchant buyer
+faces no commission-mandated process and no independent-evaluator requirement. The binding
+constraints here are contractual — NDAs and trade-secret exposure — not statutory.
+
+**What would overturn this, and it is two questions of fact:**
+
+1. Do any executed supplier NDAs go beyond "Representatives with a need to know" — naming
+   individuals, requiring access logs, or requiring segregation from personnel who work with
+   competing suppliers? If any single one does, this model is insufficient as a compliance
+   mechanism.
+2. Will anyone on the evaluation hold a conflict with a specific bidder — an external
+   consultant, the owner's engineer, a prior relationship — such that they must be walled off
+   from *one* supplier rather than from all pricing?
+
+If either is yes, the label becomes `restricted_group text NULL` (NULL = general) and the
+boolean becomes the degenerate single-group case. **Note what question 2 actually asks for: a
+per-person deny-list, not a clearance matrix.** That is a cheaper mechanism than groups and
+would be the right shape if recusal is the only driver.
+
+**Cost of the retrofit, stated honestly because it has been mis-quoted in both directions.**
+`access_restricted` appears 34 times across three SQL files, against 40 `CREATE POLICY`
+statements. The work is not relabelling rows: it is rewriting those policies from boolean to
+group semantics and re-verifying the grant and attack matrices, which is this project's central
+discipline. It is centralised — five of the seven tables derive restriction through
+`document_is_restricted()` / `conflict_is_restricted()` and only `document` and `chunk` store
+the flag — but it is not cheap.
+
+**Deferring is still correct**, because a wrong model built on a guess costs more than a late
+one built on an answer, and because the boolean is already enforced and already fails closed.
+The cost of being wrong is asymmetric in the safe direction: too-restrictive blocks a reviewer,
+too-permissive leaks commercial terms.
+
+**Confidence: High** on the model given negative answers; the confidence is entirely contingent
+on the two questions.
 
 ---
 

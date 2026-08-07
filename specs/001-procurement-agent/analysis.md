@@ -768,12 +768,26 @@ C3 as inflated. Documentation that cannot survive being checked is a defect even
 it documents is correct.
 
 The mapping is now stated at all five sites and pinned by a test that fails if `section` is
-renamed away without the contract being renamed with it. Whether `section` — a table/section
-locator — is the right *granularity* for C3's span, as against character offsets into the source
-text, is a contract question this round does not settle. `bounding_box` already carries the fine
-locator for the OCR path (FR-ING-04), which is the argument that `section` is sufficient for the
-text path; nobody has written that argument down, and C1/C3 are the expensive contracts to
-change.
+renamed away without the contract being renamed with it.
+
+**Granularity settled 2026-08-07 by the lead architect: `section` stands, and there is no
+rename.** The question was whether a table/section locator is the right resolution for C3's
+span, as against character offsets into the source text. It is, and the argument nobody had
+written down is this:
+
+C3's purpose is that a stored value can be traced back to where it came from. Two locators
+already cover the two document paths that exist. For a scanned page, FR-ING-04 requires a
+bounding box and `SourceRef.bounding_box` carries it — geometry, which is finer than any
+character offset and is what a reviewer actually needs to find a number on a page image. For a
+text-layer document, `section` names the table or heading a value was read from, which is how
+datasheets are organised and how a human re-finds a value. Character offsets would be more
+precise and less useful: nobody locates a figure in a datasheet by counting characters, and an
+offset breaks the moment a document is re-parsed by a different extractor version, which C3's
+own fourth element exists to record.
+
+Renaming `section` to `span` was considered and rejected separately: it would cost the column,
+the tests and the fixtures for no behaviour change, and the mapping is now documented at every
+site that cites the contract.
 
 ## A-46 (Medium) — the drift audit drifted
 
@@ -829,8 +843,8 @@ D-14](clarifications.md).
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Open** — D-14 proposes promoting that docstring's rule to a decision (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Needs the maintainer to confirm the derivation |
-| A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Open** — D-13 now records both; where these events live is the maintainer's call |
+| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Fixed** — D-14 adopted 2026-08-07. `generated_on` is the maximum store write-timestamp over the rows the projection reflects, folded from timestamps already inside the projection so AC-7-safety is structural; an empty store renders an explicit null |
+| A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Fixed in principle** — D-13 adopted 2026-08-07: run-scoped events get a separately chained `audit.run_event` table keyed `run:<id>`, which is where gap-triggered web searches land. The event type stays in `audit.event`'s v1 taxonomy but is unreachable there; removing it is a taxonomy amendment WP-H should make when it writes the emitter |
 
 ## A-48 (Medium) — a constraint that only one docstring knows about
 

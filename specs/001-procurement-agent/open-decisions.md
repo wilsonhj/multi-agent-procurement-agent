@@ -268,3 +268,18 @@ it could be wrong:
 
 Adopting either means editing a frozen contract, which is why it is a human's
 call and not a default.
+
+> **RATIFIED 2026-08-07** by the lead architect: the `soh_60` / `soh_70` / `soh_80`
+> tokens stand as amended. The edit to the Conditions table is blessed rather than
+> reverted, and this item is closed.
+>
+> The loud-failure direction was the deciding factor — a supplier quoting to 65 %
+> SOH now fails validation instead of silently comparing against a different
+> threshold, and a wrong comparison of cycle life between two BESS bids is exactly
+> the class of error the conflict engine exists to surface.
+>
+> **The `soh_threshold_pct` alternative is not rejected on merit** — it remains the
+> cleaner model, and the second objection above still stands: a threshold qualifies
+> a count, not a measurement basis. It is rejected on cost and timing. Revisit it if
+> a real supplier document quotes a threshold outside the three, which would be the
+> evidence this decision currently lacks.

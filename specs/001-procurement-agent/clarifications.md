@@ -760,17 +760,19 @@ lossless Python round-trip here.
 Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
 fields by name, then:
 
-- **Candidates sort by `conflict_hitl._ordering_key`, never by arrival.** An earlier draft said
-  "existing candidate order", which this repo's own rule forbids: that function's docstring
-  states FR-OUT-06 "makes composition a pure function of the store: any list the queue payload is
-  built from has to be arranged by what a candidate *is*, never by when it arrived." Regeneration
-  re-reads `conflict_candidate` rows, and without an explicit sort there is no "existing order"
-  to preserve.
-- **Condition groups sort by their `encode_value()` form, not `repr(grouping_key())`.** Those
-  tuples contain enum members, and `repr(MeasurementBasis.STC)` is `<MeasurementBasis.STC: 'stc'>`
-  — CPython's enum repr, an implementation detail the stdlib reworked as recently as 3.11. Baked
-  into a hashed artifact, a routine Python upgrade would re-baseline every golden hash with zero
-  data change. `repr()` remains fine as `project()`'s in-memory key; it must not reach the bytes.
+- **Nothing that decides hashed array order may contain `repr()` of an enum.** This is one rule,
+  and it governs both bullets below. `repr(MeasurementBasis.STC)` is `<MeasurementBasis.STC:
+  'stc'>` — CPython's enum repr, an implementation detail the stdlib reworked as recently as
+  3.11. Reaching the bytes, a routine Python upgrade re-baselines every golden hash with zero
+  data change. `repr()` stays fine as an in-memory sort key; the projection must encode instead.
+- **Candidates sort by the field sequence `conflict_hitl._ordering_key` uses, with every
+  component routed through `encode_value()`** — not by `_ordering_key` itself, and never by
+  arrival. Arrival order is forbidden by that function's own docstring: FR-OUT-06 "makes
+  composition a pure function of the store: any list the queue payload is built from has to be
+  arranged by what a candidate *is*, never by when it arrived." But `_ordering_key`'s **first
+  component is `repr(candidate.condition.grouping_key())`**, so prescribing it verbatim would
+  reintroduce the exact hazard the rule above closes. See [A-50](analysis.md).
+- **Condition groups sort by their `encode_value()` form**, for the same reason.
 
 **One frozen `encode_value()`** for `value: object` — `DeclaredBand` via `model_dump`, datetimes
 as RFC 3339 UTC with microseconds **always** printed (`isoformat()` omits `.000000` when zero, so

@@ -1,6 +1,7 @@
 # ADR-001 — Cross-repo pattern adoption: avalanche and predict-rlm
 
-**Status:** Proposed · **Date:** 2026-08-06
+**Status:** Proposed · **Date:** 2026-08-06 · **CI:** not run on this branch (zero Actions
+runs, empty status-check rollup) — a docs-only diff, but not a green build
 
 This is the first ADR, so the relationship to the existing record needs stating once.
 [plan.md](../../specs/001-procurement-agent/plan.md) Decisions 1–10 remain the architectural
@@ -27,8 +28,9 @@ The gaps, verified against the working tree:
   `src/`, and the word "prompt" appears only as `LLMPort.extract`'s parameter and in two
   docstrings.
 - **No timeouts, no logging.** No timeout parameter exists anywhere in code or spec — the
-  word's single occurrence in the repository is a fixture checklist item at
-  `docs/development.md:152`. No module in `src/` imports `logging`.
+  word's single occurrence in application code and specs is a fixture checklist item at
+  `docs/development.md:152` (CI configuration separately uses `--health-timeout` for a
+  container health check, a different concern). No module in `src/` imports `logging`.
 - **Ports with no adapters and no tests.** The six port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
   at all (`docs/current-state.md:333`). `docs/development.md:157-163` records the hazard in
@@ -55,12 +57,34 @@ not stable enough to cite.
 **Chosen:** the Postgres job-table state machine stands unchanged; avalanche is not adopted
 as pipeline owner in any form. **Confidence: high.**
 
-The argument against LangGraph transfers whole. Avalanche's typed-DAG checkpointing is a
-second copy of state that NFR-02 and FR-OUT-06 already force into owned tables — the exact
-duplicate-source-of-truth problem plan Decision 1 rejects. Avalanche is additionally a
-*weaker* candidate than the one already litigated: it has **no node-level retry and no
-partial-DAG resume**, and its **default executor is sequential**, so adopting it would not
-even buy parallelism — the one thing a DAG runtime is assumed to provide.
+The argument against LangGraph transfers in spirit but not in its specific mechanism —
+avalanche does not durably checkpoint run state the way a LangGraph-style workflow
+checkpointer does. Four properties, each independently disqualifying, hold instead:
+
+- **No durable run state or resume.** The operator holds every run, log, and trace in
+  plain in-memory dicts (`self._runs`, `self._logs`, `self._trace_bodies`, and siblings in
+  avalanche `src/runtime/operator/operator.py`), and avalanche's own docs list "durable
+  operator replay/recovery beyond the current implementation" under *What Is Not Supported
+  Yet* (avalanche `docs/getting-started.md`). A crash loses every in-flight run —
+  disqualifying on its own under NFR-02, which requires durable, resumable state.
+- **A second durable data plane.** Avalanche's Iceberg table writer attaches nine
+  framework-owned row-lineage columns (`_ava_run_id`, `_ava_node_id`,
+  `_ava_lineage_vector`, and six more) to every written row by default
+  (`row_lineage=True`, avalanche `src/avalanche/lineage.py`). This is not workflow
+  checkpointing, but it is exactly the duplicate-source-of-truth problem plan Decision 1
+  rejects: run and node identity would live in both Postgres-owned tables and
+  avalanche-owned Iceberg tables — the same objection NFR-02 and FR-OUT-06 already raise
+  against a LangGraph checkpointer, now landing on a different mechanism.
+- **Sequential default executor.** `executor_backend` defaults to `"local"`
+  (avalanche `src/runtime/operator/operator.py`), which resolves to `LocalExecutor` —
+  "sequential local executor... executes tasks synchronously in the current process"
+  (avalanche `src/runtime/executor.py`). Adopting avalanche would not even buy
+  parallelism, the one thing a DAG runtime is assumed to provide.
+- **No node-level retry, no partial-DAG resume.** Neither exists in the operator or DAG
+  execution paths.
+
+Avalanche is therefore a *weaker* candidate than LangGraph, the one already litigated, not
+a stronger one under a new name.
 
 > Scale check, stated plainly: hundreds of documents, batch, offline, one approval gate.
 > Nothing has changed since the plan measured every framework against that shape.
@@ -196,9 +220,10 @@ creates it.
 
 ## Rejected alternatives
 
-- **Avalanche as pipeline owner.** Re-argued at decision 1: checkpointing duplicates
-  NFR-02/FR-OUT-06 state, no node-level retry, no partial-DAG resume, sequential default
-  executor.
+- **Avalanche as pipeline owner.** Re-argued at decision 1: no durable run state or
+  resume, a second durable data plane (Iceberg row-lineage columns duplicating
+  NFR-02/FR-OUT-06 state), sequential default executor, no node-level retry or
+  partial-DAG resume.
 - **LangGraph.** Already litigated in plan Decision 1; nothing observed in either external
   repo reopens it.
 - **Depending on the predict-rlm / rlm_gepa packages.** Deep coupling to DSPy private APIs

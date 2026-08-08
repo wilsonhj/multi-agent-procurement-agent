@@ -612,27 +612,21 @@ quality dominates dataset size for the confidence model.
 
 ---
 
-## D-13 — Audit canonicalisation and the hash preimage (contract C4) ⚠️ PROPOSED, NOT RATIFIED
+## D-13 — Audit canonicalisation and the hash preimage (contract C4)
 
-> **Status.** Drafted 2026-08-06 to close C4's decision half. It is a default, not a conclusion
-> — but note the deadline: **the version marker in §3 must exist before the first event is ever
-> emitted**, so this needs ratifying before WP-H writes anything, not after.
+> **Status: ADOPTED 2026-08-07** by the lead architect, as recommended. Drafted 2026-08-06 to
+> close C4's decision half. Like every decision in this file it can still be overruled, but WP-H
+> should now be written against it rather than waiting on it.
 >
-> **Relationship to `sql/07_audit_event.sql`: one adoption, one change, four new pins.**
-> *Adopted* — that file's caller-sequence comment already specifies "canonicalise the payload
-> (RFC 8785, NOT jsonb)" and already explains why jsonb fails: it normalises key order but
-> preserves whatever numeric literal text it was given, so `1.0` and `1.00` stay textually
-> distinct. §Scheme takes that as given rather than re-deciding it.
-> *Changed* — the layout. It sketches `hash := sha256(prev_hash || canonical_payload || ...)`;
-> the trailing `...` leaves the field set unenumerated and the form is a delimiter-free
-> concatenation. §2 replaces both with one canonical object.
-> *New* — nothing in the DDL settles the digest (§1: `sql/07:67-70` flags it explicitly, since
-> plan Decision 9 measures chain performance without pinning an algorithm), the version marker
-> (§3), who supplies `recorded_at` (§4), or whether the `event_type` list is frozen (§5). Those
-> four are additions, not ratifications.
+> **The deadline it carried is now discharged in one direction only:** §3's version marker must
+> exist before the first event is ever emitted. Nothing has been emitted yet, so the window is
+> still open — it closes the moment WP-H writes its first row.
 >
-> One consequence for the DDL: §2 makes `payload_canonical` an *input to* the hash rather than
-> the hashed bytes themselves, so `sql/07`'s comment should be updated to match on ratification.
+> It adopts the scheme `sql/07_audit_event.sql` already names (RFC 8785), **changes** its
+> `sha256(prev_hash || canonical_payload || ...)` sketch (§2), and adds four pins the DDL leaves
+> open: digest, version marker, who supplies `recorded_at`, taxonomy. On ratification, update
+> `sql/07`'s caller-sequence comment and `sql/README.md` decisions 5–7, which will otherwise keep
+> reading as unsettled.
 
 **Scheme: RFC 8785 (JCS), via the `rfc8785` PyPI package** — adopting the scheme `sql/07` already
 names, with a concrete implementation. [V] for the package metadata only — read from the PyPI
@@ -667,52 +661,79 @@ any conformant one — the worst available outcome, because it is silent until s
    enumeration. `payload_canonical` stores JCS of the payload alone; a verifier recomputes the
    envelope object around it.
 
-   The `sql/07` comment should be updated to match once this is ratified, since it is the thing
-   a WP-H implementer will read first.
+   **`payload` is embedded as the parsed JSON object, not as the `payload_canonical` string.**
+   Both are "obvious" readings and they hash differently — one nests an object, the other nests
+   a quoted string.
 3. **`"v": 1` is inside the preimage, and this is the load-bearing part.** Without a version
    marker, changing the hashed field set later invalidates **every existing chain**, because a
    verifier can no longer recompute historical hashes — [tasks.md](tasks.md) already warns that
    changing the hashed field set "invalidates every existing chain". With the marker, evolution
    is additive: the verifier dispatches per event version, and chains still link across the
    boundary because `prev_hash` is only bytes.
-4. **The caller supplies `recorded_at`** (RFC 3339 UTC, fixed microsecond precision) rather than
-   relying on the `clock_timestamp()` default. A hashed timestamp is tamper-evident; a defaulted
-   one cannot be pre-computed by the caller, and a superuser could edit it without breaking the
-   chain. No DDL change — the default simply goes unused.
-5. **Taxonomy: freeze the seven values already in the CHECK**, and register the two known NFR-02
-   gaps as deviations in [analysis.md](analysis.md) rather than widening the constraint:
-   (a) cross-document retrieval queries, structurally excluded by the
-   `stream = 'doc:' || document_id` CHECK; (b) the compose-gate `--accept-incomplete` override,
-   which plan Decision 2 requires to be "recorded, audited" and which has no document-scoped
-   home. Both belong in a future `audit.run_event` table. **Do not widen `audit.event`'s stream
-   CHECK** — it was made structural deliberately.
+4. **The caller supplies `recorded_at`**, formatted RFC 3339 UTC with the `Z` offset and fixed
+   microsecond precision (`2026-08-06T15:04:05.000000Z`). RFC 3339 permits both `Z` and
+   `+00:00`, and `datetime.isoformat()` emits the latter — pin one or two conformant callers
+   produce different hashes for the same instant. A hashed timestamp is tamper-evident; a
+   defaulted one cannot be pre-computed by the caller, and a superuser could edit it without
+   breaking the chain. **Drop the `DEFAULT clock_timestamp()` on ratification** rather than
+   leaving it unused: a forgotten caller should fail on `NOT NULL` at insert, not silently
+   record an unhashable timestamp that surfaces at first chain verification.
+5. **Taxonomy: the seven values are v1, and additions are additive-only** via an amendment to
+   this decision — not an absolute freeze. The DDL chose a CHECK over a native enum precisely so
+   values could be added, this table has never been reviewed against a full event inventory, and
+   an absolute freeze would be violated the day a `workbook_composed` event is needed. Removing
+   or renaming a value is what the chain cannot tolerate, and that stays forbidden.
+
+   Two NFR-02 events have no document-scoped home and are registered as deviations in
+   [analysis.md](analysis.md) rather than by widening this constraint: gap-triggered web searches
+   (A-49) and the compose-gate `--accept-incomplete` override. **Do not widen `audit.event`'s
+   stream CHECK** — it was made structural deliberately. Where those events should live is the
+   maintainer's call, below.
 
 **Confidence: High** on the scheme and preimage; **Medium** on the taxonomy, which is the DDL's
 own proposal and has never been reviewed against a full event inventory.
 
-**Strongest objection.** This puts two canonicalisation schemes in one codebase — JCS here,
-repr-JSON in [D-14](#d-14) — and someone will eventually "unify" them. They are not unifiable:
-one is an interop-stable signature format, the other a Python-native lossless projection, and
-§Why not JCS in D-14 gives the reason. Both are injective on float64, so integrity holds in
-both. Document the boundary in WP-H's module docstring.
+**On the two canonicalisation schemes** in one codebase — JCS here, repr-JSON in D-14 — see
+D-14's *Why not JCS here*, which owns that boundary. Restate it in WP-H's module docstring, not
+in this document.
 
 **Cost of getting it wrong.** C4 gates every stage's side effects, and a wrong preimage is the
 worst kind of wrong: chains that verify today under the buggy implementation and fail under any
 correct one, converting the audit log's only superuser-surviving property into noise.
 
-**Needs the maintainer, not this document:** whether a non-hash-chained `run_event` table
-satisfies NFR-02's "every query logged immutably". It is a deviation from a normative *shall*
-either way, so it needs an `A-n` register entry whichever way it goes.
+**Where the run-scoped events live — ADOPTED 2026-08-07.**
+NFR-02's judged-by criterion is "log entries cannot be altered or deleted after write", so an
+*unchained* append-only table with the same NOLOGIN-owner grants and TRUNCATE tripwires already
+satisfies it — plan Decision 9's own attack matrix shows privilege separation is the enforcing
+mechanism and the chain adds tamper-*evidence* beyond the requirement's letter.
+
+**Chain it anyway**, as `audit.run_event` with stream `run:<run_id>`, reusing WP-H's envelope and
+lock discipline verbatim. The marginal cost is near zero once that library exists, and the
+`--accept-incomplete` override is the highest-repudiation-risk record in the system: the name of
+the human who shipped a workbook past unresolved conflicts. Unchained, it would be the only human
+decision lacking the tamper-evidence every resolution gets — and FR-HITL-06, not NFR-02, is the
+binding requirement for it.
+
+Rejected: folding run events into `audit.event` under a synthetic stream. That spends the
+structural stream CHECK and the document FK — the DDL's two strongest guarantees — to avoid one
+`CREATE TABLE`.
+
+**Note on wording, and it changes the question.** `spec.md:153` says "**web** queries,
+extractions, conflicts and resolutions"; `plan.md:66` paraphrases it as "every extraction,
+**query**, conflict and resolution", dropping *web*, and `sql/README.md` inherited the plan's
+reading. Cross-document *retrieval* queries are not web queries and are plausibly not NFR-02
+events at all under the normative text. `spec.md` governs. See A-49.
 
 ---
 
-## D-14 — The canonical workbook projection (contract C6) ⚠️ PROPOSED, NOT RATIFIED
+## D-14 — The canonical workbook projection (contract C6)
 
-> **Status.** Drafted 2026-08-06 to close T0.5. C6 is the only contract at zero — `write_workbook()`
-> raises and no *workbook* projection function exists — and it blocks WP-G entirely, including
-> the gating G.6 desktop-Excel test. (`services.claims.project` is a different projection: claims
-> to canonical fields, contract C8. C6 is the projection of the whole store to the hashed
-> artifact.) A default, not a conclusion.
+> **Status: ADOPTED 2026-08-07** by the lead architect, as recommended, including both calls in
+> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero —
+> `write_workbook()` raises and no *workbook* projection function exists — and it blocked WP-G
+> entirely, including the gating G.6 desktop-Excel test. (`services.claims.project` is a
+> different projection: claims to canonical fields, contract C8. C6 is the projection of the
+> whole store to the hashed artifact.)
 
 **Bytes:** UTF-8 output of
 `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
@@ -737,35 +758,85 @@ lossless Python round-trip here.
 **Shape.** Top level
 `{projection_version: 1, policy: {...}, components: [...], conflicts: [...], sources: [...]}`.
 Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
-fields by name, condition groups by `repr(grouping_key())` matching `project()`, candidates in
-existing candidate order.
+fields by name, then:
+
+- **Nothing that decides hashed array order may contain `repr()` of an enum.** This is one rule,
+  and it governs both bullets below. `repr(MeasurementBasis.STC)` is `<MeasurementBasis.STC:
+  'stc'>` — CPython's enum repr, an implementation detail the stdlib reworked as recently as
+  3.11. Reaching the bytes, a routine Python upgrade re-baselines every golden hash with zero
+  data change. `repr()` stays fine as an in-memory sort key; the projection must encode instead.
+- **Candidates sort by the field sequence `conflict_hitl._ordering_key` uses, with every
+  component routed through `encode_value()`** — not by `_ordering_key` itself, and never by
+  arrival. Arrival order is forbidden by that function's own docstring: FR-OUT-06 "makes
+  composition a pure function of the store: any list the queue payload is built from has to be
+  arranged by what a candidate *is*, never by when it arrived." But `_ordering_key`'s **first
+  component is `repr(candidate.condition.grouping_key())`**, so prescribing it verbatim would
+  reintroduce the exact hazard the rule above closes. See [A-50](analysis.md).
+- **Condition groups sort by their `encode_value()` form**, for the same reason.
 
 **One frozen `encode_value()`** for `value: object` — `DeclaredBand` via `model_dump`, datetimes
 as RFC 3339 UTC with microseconds **always** printed (`isoformat()` omits `.000000` when zero, so
 pin a formatter rather than relying on it), enums via `.value`, frozensets sorted as `derived`
 already is.
 
-**Two decisions here are judgement calls, not mechanics:**
+**Two judgement calls, both decided 2026-08-07 as recommended:**
 
-1. **Policy version and computed `CellFlag`s go inside the projection.** `flags_for` takes a
-   threshold, and τ is B.10 policy data — so the workbook is a function of *(store, policy)*.
-   A projection that hashes only the store certifies AC-7 while the artifact silently varies with
-   configuration, which is exactly the false-integrity claim C6 exists to prevent. **Recommended:
-   yes, inside. Defensible both ways** — the counter-argument is that policy is not data and
-   re-tuning τ should not invalidate historical projection hashes.
-2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands a generated-on
-   stamp; AC-7 and G.5's `sleep(1.1)` re-run demand byte-identity. Wall clock cannot satisfy
-   both, and a store-derived stamp satisfies both **without any normative edit**.
+1. **Policy version and the computed `CellFlag`s both go inside the projection.** The workbook is
+   a function of *(store, policy)*; hashing only the store certifies AC-7 while the artifact
+   silently varies with configuration — the false-integrity claim C6 exists to prevent. Hash the
+   *flags*, not merely the τ version: `flags_for`'s code is policy too, and a change to it would
+   otherwise alter the rendered workbook under an unchanged hash.
 
-   This rule is not new — `services/output/__init__.py:151-153` already states it ("no timestamps
-   or ordering derived from anything but the store itself, plus an explicit generated-on stamp").
-   What is new is promoting it out of a docstring on an unimplemented function into a ratified
-   decision, because an implementer reading only `spec.md` would reach for `datetime.now()` and
-   break AC-7 with nothing to warn them. Registered as [A-48](analysis.md).
+   This follows established practice rather than inventing one. Bazel's action key covers the
+   command line and whitelisted environment; Nix hashes all build inputs, so a config change
+   yields a new output path rather than "invalidating" the old one; SLSA v1 records the artifact
+   digest as `subject` and the configuration separately as `externalParameters`. The
+   counter-argument — that re-tuning τ should not invalidate historical hashes — is a category
+   error: each hash certifies the artifact that carried it. What re-tuning breaks is using the
+   projection hash as a cross-policy *store* identity, which is a job for the separately recorded
+   inputs, not for this hash.
 
-   **What still needs deciding is the derivation**, not the principle: max `ingested_at` over
-   covered documents, or the latest audit `seq`, or something else. Each has different behaviour
-   when a document is re-ingested with unchanged content.
+   **Two consequences that must land with it.** Hashing policy makes the B.10 τ table
+   **versioned, append-only data** — otherwise historical projections become unrecomputable the
+   first time τ moves. And golden fixtures must pin their own τ so production re-tuning never
+   re-baselines them; `tasks.md` sequences τ tuning after WP-B, which is exactly when fixture
+   churn would otherwise be worst.
+2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands the stamp; AC-7 and
+   G.5's `sleep(1.1)` re-run demand byte-identity; a store-derived stamp satisfies both with no
+   normative edit. The rule already exists at `services/output/__init__.py:151-153`; what is new
+   is promoting it out of a docstring on an unimplemented function. See [A-48](analysis.md).
+
+   **Recommended derivation: the maximum store write-timestamp over the rows the projection
+   actually reflects** — `max(document.ingested_at, claim.extracted_at, conflict.detected_at,
+   resolution.resolved_at)`. All four columns exist today (`sql/02:32`, `04:65`, `05:37`,
+   `06:19`). Computed as a fold over timestamps *already inside the projection*, which makes
+   AC-7-safety structural rather than a rule someone must remember. Render it as "data as of".
+
+   The two named alternatives both fail a case this one survives:
+
+   | | `max(ingested_at)` | latest audit `seq` | **reflected rows** |
+   |---|---|---|---|
+   | no-op re-ingest (NFR-05) | ✓ | fragile | ✓ |
+   | **a conflict is resolved** | **✗ does not move** | ✓ | ✓ |
+   | two workbooks, different scopes, same day | ✓ if scoped | ✗ identical stamps | ✓ |
+
+   A human resolution changes the workbook's content — FR-HITL-04 persists it into field
+   provenance — so `max(ingested_at)` would date the artifact by an ingest that is no longer its
+   newest fact. The audit tip is worse: it is **self-invalidating**, because plan Decision 2
+   requires the `--accept-incomplete` override to be "recorded, audited", so composing writes an
+   event, so the stamp changes on every override-bearing generation — breaking AC-7 in precisely
+   the scenario the override exists for. `seq` is also per-stream and therefore globally
+   ill-defined.
+
+   **Two costs, stated so nobody "fixes" them later.** The stamp moves *backwards* when scope
+   shrinks — acceptable, because its job is vintage and the projection hash is the change
+   detector. And reclassification (`UPDATE access_restricted`) has no store timestamp at all, so
+   no derivation captures it; that is a known limit, not a defect in this choice.
+
+   **Zero-document sentinel — decided:** an empty store has no maximum, so `generated_on`
+   renders as an explicit null, which the workbook shows as *no sources*. Never a placeholder
+   date. An epoch-like value would be indistinguishable from a real vintage to a reader, and the
+   whole point of the field is that a reader can trust what it says.
 
 **Two hashes stored**, per plan 8c: `sha256(projection)` is the artifact of record;
 `sha256(normalized xlsx)` is a renderer-regression check only, never the integrity claim.
@@ -788,6 +859,72 @@ question later.
 projections are regenerable, so a format change re-baselines golden hashes rather than losing
 data. The expensive mistake is decision 1 above: leave policy outside the hash and the artifact
 procurement decisions are cited from carries a false integrity claim.
+
+---
+
+## D-15 — The confidentiality label model (contract C7, task T0.4) ⚠️ PROVISIONAL
+
+> **Status: ADOPTED PROVISIONALLY 2026-08-07.** The model below is ratified and is what the
+> schema already enforces. It is marked provisional because **two facts, not two preferences,
+> are outstanding** — see *What would overturn this*. A decision-maker cannot settle them by
+> choosing; somebody has to read the NDAs and check the evaluation roster.
+
+**Adopted: one document-level label, two values**, stored as the existing `access_restricted`
+boolean, with a per-principal clearance resolved from the OIDC subject (D-12a) and applied as
+`SET LOCAL app.allow_restricted` per transaction. Labelling happens at ingest (task A.10),
+derived from FR-ING-06's classification: contract/TOS, purchase order, pricing, terms and
+warranty are restricted; spec sheets, technical documentation and environmental regulation are
+general. **Classification below its confidence threshold labels restricted** — the failure
+direction has to be closed, not open.
+
+`allowed_document_ids` on the retrieval port is **scoping within** an entitlement, never the
+boundary. RLS is the boundary. AC-8's test is the RLS path, never the allowlist alone.
+
+**Why one boolean and not per-supplier groups.** Systematic evaluator separation by supplier is
+not standard practice in utility-scale equipment procurement, and it cannot be, because
+side-by-side comparison is the deliverable — FR-OUT-01 puts eight suppliers on one tab. The
+separations that *are* standard run along axes this model already covers:
+
+| Axis | Practice | Covered? |
+|---|---|---|
+| Document type | technical scored without sight of pricing — the two-envelope convention | yes, via the classification map above |
+| Time | pricing sealed until technical scoring closes | yes, a policy on the same label |
+| Person | conflict-of-interest recusal from one named bidder | **no** |
+
+ERCOT is the permissive regulatory case: Texas restructured in 1999, so a private merchant buyer
+faces no commission-mandated process and no independent-evaluator requirement. The binding
+constraints here are contractual — NDAs and trade-secret exposure — not statutory.
+
+**What would overturn this, and it is two questions of fact:**
+
+1. Do any executed supplier NDAs go beyond "Representatives with a need to know" — naming
+   individuals, requiring access logs, or requiring segregation from personnel who work with
+   competing suppliers? If any single one does, this model is insufficient as a compliance
+   mechanism.
+2. Will anyone on the evaluation hold a conflict with a specific bidder — an external
+   consultant, the owner's engineer, a prior relationship — such that they must be walled off
+   from *one* supplier rather than from all pricing?
+
+If either is yes, the label becomes `restricted_group text NULL` (NULL = general) and the
+boolean becomes the degenerate single-group case. **Note what question 2 actually asks for: a
+per-person deny-list, not a clearance matrix.** That is a cheaper mechanism than groups and
+would be the right shape if recusal is the only driver.
+
+**Cost of the retrofit, stated honestly because it has been mis-quoted in both directions.**
+`access_restricted` appears 34 times across three SQL files, against 40 `CREATE POLICY`
+statements. The work is not relabelling rows: it is rewriting those policies from boolean to
+group semantics and re-verifying the grant and attack matrices, which is this project's central
+discipline. It is centralised — five of the seven tables derive restriction through
+`document_is_restricted()` / `conflict_is_restricted()` and only `document` and `chunk` store
+the flag — but it is not cheap.
+
+**Deferring is still correct**, because a wrong model built on a guess costs more than a late
+one built on an answer, and because the boolean is already enforced and already fails closed.
+The cost of being wrong is asymmetric in the safe direction: too-restrictive blocks a reviewer,
+too-permissive leaks commercial terms.
+
+**Confidence: High** on the model given negative answers; the confidence is entirely contingent
+on the two questions.
 
 ---
 

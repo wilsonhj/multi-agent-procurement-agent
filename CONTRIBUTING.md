@@ -8,9 +8,17 @@ fixture-backed vertical slices are easier to review and safer to merge than broa
 implementations.
 
 > [!NOTE]
-> The repository does not yet have an open-source license, DCO, or CLA policy. Before accepting
-> external code contributions, maintainers should settle those governance choices. Opening an
-> issue or discussing a design does not require transferring code rights.
+> **Licence: Apache-2.0. Contributions are accepted under a DCO, not a CLA.**
+>
+> Sign off every commit with `git commit -s`, which appends a `Signed-off-by:` line. That line
+> certifies you have the right to submit the work under this project's licence — the
+> [Developer Certificate of Origin](https://developercertificate.org/) states exactly what you
+> are certifying. There is no separate agreement to sign.
+>
+> A DCO rather than a CLA because Apache-2.0 §5 already makes a contribution inbound-under-the-
+> same-licence by default, so a CLA would only be needed to relicense the project later or to
+> run a dual-licence model. Neither is planned; if either becomes planned, that is a decision to
+> take *before* accepting more external code, not after.
 
 ## Before you start
 

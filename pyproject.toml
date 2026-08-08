@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Agentic human-in-the-loop RAG pipeline for solar-plus-storage component procurement"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-license = { text = "UNLICENSED" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 
 # Core stays deliberately thin. Every heavy dependency sits behind an extra so
 # that NFR-04 (parsers, OCR, embedders, vector store, reranker, LLM must be

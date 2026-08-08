@@ -387,7 +387,22 @@ or yield modelling, and legal review. The tool informs these; it does not perfor
 
 ## License
 
-No open-source license has been selected: `pyproject.toml` currently declares
-`UNLICENSED`. The source is publicly visible, but that does not grant permission to use,
-modify, or redistribute it. A project maintainer must add an OSI-approved license before
-this can be presented or adopted as an open-source project.
+**Apache-2.0.** See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Apache-2.0 rather than MIT for one specific reason: its express patent grant (§3). Document
+layout analysis, OCR and table extraction are patent-active territory, and this tool is meant
+to run inside other companies' infrastructure — MIT would leave every adopter relying on an
+implied licence at best. The same clause carries a defensive retaliation trigger, which only
+affects a party that sues, and is a large part of why corporate intake processes prefer
+Apache-2.0 over MIT rather than merely tolerating it.
+
+The choice is deliberately *permissive*, not reciprocal. Nothing here obliges anyone to
+contribute back. MPL-2.0 was the considered alternative — file-level reciprocity, still
+OSI-approved, still enterprise-tractable — and was not taken because adoption matters more
+here than preventing a fork.
+
+Note that this is independent of the dependency gate above. Permissive licences are
+sublicensable, so the inbound rule (Apache-2.0, MIT, BSD only) neither forces nor forbids any
+particular outbound choice; they are orthogonal.
+
+Contributions are accepted under a **DCO**, not a CLA — see [CONTRIBUTING.md](CONTRIBUTING.md).

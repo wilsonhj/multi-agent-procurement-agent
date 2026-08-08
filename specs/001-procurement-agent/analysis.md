@@ -768,12 +768,26 @@ C3 as inflated. Documentation that cannot survive being checked is a defect even
 it documents is correct.
 
 The mapping is now stated at all five sites and pinned by a test that fails if `section` is
-renamed away without the contract being renamed with it. Whether `section` — a table/section
-locator — is the right *granularity* for C3's span, as against character offsets into the source
-text, is a contract question this round does not settle. `bounding_box` already carries the fine
-locator for the OCR path (FR-ING-04), which is the argument that `section` is sufficient for the
-text path; nobody has written that argument down, and C1/C3 are the expensive contracts to
-change.
+renamed away without the contract being renamed with it.
+
+**Granularity settled 2026-08-07 by the lead architect: `section` stands, and there is no
+rename.** The question was whether a table/section locator is the right resolution for C3's
+span, as against character offsets into the source text. It is, and the argument nobody had
+written down is this:
+
+C3's purpose is that a stored value can be traced back to where it came from. Two locators
+already cover the two document paths that exist. For a scanned page, FR-ING-04 requires a
+bounding box and `SourceRef.bounding_box` carries it — geometry, which is finer than any
+character offset and is what a reviewer actually needs to find a number on a page image. For a
+text-layer document, `section` names the table or heading a value was read from, which is how
+datasheets are organised and how a human re-finds a value. Character offsets would be more
+precise and less useful: nobody locates a figure in a datasheet by counting characters, and an
+offset breaks the moment a document is re-parsed by a different extractor version, which C3's
+own fourth element exists to record.
+
+Renaming `section` to `span` was considered and rejected separately: it would cost the column,
+the tests and the fixtures for no behaviour change, and the mapping is now documented at every
+site that cites the contract.
 
 ## A-46 (Medium) — the drift audit drifted
 
@@ -829,7 +843,9 @@ D-14](clarifications.md).
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Open** — D-14 proposes promoting that docstring's rule to a decision (derive the stamp from the store, e.g. max `ingested_at` or latest audit `seq` over covered documents, and label it as such). Needs the maintainer to confirm the derivation |
+| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Fixed** — D-14 adopted 2026-08-07. `generated_on` is the maximum store write-timestamp over the rows the projection reflects, folded from timestamps already inside the projection so AC-7-safety is structural; an empty store renders an explicit null |
+| A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Fixed in principle** — D-13 adopted 2026-08-07: run-scoped events get a separately chained `audit.run_event` table keyed `run:<id>`, which is where gap-triggered web searches land. The event type stays in `audit.event`'s v1 taxonomy but is unreachable there; removing it is a taxonomy amendment WP-H should make when it writes the emitter |
+| A-50 | **H** | **D-14 banned enum `repr()` from hashed array order in one bullet and prescribed it in the next.** The condition-group bullet correctly routed ordering through `encode_value()`; the candidate bullet pinned ordering to `conflict_hitl._ordering_key`, whose **first component is `repr(candidate.condition.grouping_key())`** (`conflict_hitl/__init__.py:67`) — verified to render as `(<MeasurementBasis.STC: 'stc'>, None, …)`. Third instance of A-6's class, and the first to survive the remediation of its own predecessor | **Fixed** — D-14 now states one rule governing both bullets: nothing deciding hashed array order may contain an enum `repr()`. The projection sorts by `_ordering_key`'s *field sequence* with every component routed through `encode_value()` |
 
 ## A-48 (Medium) — a constraint that only one docstring knows about
 
@@ -861,11 +877,84 @@ marked `partial` — the traceability table tracks whether each row is *supporte
 mechanism for noticing that two supported rows constrain each other. That is a real gap in the
 technique, not just in this instance, and it is the part worth keeping.
 
-**Not fixed here.** D-14 proposes promoting the docstring's rule to a ratified decision and
-naming the derivation (max `ingested_at`, or latest audit `seq` over covered documents). The
-register does not get to pick the derivation.
+**Resolved 2026-08-07.** D-14 was adopted, promoting that docstring's rule to a ratified
+decision and naming the derivation: the maximum store write-timestamp over the rows the
+projection reflects, folded from timestamps already inside the projection so AC-7 safety is
+structural. An empty store renders an explicit null.
 
 ---
+
+
+## A-49 (Medium) — an event type with nowhere to go
+
+`sql/07_audit_event.sql` is unusually careful about making its guarantees structural: `stream` is
+tied to `document_id` by CHECK so a stream can never name a document that does not exist, and the
+FK is `ON DELETE RESTRICT`. Those are the file's two strongest properties and neither should be
+weakened.
+
+The consequence nobody traced is that they make one of the taxonomy's own seven values
+unstorable. A gap-triggered web search has no originating document:
+
+- FR-WEB-01 fires it only "when a required field has no system-of-record value";
+- `services/web_search.search_for_gap(field_name, supplier, model)` takes no `document_id`, and
+  its docstring already cites NFR-02 for query logging;
+- the eight `DocumentType` members are all supplier-document kinds, so the web source cannot be
+  registered as a `document` row to satisfy the FK either.
+
+**Why this matters more than the gap D-13 originally cited.** NFR-02 enumerates "web queries,
+extractions, conflicts and resolutions" — web queries are named explicitly. Retrieval queries are
+not, and `plan.md:66` only appears to require them because it paraphrases NFR-02 with the word
+*web* dropped. So the register had recorded a gap the spec does not create, while missing one it
+does.
+
+**Options, none free.** Fan one search out to each involved document's stream with a shared
+correlation id — full chain coverage, no new table, N rows per search, and it only works where
+*some* document is involved. Or put web searches in the `audit.run_event` table D-13 recommends
+for the compose-gate override, accepting that they are then chained per run rather than per
+document. Or register web sources as documents, which needs a ninth `DocumentType` and changes
+what `document` means.
+
+**Resolved 2026-08-07, in principle.** D-13 was adopted, and run-scoped events get a
+separately chained `audit.run_event` table keyed `run:<id>` — which is where gap-triggered web
+searches land. The `web_search` value stays in `audit.event`'s v1 taxonomy but is unreachable
+there; removing it is an additive-only taxonomy amendment for WP-H to make when it writes the
+emitter. Nothing is fixed in code, because no code emits events yet.
+
+## A-50 (High) — the ban and the breach, two bullets apart
+
+A-6 established the class: an artifact hash that moves when the data has not. `openpyxl` stamping
+its own version into `docProps/app.xml` was the first instance. D-14's `repr(grouping_key())`
+condition-group sort was the second, found in review and fixed. This is the third, and it was
+introduced *by that fix*, in the adjacent bullet.
+
+The candidate bullet pinned projection ordering to `conflict_hitl._ordering_key`, on the correct
+reasoning that arrival order violates FR-OUT-06 purity. What it did not check is what that
+function is made of:
+
+```python
+return (
+    repr(candidate.condition.grouping_key()),   # <- the banned expression, verbatim
+    repr(candidate.value),
+    ...
+```
+
+Verified: the first component renders as `(<MeasurementBasis.STC: 'stc'>, None, …)`. So the
+bullet forbidding enum `repr()` in hashed order and the bullet mandating it sat six lines apart.
+
+**Why it survived.** Both bullets were written in the same edit, by the same author, in the same
+minute — and each is correct in isolation. The candidate bullet reasoned about *arrival versus
+content*, which is a different axis from *stable versus implementation-defined encoding*. Getting
+one axis right reads as getting the bullet right. The defect only appears when you open
+`_ordering_key` and read what it returns, which the bullet's own argument gave no reason to do.
+
+**The fix is one rule instead of two bullets each carrying their own.** A rule stated once, above
+both, cannot be satisfied by one and violated by the other.
+
+**Residual, deliberately not fixed here.** `_ordering_key` and `conflict_groupings`
+(`conflict_hitl/__init__.py:175`, `sorted(grouped, key=lambda k: repr(k))`) both still order by
+`repr()`. That is correct for an in-memory sort and this decision does not change them — but WP-G
+must not reach for either when it writes the projection, and converging them on `encode_value()`
+before WP-G would remove the trap rather than documenting around it.
 
 
 ## Consistency checks that passed

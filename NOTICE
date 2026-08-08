@@ -1,0 +1,20 @@
+procurement-agent
+Copyright 2026 The procurement-agent authors
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This product includes software developed by the procurement-agent contributors.
+
+--------------------------------------------------------------------------------
+
+Apache-2.0 section 4(d) requires that anyone redistributing this work carry the
+attributions in this file forward into their own NOTICE. Keep it short: this file
+is for attribution, not for changelogs, dependency lists, or documentation.
+
+Dependency licences are governed separately by the gate in README.md — Apache-2.0,
+MIT and BSD only. A dependency whose licence requires attribution here must have
+its notice appended below rather than replacing anything above.

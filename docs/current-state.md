@@ -1,16 +1,24 @@
 # Current state
 
-This audit describes `main` at commit `72deacf` on 2026-08-04. It was first written against
+This audit describes `main` at commit `6c52fba` on 2026-08-09. It was first written against
 `ee1503d`; the [database schema](#database-schema), [persistence](#persistence),
 [security](#security) and [contract status](#contracts-are-only-partially-frozen) sections were
-rewritten when the Phase 0 substrate landed. It answers the practical question a new contributor
-has first: what can the repository do today?
+rewritten when the Phase 0 substrate landed, and the contract section was rewritten again when
+D-13, D-14 and D-15 were adopted on 2026-08-07. It answers the practical question a new
+contributor has first: what can the repository do today?
 
-The local verification baseline is 470 passing tests and 23 skipped, a clean Ruff check, a clean
+The local verification baseline is 481 passing tests and 24 skipped, a clean Ruff check, a clean
 `ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
-23 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
+24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
 disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
-was 229 passing when this audit was first written.
+was 229 passing when this audit was first written, and 470 at the previous re-baseline.
+
+> **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
+> C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
+> untouched, requirements 10 enforced / 23 partial / 17 declared / 6 open, and the same ten
+> `NotImplementedError` stubs stand. The decisions were the binding constraint, so this is
+> progress — it is just not implementation. See
+> [phase-1-execution.md](../specs/001-procurement-agent/phase-1-execution.md).
 
 ## Executive assessment
 
@@ -248,10 +256,10 @@ there is enough of it to build against and not enough to be stable:
 | C1 | Postgres schema (`document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event`) | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08` |
 | C2 | Claim/extraction record | partial — `condition` has landed; per-category models still do not exist |
 | C3 | Provenance reference `(document_id, page, span, extractor_version)` | **done** — all four on `SourceRef`; `span` is the `section` field |
-| C4 | Audit event envelope and `event_type` taxonomy | partial — SQL half only; no Python envelope or canonicalisation library |
+| C4 | Audit event envelope and `event_type` taxonomy | partial — decision closed by **D-13** (2026-08-07); SQL half only, no Python envelope or canonicalisation *code* library |
 | C5 | Conflict record and the five resolution action shapes | **done** |
-| C6 | Canonical workbook projection | ☐ not started |
-| C7 | Retrieval interface and ACL/labelling model | partial — RLS enforces the one label that exists; the model is still undecided |
+| C6 | Canonical workbook projection | ☐ not started — format frozen by **D-14** (2026-08-07); no projection function, no golden fixture |
+| C7 | Retrieval interface and ACL/labelling model | partial — RLS enforces the one label that exists; **D-15** (2026-08-07) adopts that model *provisionally*, contingent on two outstanding facts |
 | C8 | Stage runner contract, including the append-only claim invariant | partial — append-only enforced; job states are the DDL's own proposal, no runner |
 
 The evidence behind each, since “done” is the word this repository has most often been wrong
@@ -275,22 +283,29 @@ about:
   section 7 field sets “are not yet enumerated here”.
 - **C4** — `sql/07_audit_event.sql` has the envelope columns, the seven-value `event_type`
   CHECK and `payload_canonical`. Nothing in `src/` does. The file itself records that the
-  taxonomy is “this file's own proposal” precisely because C4 is unfrozen, and WP-H's H.2
-  canonicalisation — the rule that fixes which bytes get hashed — has not been written, so the
-  `hash` column has no defined input.
+  taxonomy is “this file's own proposal”. **D-13 (2026-08-07) closed the decision half**: the
+  scheme is RFC 8785, the preimage is one JCS object carrying `"v": 1`, and the digest is
+  SHA-256 — so the `hash` column now has a defined input. The taxonomy is version 1 with
+  additive-only amendment rather than frozen. What is missing is code, not a decision: WP-H's
+  envelope and canonicalisation library are unwritten, so nothing emits an event.
 - **C7** — argued at length in `tasks.md`. RLS on seven tables, an `app.allow_restricted`
   entitlement, a `procurement_ingest` write role and a chunk-inheritance trigger are real
   enforcement, and they enforce exactly one boolean. `sql/README.md` states that this is C7 “at
-  its frozen minimum, not guessed at in full”, and T0.4's deliverable — a written ACL decision in
-  `clarifications.md` — is not there. Undecided, on the DDL author's own account.
+  its frozen minimum, not guessed at in full”. **T0.4's deliverable now exists as D-15
+  (2026-08-07)**, which ratifies that minimum *provisionally* — the model is adopted, but it is
+  contingent on two outstanding facts about NDA scope and evaluator conflicts, which are facts to
+  look up rather than preferences to choose.
 - **C8** — `sql/04_claim.sql` refuses `UPDATE`/`DELETE`/`TRUNCATE` on `claim` and
   `services/claims` projects canonical values over appended claims, so the append-only invariant
   holds in both halves. The rest does not: `job` carries the five statuses, the lease pair and a
   `UNIQUE` idempotency key, but its own `COMMENT` says it is “this file's own C8-consistent
   design, not a mapping of an existing frozen type”, there is no Pydantic model for it, and
   `orchestrator.run()` raises `NotImplementedError`.
-- **C6** — unchanged. `write_workbook()` raises `NotImplementedError` and no sorted-key JSON
-  projection exists anywhere in `src/`.
+- **C6** — **format frozen by D-14 (2026-08-07)**, nothing built. `write_workbook()` still
+  raises `NotImplementedError` and no *workbook* projection function exists. Note the wording:
+  `services.claims.project` does exist, but it is C8's claims-to-canonical-fields projection, a
+  different thing from C6's whole-store-to-hashed-artifact projection. The T0.5 golden fixture
+  does not exist either.
 
 An earlier version of this section named only five contracts and omitted C2 and C3, on the
 reasoning that `schema/` and `SourceRef` already existed and so were the ones most likely to be

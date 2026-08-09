@@ -28,10 +28,39 @@
 --   1. SELECT pg_advisory_xact_lock(hashtext(stream)::bigint);  -- own statement
 --   2. SELECT hash FROM audit.event
 --        WHERE stream = $1 ORDER BY seq DESC LIMIT 1;           -- read the tip
---   3. -- in Python, per WP-H H.2: canonicalise the payload (RFC 8785, NOT
---      -- jsonb -- jsonb normalises key order but preserves whatever numeric
---      -- literal text it was given, so 1.0 and 1.00 stay textually distinct)
---      -- and compute hash := sha256(prev_hash || canonical_payload || ...).
+--   3. -- in Python, per WP-H H.2 and clarifications.md D-13 (ADOPTED
+--      -- 2026-08-07), which settles the bytes this file previously left as
+--      -- "...". Canonicalise with RFC 8785, NOT jsonb -- jsonb normalises key
+--      -- order but preserves whatever numeric literal text it was given, so
+--      -- 1.0 and 1.00 stay textually distinct.
+--      --
+--      -- The preimage is ONE JCS OBJECT, never a concatenation. An earlier
+--      -- version of this comment sketched
+--      --     hash := sha256(prev_hash || canonical_payload || ...)
+--      -- and that is wrong twice: the trailing "..." left the field set
+--      -- unenumerated, so two implementations could disagree about what is
+--      -- covered while both believing they followed this comment; and a
+--      -- delimiter-free concatenation is ambiguous by construction, since
+--      -- distinct field values can produce identical bytes. D-13 §2:
+--      --
+--      --     hash = SHA-256(JCS({
+--      --         "v": 1, "stream", "seq", "event_type", "actor",
+--      --         "recorded_at", "prev_hash": lowercase-hex or null,
+--      --         "payload": {...}
+--      --     }))
+--      --
+--      -- The object's keys ARE the enumeration, and JCS gives unambiguous
+--      -- framing for free. Two details that change the hash and are easy to
+--      -- read the other way: `payload` embeds as the PARSED JSON OBJECT, not
+--      -- as the payload_canonical string; and `recorded_at` is supplied by
+--      -- the caller as RFC 3339 UTC with the Z offset and fixed microsecond
+--      -- precision, NOT defaulted -- a hashed timestamp is tamper-evident,
+--      -- a defaulted one cannot be pre-computed by the caller.
+--      --
+--      -- "v": 1 is inside the preimage and is load-bearing. Without it,
+--      -- changing the hashed field set later invalidates every existing
+--      -- chain, because a verifier can no longer recompute historical
+--      -- hashes. It must exist before the first event is ever emitted.
 --   4. INSERT INTO audit.event (...) VALUES (...);              -- same txn
 --
 -- UNIQUE(stream, prev_hash) below turns any violation of that discipline into a

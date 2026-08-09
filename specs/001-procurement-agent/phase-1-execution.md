@@ -31,21 +31,30 @@ exists and is asserted."**
 
 ## Tracks
 
-Dependencies are on **committed artifacts**, not on teams finishing.
+**This table is the single source for dependencies.** Prose sections below explain *why*; where
+prose and table disagree, the table wins. An earlier revision stated edges in three places and
+they drifted apart within one commit.
+
+**Needs** means *this track cannot begin until that artifact is committed* — an artifact
+dependency, not a scheduling preference. Merge ordering is separate and stated below the table.
 
 | # | Track | Needs | Team | Owns these paths |
 |---|---|---|---|---|
-| **0** | Reconcile the tracking docs | — | 1 | `sql/07` (comments), `sql/README.md`, `tasks.md`, `current-state.md`, `requirements-traceability.md` |
-| **1a** | `encode_value()` | 0 | 1 | `schema/encoding.py` (new) |
-| **1b** | A-50 convergence | 1a, C-1 | 5 | `conflict_hitl/__init__.py` |
-| **2** | WP-H — audit library | 0 (`sql/07` comment only) | 1 | `audit/` (new), `pyproject.toml` |
-| **3** | WP-G — C6 projection + T0.5 fixture | 1a, 5 | 6 | `services/output/`, `tests/fixtures/workbooks/` |
-| **4** | NFR-04 port conformance suite | — | **4?** | `tests/port_contracts/` (new), `adapters/` (new) |
-| **5** | C2 field registry | — | **5?** | `schema/registry.py` (new), `schema/field.py`, `tolerance.py`, `services/confidence/`, `tests/fixtures/claims/` |
+| **0** | Reconcile the tracking docs | — | 1 | `sql/07_audit_event.sql` (comments), `sql/README.md`, `specs/001-procurement-agent/tasks.md`, `docs/current-state.md`, `docs/requirements-traceability.md` |
+| **1a** | `encode_value()` | 0, **Q-2** | 1 | `src/procurement_agent/schema/encoding.py` (new) |
+| **1b** | A-50 convergence | 1a | 5 | `src/procurement_agent/services/conflict_hitl/__init__.py` |
+| **2** | WP-H — audit library | 0 (`sql/07` comment only) | 1 | `src/procurement_agent/audit/` (new), `pyproject.toml` |
+| **3** | WP-G — C6 projection + T0.5 fixture | 1a | 6 | `src/procurement_agent/services/output/`, `tests/fixtures/workbooks/` |
+| **4** | NFR-04 port conformance suite | — | **4?** | `tests/port_contracts/` (new), `src/procurement_agent/adapters/` (new) |
+| **5** | C2 field registry | — | **5?** | `src/procurement_agent/schema/registry.py` (new), `schema/component.py`, `services/claims/__init__.py`, `conflict_hitl/tolerance.py`, `services/confidence/`, `tests/fixtures/claims/` |
 
 **Start order** — 0, 4 and 5 begin immediately; 4 and 5 share no path with Track 0 and need not
-wait for it to merge. **Merge order** — `0 → 1a → (1b ∥ 3)`, with `5` before `3`, and `2`/`4`
-merging whenever ready.
+wait for it.
+
+**Merge order** — `0 → 1a → (1b ∥ 3)`; `2` and `4` merge whenever ready. **`5` should merge before
+`3`**, which is a preference rather than a dependency: Track 3's fixture store must be built with
+on-contract keys, and landing 5 first means Track 3 finds out at build time rather than at merge.
+Track 3 does not consume anything Track 5 produces.
 
 **Two team assignments are unresolved** and need a decision, not a paragraph. `tasks.md:301`'s
 allocation covers WP-A..WP-I; Tracks 4 and 5 map onto nobody — **no work package owns `ports/`
@@ -106,7 +115,7 @@ every enum-bearing field, which is what would have caught A-50; plus an injectiv
 
 ### Track 1b — the A-50 convergence · *blocks nobody*
 
-Route `_ordering_key` and `conflict_groupings` (`conflict_hitl/__init__.py:175`) through
+Route `_ordering_key` and `comparison_groups` (`conflict_hitl/__init__.py:175`) through
 `encode_value()` instead of `repr()`. This is the A-50 residual. It gates no other track, and
 carries all of this plan's re-baselining risk — which is why it is separated from 1a.
 
@@ -158,7 +167,8 @@ everything else in this track's verify already exists.
 
 ### Track 3 — WP-G, the C6 projection and the T0.5 golden fixture
 
-**Needs only Track 1a.** D-14 specifies the projection sorts by `_ordering_key`'s *field
+**Needs only Track 1a — it does not consume anything Track 5 produces**, though 5 should merge
+first (see the merge-order note). D-14 specifies the projection sorts by `_ordering_key`'s *field
 sequence* with components routed through `encode_value()` — **not** by `_ordering_key` itself — so
 this track never imports `conflict_hitl` and does not wait on 1b.
 
@@ -202,8 +212,12 @@ real adapter satisfies it.
 three places contract keys are duplicated as data — the frozen markdown, `FIELD_TOLERANCES`, and
 `services/confidence`'s tier table — into one authority.
 
-**Two paths this track must own that are easy to miss.** Rejecting an off-contract key needs
-`schema/field.py` (`FieldClaim` validation). And tightening that validation can break the
+**Three paths this track must own that are easy to miss.** Rejecting an off-contract key needs
+**two** enforcement points, and neither is in `schema/field.py` — `FieldClaim` lives at
+`services/claims/__init__.py:44`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
+the condition types instead. The keys are validated where they are *used as keys*:
+`ComponentInstance.fields` (`schema/component.py:83`, the `dict[str, list[CanonicalField]]`) and
+`commit_claims` (`services/claims/__init__.py:346`). Third, tightening either can break the
 **byte-compared** committed fixtures in `tests/fixtures/claims/`, which must be re-validated as
 part of this track rather than discovered by Track 3.
 
@@ -220,10 +234,10 @@ rejected at the boundary; `tests/test_fixtures.py` still passes.
 
 | # | Question | Blocks | Who |
 |---|---|---|---|
-| C-1 | D-15's two facts: does any executed NDA go beyond "Representatives with a need to know", and is anyone on the evaluation conflicted with a specific bidder? | C7 finalisation; hardens at first ingest | Procurement lead — a fact, not a preference |
-| C-2 | Does D-14 get a `Decimal` rule, and is the encoder required to be injective? | Track 1a — must be answered *before* the encoder is written | Maintainer + Team 1 |
-| C-3 | Team assignment for Tracks 4 and 5 | Both start immediately, so this is the first thing to settle | Maintainer |
-| C-4 | Who holds copyright for `NOTICE`? Currently "The procurement-agent authors" | Nothing; cosmetic but visible | Maintainer |
+| Q-1 | D-15's two facts: does any executed NDA go beyond "Representatives with a need to know", and is anyone on the evaluation conflicted with a specific bidder? | C7 finalisation; hardens at first ingest | Procurement lead — a fact, not a preference |
+| Q-2 | Does D-14 get a `Decimal` rule, and is the encoder required to be injective? | Track 1a — must be answered *before* the encoder is written | Maintainer + Team 1 |
+| Q-3 | Team assignment for Tracks 4 and 5 | Both start immediately, so this is the first thing to settle | Maintainer |
+| Q-4 | Who holds copyright for `NOTICE`? Currently "The procurement-agent authors" | Nothing; cosmetic but visible | Maintainer |
 
 The **gold set (B.9 / D-11)** is in no track because no agent can produce it.
 

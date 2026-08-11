@@ -41,7 +41,7 @@
 --      -- unenumerated, so two implementations could disagree about what is
 --      -- covered while both believing they followed this comment; and a
 --      -- delimiter-free concatenation is ambiguous by construction, since
---      -- distinct field values can produce identical bytes. D-13 §2:
+--      -- distinct field values can produce identical bytes. D-13 section 2:
 --      --
 --      --     hash = SHA-256(JCS({
 --      --         "v": 1, "stream", "seq", "event_type", "actor",

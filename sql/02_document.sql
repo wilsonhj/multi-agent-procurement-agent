@@ -78,10 +78,15 @@ ALTER TABLE public.document FORCE ROW LEVEL SECURITY;
 -- for a large, dynamic, per-request ID set (it would need a session GUC
 -- re-issued on every call). RLS here is the boundary a caller cannot forget to
 -- apply; allowed_document_ids is the boundary that scopes *which*
--- unrestricted-or-authorized documents one specific query may see. C7 (the
--- ACL/labelling model) is explicitly unfrozen per tasks.md, so this
+-- unrestricted-or-authorized documents one specific query may see. This
 -- deliberately implements no more than the field the frozen Pydantic schema
--- already commits to -- see sql/README.md's decisions list.
+-- already commits to; clarifications.md D-15 (adopted provisionally 2026-08-07)
+-- has since ratified exactly that minimum as C7's answer, rather than replacing
+-- it -- one document-level label, per-principal clearance, and
+-- allowed_document_ids as scoping *within* an entitlement rather than the
+-- boundary. It stays provisional pending two facts about NDA scope and
+-- evaluator conflicts; either one turns the label into a group. See
+-- sql/README.md's decisions list.
 --
 -- current_setting(..., true) returns NULL when the GUC was never set for this
 -- session, and NULL is never true, so an application that forgets to set

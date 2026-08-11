@@ -28,10 +28,39 @@
 --   1. SELECT pg_advisory_xact_lock(hashtext(stream)::bigint);  -- own statement
 --   2. SELECT hash FROM audit.event
 --        WHERE stream = $1 ORDER BY seq DESC LIMIT 1;           -- read the tip
---   3. -- in Python, per WP-H H.2: canonicalise the payload (RFC 8785, NOT
---      -- jsonb -- jsonb normalises key order but preserves whatever numeric
---      -- literal text it was given, so 1.0 and 1.00 stay textually distinct)
---      -- and compute hash := sha256(prev_hash || canonical_payload || ...).
+--   3. -- in Python, per WP-H H.2 and clarifications.md D-13 (ADOPTED
+--      -- 2026-08-07), which settles the bytes this file previously left as
+--      -- "...". Canonicalise with RFC 8785, NOT jsonb -- jsonb normalises key
+--      -- order but preserves whatever numeric literal text it was given, so
+--      -- 1.0 and 1.00 stay textually distinct.
+--      --
+--      -- The preimage is ONE JCS OBJECT, never a concatenation. An earlier
+--      -- version of this comment sketched
+--      --     hash := sha256(prev_hash || canonical_payload || ...)
+--      -- and that is wrong twice: the trailing "..." left the field set
+--      -- unenumerated, so two implementations could disagree about what is
+--      -- covered while both believing they followed this comment; and a
+--      -- delimiter-free concatenation is ambiguous by construction, since
+--      -- distinct field values can produce identical bytes. D-13 section 2:
+--      --
+--      --     hash = SHA-256(JCS({
+--      --         "v": 1, "stream", "seq", "event_type", "actor",
+--      --         "recorded_at", "prev_hash": lowercase-hex or null,
+--      --         "payload": {...}
+--      --     }))
+--      --
+--      -- The object's keys ARE the enumeration, and JCS gives unambiguous
+--      -- framing for free. Two details that change the hash and are easy to
+--      -- read the other way: `payload` embeds as the PARSED JSON OBJECT, not
+--      -- as the payload_canonical string; and `recorded_at` is supplied by
+--      -- the caller as RFC 3339 UTC with the Z offset and fixed microsecond
+--      -- precision, NOT defaulted -- a hashed timestamp is tamper-evident,
+--      -- a defaulted one cannot be pre-computed by the caller.
+--      --
+--      -- "v": 1 is inside the preimage and is load-bearing. Without it,
+--      -- changing the hashed field set later invalidates every existing
+--      -- chain, because a verifier can no longer recompute historical
+--      -- hashes. It must exist before the first event is ever emitted.
 --   4. INSERT INTO audit.event (...) VALUES (...);              -- same txn
 --
 -- UNIQUE(stream, prev_hash) below turns any violation of that discipline into a
@@ -64,19 +93,27 @@ CREATE TABLE audit.event (
     seq                bigint NOT NULL CHECK (seq >= 0),
 
     -- Hash chain. NULL prev_hash marks the one genesis event for a stream.
-    -- Digest algorithm is assumed to be SHA-256 (32 bytes): plan.md Decision 9
-    -- measures chain performance but never pins an algorithm, so this is one
-    -- of this file's flagged decisions -- see sql/README.md. If WP-H picks a
-    -- different digest, these two CHECKs need to change with it.
+    -- Digest is SHA-256 (32 bytes), pinned by clarifications.md D-13 section 1.
+    -- plan.md Decision 9 measures chain performance but never named an
+    -- algorithm, so this file previously flagged it as its own assumption;
+    -- D-13 closed that. The digest and these two CHECKs now move together or
+    -- not at all.
     prev_hash          bytea CHECK (prev_hash IS NULL OR octet_length(prev_hash) = 32),
     hash               bytea NOT NULL CHECK (octet_length(hash) = 32),
 
     -- C4's event_type taxonomy. A CHECK, not a native enum type, for the same
     -- extensibility reason as document.document_type: a later ALTER TABLE ...
     -- DROP/ADD CONSTRAINT is far less awkward than ALTER TYPE ... ADD VALUE,
-    -- which can never be dropped from once added. This taxonomy is NOT frozen
-    -- by any spec document (tasks.md marks C4's status unfrozen); the seven
-    -- values below are this file's own proposal -- see sql/README.md.
+    -- which can never be dropped from once added. clarifications.md D-13
+    -- (adopted 2026-08-07) makes these seven values **version 1**: additions are
+    -- allowed by amendment to that decision, which is why a CHECK was the right
+    -- choice here. Removing or renaming is forbidden once any event exists --
+    -- that is what breaks a chain. Before the first emit there is no chain to
+    -- break, which is how the unreachable 'web_search' value should go: it
+    -- cannot be stored, because document_id is NOT NULL against a real document
+    -- row and a gap-triggered search happens precisely because no document
+    -- supplied the value (analysis.md A-49). D-13 routes those to a separately
+    -- chained audit.run_event table. See sql/README.md decisions 5 and 6.
     event_type         text NOT NULL CHECK (event_type IN (
                            'document_ingested',
                            'parse_failure',
@@ -105,6 +142,15 @@ CREATE TABLE audit.event (
     -- against trusting as a canonicalisation step.
     payload            jsonb GENERATED ALWAYS AS (payload_canonical::jsonb) STORED NOT NULL,
 
+    -- STALE DEFAULT, and deliberately left for now: D-13 section 4 requires the
+    -- CALLER to supply recorded_at (RFC 3339 UTC, Z offset, fixed microsecond
+    -- precision) because the value is hashed -- a defaulted timestamp cannot be
+    -- pre-computed by the caller, and a superuser could edit it without breaking
+    -- the chain. This DEFAULT must be DROPPED before the first emit, so that a
+    -- caller which forgets fails loudly on NOT NULL rather than silently
+    -- recording an unhashable timestamp that only surfaces at verification.
+    -- Not dropped here because Track 0 is documentation-only; it belongs to
+    -- WP-H's first schema change.
     recorded_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
 
     -- A genesis event (no parent) must be seq 0, and every non-genesis event

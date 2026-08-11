@@ -230,7 +230,8 @@ first two apply to a new condition dimension, the third to a new field on `Canon
 ### What this recipe does not cover yet
 
 There is no output-projection step, because there is nothing to update: the canonical JSON
-projection is contract **C6**, still unfrozen, `write_workbook()` raises `NotImplementedError`,
+projection is contract **C6** — format frozen by D-14 (2026-08-07), nothing built:
+`write_workbook()` raises `NotImplementedError`,
 and there is no `tests/fixtures/` directory — the existing tests build their inputs inline. When
 C6 lands, a projection-fixture step belongs here. There is likewise no store round-trip step:
 C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no

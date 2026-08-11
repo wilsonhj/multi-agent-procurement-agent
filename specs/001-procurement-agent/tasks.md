@@ -22,10 +22,10 @@ an unfrozen contract.
 | **C1** | Postgres schema: `document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event` | Every WP | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08`; both T0.1 checks recorded live-verified in `sql/README.md`, and CI reapplies all nine files each run |
 | **C2** | Claim/extraction record — Pydantic + JSON Schema, including `condition` per D-1 | B, E, G | **partial** — `condition` landed on `FieldClaim` and `CanonicalField`; per-category models still do not exist |
 | **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **done** — all four on `SourceRef`, **`span` under the name `section`**, stamped by `FieldClaim.provenance()` and pinned by `test_source_ref_carries_c3s_four_elements` |
-| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial** — SQL half only (`audit.event`, the `event_type` CHECK, `payload_canonical`); no Python envelope and no canonicalisation library |
+| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial — decision half now closed.** [D-13](clarifications.md) (adopted 2026-08-07) settles the scheme (RFC 8785 via `rfc8785`), the preimage (one JCS object with `"v": 1`), the digest (SHA-256) and the taxonomy (v1, additive-only). What remains is code: no Python envelope, no canonicalisation library, no emitter. ⚠️ The version marker must exist **before the first event is ever emitted** |
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
-| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ — `write_workbook()` raises `NotImplementedError` and no projection function exists |
-| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS now enforces the one label the schema has (`access_restricted`); the model itself is still undecided, T0.4 unwritten |
+| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ **— format frozen, nothing built.** [D-14](clarifications.md) (adopted 2026-08-07) freezes the bytes, the shape, `encode_value()`, policy-inside-the-hash and the store-derived `generated_on`. `write_workbook()` still raises and no *workbook* projection function exists (`services.claims.project` is C8's claims→fields projection, a different thing) |
+| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS enforces the one label the schema has (`access_restricted`). [D-15](clarifications.md) adopts that model **provisionally** and closes T0.4's written-decision criterion, but two facts remain outstanding and they are facts rather than preferences: whether any executed NDA exceeds "need to know", and whether any evaluator is conflicted with a specific bidder. Either yes makes the label `restricted_group` |
 | **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | **partial** — the append-only invariant is enforced in both halves; `job` is the DDL's own proposal and `orchestrator.run` raises `NotImplementedError` |
 
 Three of the eight are done, four are partial and one is untouched. Read the four partials
@@ -59,9 +59,15 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > ⚠️ **C4 must ship before any stage emits events.** Changing the hashed field set later
 > invalidates every existing chain. WP-H ships its library first, even if thin. **The table
 > shipped without the library.** `sql/07_audit_event.sql` defines the envelope, the `event_type`
-> CHECK and `payload_canonical`, and its own comment says the taxonomy is that file's proposal
-> because C4 was unfrozen; H.2's RFC 8785 canonicalisation does not exist in `src/`, so the bytes
-> the `hash` column is computed over are still undefined. Nothing may emit an event until it is.
+> CHECK and `payload_canonical`. **[D-13](clarifications.md) (adopted 2026-08-07) closed the
+> decision half**: the scheme is RFC 8785, the preimage is one JCS object carrying `"v": 1`, the
+> digest is SHA-256, and `sql/07`'s caller-sequence comment now carries that object literally —
+> so the bytes the `hash` column covers are **defined**. The taxonomy is version 1 with
+> additive-only amendment.
+>
+> What is missing is code: H.2's canonicalisation library does not exist in `src/`, and
+> `rfc8785` is not yet a dependency. **Nothing may emit an event until that library exists** —
+> not because the bytes are unknown, but because nothing can compute them yet.
 
 > ⚠️ **C7 is a single decision constraining two work packages at opposite ends of the pipeline**
 > (labelling at ingest, enforcement at retrieval). This is the most common place this kind of
@@ -69,9 +75,13 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > applies `FORCE ROW LEVEL SECURITY` to seven tables, keyed on the single boolean
 > `SourceDocument.access_restricted` and gated by an `app.allow_restricted` session GUC, and
 > `sql/README.md` says in as many words that this is C7 "implemented at its frozen minimum, not
-> guessed at in full". That is the right way to have built it, and it does not close T0.4 —
-> anything beyond one boolean (labels, tenants, clearances, and who populates
-> `VectorStorePort.search(allowed_document_ids=...)`) is still unchosen.
+> guessed at in full". That was the right way to have built it, and **T0.4 is now written as
+> [D-15](clarifications.md) (2026-08-07)**, which ratifies that minimum rather than replacing it:
+> one document-level label, per-principal clearance from the OIDC subject, labelling at ingest
+> failing closed, and `VectorStorePort.search(allowed_document_ids=...)` as scoping *within* an
+> entitlement rather than the boundary. It is **provisional** — two facts about NDA scope and
+> evaluator conflicts remain outstanding, and either one turns the label into
+> `restricted_group`.
 
 ### Phase 0 tasks
 
@@ -83,8 +93,8 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
   to zero conflicts in a fixture test.
 - **T0.3** Define the per-field tolerance table from D-2 as data, not code. → verify: a table-driven
   test asserts nameplate Pmax at ±1 W does not merge adjacent 5 W bins.
-- **T0.4** Decide the ACL/labelling model (C7). → verify: written decision in `clarifications.md`.
-- **T0.5** Freeze the canonical workbook projection format (C6). → verify: a golden JSON fixture.
+- **T0.4** ~~Decide the ACL/labelling model (C7)~~ → **written as [D-15](clarifications.md), provisionally adopted 2026-08-07.** The verify criterion is met; the model is contingent on two outstanding facts recorded in that decision.
+- **T0.5** ~~Freeze the canonical workbook projection format (C6)~~ → **frozen as [D-14](clarifications.md), adopted 2026-08-07.** ⚠️ The verify criterion is **not** met: no golden JSON fixture exists yet. `tests/fixtures/` deliberately shipped none until ratification; that gate has now lifted.
 - **T0.6** Publish fixture sets for every contract (see below).
 
 ### The decoupling technique: frozen fixtures, not running code

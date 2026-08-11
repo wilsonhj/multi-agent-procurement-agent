@@ -410,29 +410,48 @@ can check exactly these choices rather than re-deriving the whole schema.
    cross-table trigger; judged too fragile relative to the benefit, so it is a
    comment, not a constraint.
 
-5. **`audit.event`'s `event_type` taxonomy is invented outright.** Tasks.md
-   marks C4 **partial** — this SQL half exists, the Python envelope and the
-   RFC 8785 canonicalisation rule do not, so the bytes `hash` is computed over
-   are still undefined and nothing may emit an event yet. The seven values chosen
-   (`document_ingested`, `parse_failure`, `extraction`, `web_search`,
-   `conflict_detected`, `resolution`, `attempt_failed`) are a first proposal
-   covering NFR-02's "every extraction, query, conflict and resolution," minus
-   one deliberate omission: see decision 6.
+5. **`audit.event`'s `event_type` taxonomy is invented outright — now v1, not
+   frozen.** ✅ **Settled by [D-13](../specs/001-procurement-agent/clarifications.md)
+   (adopted 2026-08-07).** The half of this that was open is closed: the RFC 8785
+   canonicalisation rule and the exact preimage are defined, so the bytes `hash`
+   covers are no longer undefined. The Python envelope still does not exist, so
+   nothing emits an event yet, but that is now missing code rather than a missing
+   decision.
 
-6. **Cross-document retrieval "queries" are out of scope for `audit.event`.**
-   NFR-02 wants an audit trail of "every ... query" too, but Decision 9 fixes
-   this table's chain as strictly per-document (`stream = 'doc:<id>'`), and a
-   retrieval query can span many documents at once. Forcing it onto one
-   document's chain would misrepresent it; giving it its own chain per query
-   would not have a stable "document" identity to key on. This schema does not
-   model query auditing at all — it would need its own, non-hash-chained
-   table, which is not built here.
+   The seven values (`document_ingested`, `parse_failure`, `extraction`,
+   `web_search`, `conflict_detected`, `resolution`, `attempt_failed`) are **version
+   1**, and D-13 makes additions additive-only by amendment rather than freezing
+   the list — this table chose a CHECK over a native enum precisely so values could
+   be added, and an absolute freeze would break the day a `workbook_composed` event
+   is needed. **Removing or renaming is forbidden once any event exists** — that is
+   what breaks chains. Before the first emit, when no chain exists to break, an
+   amendment may still remove a value; that is how the unreachable `web_search`
+   entry in decision 6 should go.
 
-7. **Hash algorithm assumed SHA-256** (the two `octet_length(...) = 32`
-   `CHECK`s on `audit.event.prev_hash`/`hash`). Plan.md Decision 9 measures
-   chain-append performance but never names a digest. If WP-H's Python
-   implementation picks something else, these two constraints must move with
-   it.
+6. **Web searches and cross-document queries have no home here, and the reason
+   changed.** ⚠️ **Corrected by [A-49](../specs/001-procurement-agent/analysis.md).**
+   This decision previously said NFR-02 wants "every ... query" audited. It does
+   not. `spec.md:153` says "**web** queries, extractions, conflicts and
+   resolutions"; `plan.md:66` paraphrases that as "every extraction, **query**,
+   conflict and resolution", dropping *web*, and this decision inherited the
+   paraphrase. `spec.md` governs, so cross-document **retrieval** queries are
+   plausibly not NFR-02 events at all — logging them is observability, not an audit
+   obligation.
+
+   The gap NFR-02 *does* create is the opposite one, and this table cannot hold it:
+   `web_search` is in the taxonomy above, but `document_id` is `NOT NULL` against a
+   real `document` row, and a gap-triggered search happens precisely *because* no
+   document supplied the value. D-13 sends run-scoped events to a separately chained
+   `audit.run_event` table keyed `run:<id>`, which is where web searches land.
+   Removing the unreachable `web_search` value from this CHECK is an additive-only
+   amendment for WP-H to make when it writes the emitter.
+
+7. **Hash algorithm ~~assumed~~ pinned to SHA-256** (the two
+   `octet_length(...) = 32` `CHECK`s on `audit.event.prev_hash`/`hash`).
+   ✅ **Settled by D-13 §1**, which names the digest rather than leaving it inferred
+   from a column width. Plan.md Decision 9 measures chain-append performance but
+   never named one; that gap is closed. These two constraints and the digest now
+   move together or not at all.
 
 8. **`stream = 'doc:' || document_id` is enforced structurally**, via a CHECK
    tying `stream` to a real `document.document_id` through a foreign key. This
@@ -443,11 +462,15 @@ can check exactly these choices rather than re-deriving the whole schema.
    as-is.
 
 9. **C7 (the ACL/labelling model) is implemented at its frozen minimum, not
-   guessed at in full.** Tasks.md marks C7 "partial... undecided", and it stays
-   undecided: what landed here is enforcement of one boolean, not a model, and
-   T0.4's written ACL decision does not exist in `clarifications.md` or
-   `open-decisions.md`. The enforcement mechanism arrived ahead of the decision
-   it is supposed to implement. Rather than inventing a labels/tenant model with
+   guessed at in full.** ✅ **The decision caught up: T0.4 is written as
+   [D-15](../specs/001-procurement-agent/clarifications.md), provisionally adopted
+   2026-08-07.** It ratifies exactly what landed here rather than replacing it —
+   one document-level label, per-principal clearance, labelling at ingest failing
+   closed. It stays **provisional** because two facts remain outstanding, and they
+   are facts rather than preferences: whether any executed NDA exceeds "need to
+   know", and whether any evaluator is conflicted with a specific bidder. Either
+   yes makes the label `restricted_group`. The enforcement mechanism arrived ahead
+   of the decision it implements, which is unusual but turned out well. Rather than inventing a labels/tenant model with
    no contract behind it, RLS on all seven content tables — `document`, `chunk`,
    `claim`, `conflict`, `resolution`, `job` and `audit.event` — enforces only the
    one ACL primitive the frozen

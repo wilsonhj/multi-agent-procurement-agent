@@ -93,19 +93,27 @@ CREATE TABLE audit.event (
     seq                bigint NOT NULL CHECK (seq >= 0),
 
     -- Hash chain. NULL prev_hash marks the one genesis event for a stream.
-    -- Digest algorithm is assumed to be SHA-256 (32 bytes): plan.md Decision 9
-    -- measures chain performance but never pins an algorithm, so this is one
-    -- of this file's flagged decisions -- see sql/README.md. If WP-H picks a
-    -- different digest, these two CHECKs need to change with it.
+    -- Digest is SHA-256 (32 bytes), pinned by clarifications.md D-13 section 1.
+    -- plan.md Decision 9 measures chain performance but never named an
+    -- algorithm, so this file previously flagged it as its own assumption;
+    -- D-13 closed that. The digest and these two CHECKs now move together or
+    -- not at all.
     prev_hash          bytea CHECK (prev_hash IS NULL OR octet_length(prev_hash) = 32),
     hash               bytea NOT NULL CHECK (octet_length(hash) = 32),
 
     -- C4's event_type taxonomy. A CHECK, not a native enum type, for the same
     -- extensibility reason as document.document_type: a later ALTER TABLE ...
     -- DROP/ADD CONSTRAINT is far less awkward than ALTER TYPE ... ADD VALUE,
-    -- which can never be dropped from once added. This taxonomy is NOT frozen
-    -- by any spec document (tasks.md marks C4's status unfrozen); the seven
-    -- values below are this file's own proposal -- see sql/README.md.
+    -- which can never be dropped from once added. clarifications.md D-13
+    -- (adopted 2026-08-07) makes these seven values **version 1**: additions are
+    -- allowed by amendment to that decision, which is why a CHECK was the right
+    -- choice here. Removing or renaming is forbidden once any event exists --
+    -- that is what breaks a chain. Before the first emit there is no chain to
+    -- break, which is how the unreachable 'web_search' value should go: it
+    -- cannot be stored, because document_id is NOT NULL against a real document
+    -- row and a gap-triggered search happens precisely because no document
+    -- supplied the value (analysis.md A-49). D-13 routes those to a separately
+    -- chained audit.run_event table. See sql/README.md decisions 5 and 6.
     event_type         text NOT NULL CHECK (event_type IN (
                            'document_ingested',
                            'parse_failure',
@@ -134,6 +142,15 @@ CREATE TABLE audit.event (
     -- against trusting as a canonicalisation step.
     payload            jsonb GENERATED ALWAYS AS (payload_canonical::jsonb) STORED NOT NULL,
 
+    -- STALE DEFAULT, and deliberately left for now: D-13 section 4 requires the
+    -- CALLER to supply recorded_at (RFC 3339 UTC, Z offset, fixed microsecond
+    -- precision) because the value is hashed -- a defaulted timestamp cannot be
+    -- pre-computed by the caller, and a superuser could edit it without breaking
+    -- the chain. This DEFAULT must be DROPPED before the first emit, so that a
+    -- caller which forgets fails loudly on NOT NULL rather than silently
+    -- recording an unhashable timestamp that only surfaces at verification.
+    -- Not dropped here because Track 0 is documentation-only; it belongs to
+    -- WP-H's first schema change.
     recorded_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
 
     -- A genesis event (no parent) must be seq 0, and every non-genesis event

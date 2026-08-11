@@ -113,7 +113,7 @@ Two suites cover them, and the split is the point. `tests/test_sql_schema.py` as
 descends from against a real PostgreSQL — a role declassifying rows it cannot read, a chunk not
 inheriting its document's restriction, a `TRUNCATE` taking the decision log with it, a chain that
 was constrained but not walkable — and the `sql` job in `.github/workflows/ci.yml` supplies one
-from a `pgvector/pgvector` container. Those are the 23 tests that skip locally.
+from a `pgvector/pgvector` container. Those are the 24 tests that skip locally.
 
 ## Declared but not operational
 
@@ -351,7 +351,8 @@ Changes that are useful without depending on unfinished storage contracts includ
 - documentation checks and link validation; and
 - proposals for the unresolved shared contracts.
 
-Avoid inventing a production workbook shape in isolation: C6 is still unfrozen, and it is
+Avoid inventing a production workbook shape in isolation: C6's *format* is frozen by D-14 but
+no projection exists, and it is
 explicitly a shared contract that needs an accepted design decision first. The database shape is
 no longer in that category — C1 has landed — but the same rule applies from the other side: build
 against `sql/` rather than beside it, and changing what is there is a contract change under

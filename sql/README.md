@@ -423,8 +423,10 @@ can check exactly these choices rather than re-deriving the whole schema.
    1**, and D-13 makes additions additive-only by amendment rather than freezing
    the list — this table chose a CHECK over a native enum precisely so values could
    be added, and an absolute freeze would break the day a `workbook_composed` event
-   is needed. Removing or renaming a value stays forbidden; that is what breaks
-   chains.
+   is needed. **Removing or renaming is forbidden once any event exists** — that is
+   what breaks chains. Before the first emit, when no chain exists to break, an
+   amendment may still remove a value; that is how the unreachable `web_search`
+   entry in decision 6 should go.
 
 6. **Web searches and cross-document queries have no home here, and the reason
    changed.** ⚠️ **Corrected by [A-49](../specs/001-procurement-agent/analysis.md).**
@@ -460,11 +462,15 @@ can check exactly these choices rather than re-deriving the whole schema.
    as-is.
 
 9. **C7 (the ACL/labelling model) is implemented at its frozen minimum, not
-   guessed at in full.** Tasks.md marks C7 "partial... undecided", and it stays
-   undecided: what landed here is enforcement of one boolean, not a model, and
-   T0.4's written ACL decision does not exist in `clarifications.md` or
-   `open-decisions.md`. The enforcement mechanism arrived ahead of the decision
-   it is supposed to implement. Rather than inventing a labels/tenant model with
+   guessed at in full.** ✅ **The decision caught up: T0.4 is written as
+   [D-15](../specs/001-procurement-agent/clarifications.md), provisionally adopted
+   2026-08-07.** It ratifies exactly what landed here rather than replacing it —
+   one document-level label, per-principal clearance, labelling at ingest failing
+   closed. It stays **provisional** because two facts remain outstanding, and they
+   are facts rather than preferences: whether any executed NDA exceeds "need to
+   know", and whether any evaluator is conflicted with a specific bidder. Either
+   yes makes the label `restricted_group`. The enforcement mechanism arrived ahead
+   of the decision it implements, which is unusual but turned out well. Rather than inventing a labels/tenant model with
    no contract behind it, RLS on all seven content tables — `document`, `chunk`,
    `claim`, `conflict`, `resolution`, `job` and `audit.event` — enforces only the
    one ACL primitive the frozen

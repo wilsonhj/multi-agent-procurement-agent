@@ -59,9 +59,15 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > ⚠️ **C4 must ship before any stage emits events.** Changing the hashed field set later
 > invalidates every existing chain. WP-H ships its library first, even if thin. **The table
 > shipped without the library.** `sql/07_audit_event.sql` defines the envelope, the `event_type`
-> CHECK and `payload_canonical`, and its own comment says the taxonomy is that file's proposal
-> because C4 was unfrozen; H.2's RFC 8785 canonicalisation does not exist in `src/`, so the bytes
-> the `hash` column is computed over are still undefined. Nothing may emit an event until it is.
+> CHECK and `payload_canonical`. **[D-13](clarifications.md) (adopted 2026-08-07) closed the
+> decision half**: the scheme is RFC 8785, the preimage is one JCS object carrying `"v": 1`, the
+> digest is SHA-256, and `sql/07`'s caller-sequence comment now carries that object literally —
+> so the bytes the `hash` column covers are **defined**. The taxonomy is version 1 with
+> additive-only amendment.
+>
+> What is missing is code: H.2's canonicalisation library does not exist in `src/`, and
+> `rfc8785` is not yet a dependency. **Nothing may emit an event until that library exists** —
+> not because the bytes are unknown, but because nothing can compute them yet.
 
 > ⚠️ **C7 is a single decision constraining two work packages at opposite ends of the pipeline**
 > (labelling at ingest, enforcement at retrieval). This is the most common place this kind of
@@ -69,9 +75,13 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > applies `FORCE ROW LEVEL SECURITY` to seven tables, keyed on the single boolean
 > `SourceDocument.access_restricted` and gated by an `app.allow_restricted` session GUC, and
 > `sql/README.md` says in as many words that this is C7 "implemented at its frozen minimum, not
-> guessed at in full". That is the right way to have built it, and it does not close T0.4 —
-> anything beyond one boolean (labels, tenants, clearances, and who populates
-> `VectorStorePort.search(allowed_document_ids=...)`) is still unchosen.
+> guessed at in full". That was the right way to have built it, and **T0.4 is now written as
+> [D-15](clarifications.md) (2026-08-07)**, which ratifies that minimum rather than replacing it:
+> one document-level label, per-principal clearance from the OIDC subject, labelling at ingest
+> failing closed, and `VectorStorePort.search(allowed_document_ids=...)` as scoping *within* an
+> entitlement rather than the boundary. It is **provisional** — two facts about NDA scope and
+> evaluator conflicts remain outstanding, and either one turns the label into
+> `restricted_group`.
 
 ### Phase 0 tasks
 

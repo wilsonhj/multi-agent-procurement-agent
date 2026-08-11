@@ -40,13 +40,13 @@ dependency, not a scheduling preference. Merge ordering is separate and stated b
 
 | # | Track | Needs | Team | Owns these paths |
 |---|---|---|---|---|
-| **0** | Reconcile the tracking docs | — | 1 | `sql/07_audit_event.sql` (comments), `sql/README.md`, `specs/001-procurement-agent/tasks.md`, `docs/current-state.md`, `docs/requirements-traceability.md` |
-| **1a** | `encode_value()` | 0, **Q-2** | 1 | `src/procurement_agent/schema/encoding.py` (new) |
+| **0** | ~~Reconcile the tracking docs~~ **DONE** (#33, merged `b32e04b`) | — | 1 | `sql/07_audit_event.sql` (comments), `sql/README.md`, `specs/001-procurement-agent/tasks.md`, `docs/current-state.md`, `docs/requirements-traceability.md` |
+| **1a** | `encode_value()` | 0 ✅ | **6** | `src/procurement_agent/schema/encoding.py` (new) |
 | **1b** | A-50 convergence | 1a | 5 | `src/procurement_agent/services/conflict_hitl/__init__.py` |
 | **2** | WP-H — audit library | 0 (`sql/07` comment only) | 1 | `src/procurement_agent/audit/` (new), `pyproject.toml` |
 | **3** | WP-G — C6 projection + T0.5 fixture | 1a | 6 | `src/procurement_agent/services/output/`, `tests/fixtures/workbooks/` |
-| **4** | NFR-04 port conformance suite | — | **4?** | `tests/port_contracts/` (new), `src/procurement_agent/adapters/` (new) |
-| **5** | C2 field registry | — | **5?** | `src/procurement_agent/schema/registry.py` (new), `schema/component.py`, `services/claims/__init__.py`, `conflict_hitl/tolerance.py`, `services/confidence/`, `tests/fixtures/claims/` |
+| **4** | NFR-04 port conformance suite | — | 4 | `tests/port_contracts/` (new), `src/procurement_agent/adapters/` (new) |
+| **5** | C2 field registry | — | 5 | `src/procurement_agent/schema/registry.py` (new), `schema/component.py`, `services/claims/__init__.py`, `conflict_hitl/tolerance.py`, `services/confidence/`, `tests/fixtures/claims/` |
 
 **Start order** — 0, 4 and 5 begin immediately; 4 and 5 share no path with Track 0 and need not
 wait for it.
@@ -56,34 +56,48 @@ wait for it.
 on-contract keys, and landing 5 first means Track 3 finds out at build time rather than at merge.
 Track 3 does not consume anything Track 5 produces.
 
-**Two team assignments are unresolved** and need a decision, not a paragraph. `tasks.md:301`'s
-allocation covers WP-A..WP-I; Tracks 4 and 5 map onto nobody — **no work package owns `ports/`
-at all**, and Track 5 cuts across WP-B's tier table (Team 3) and WP-E's tolerance table (Team 5).
-Proposed above: Track 4 → Team 4 (already owns the vector-store surface), Track 5 → Team 5 (owns
-the largest consumer) with Team 1 reviewing as contract owner. Note that this leaves **Team 1
-holding 0, 1a and 2** — the critical path runs through one team, which is a scheduling fact worth
-seeing rather than discovering.
+**Team assignments settled 2026-08-11.** Track 4 → **Team 4**, which already owns the
+vector-store surface. Track 5 → **Team 5**, which owns the registry's largest consumer, with
+**Team 1** reviewing as contract owner and **Team 3** reviewing the tier-table consolidation
+since that table is theirs.
+
+Track 1a moved from Team 1 to **Team 6**. Team 6 consumes `encode_value()` immediately in Track 3
+and cannot start Track 3 without it, so no idle time is created — and it takes the critical path
+off Team 1, who would otherwise hold 0, 1a and 2 while three teams waited. The objection worth
+naming: `schema/` is Team 1's substrate per `tasks.md:311`, and Team 6 writing `schema/encoding.py`
+erodes that. Mitigated because the amended D-14 now fully determines the file — it is the
+implementation of a frozen spec, not a judgement call — and Team 1 reviews the PR.
+
+Note `tasks.md:311` still allocates no work package to `ports/` at all, which is a plausible
+reason NFR-04 has sat at `declared` since the beginning.
 
 ---
 
-### Track 0 — Reconcile the tracking docs · *~1 hour*
+### Track 0 — Reconcile the tracking docs · ✅ **DONE** — PR #33, merged `b32e04b`
 
-**Why it blocks.** `sql/07_audit_event.sql:34` still sketches
-`hash := sha256(prev_hash || canonical_payload || ...)`. D-13 replaced that with a single JCS
-object. An implementer starting from the DDL rather than the decision builds the wrong preimage —
-D-13's own worst case: chains that verify under the buggy implementation and fail under any
-correct one.
+**Why it blocked.** `sql/07_audit_event.sql`'s caller-sequence comment sketched
+`hash := sha256(prev_hash || canonical_payload || ...)`, which D-13 had replaced with a single
+JCS object. An implementer starting from the DDL rather than the decision would build the wrong
+preimage — D-13's own worst case: chains that verify under the buggy implementation and fail
+under any correct one. All four tracking documents mentioned D-13/14/15 **zero** times.
 
-Verified: all four tracking documents mention D-13/14/15 **zero** times.
+**Landed in two commits**, the `sql/07` comment first and alone, because that single edit was all
+Track 2 waited on.
 
-**Land the `sql/07` comment as the first commit**, separately. That single edit is all Track 2
-actually waits on; the rest of Track 0 can follow without holding anyone.
+**Outcome, and one lesson worth carrying into the other tracks.** The first pass fixed the files
+this section *named* and left every adjacent callout on the pre-decision world — a warning box in
+`tasks.md` still said the hash bytes were undefined, four lines from a row saying D-13 defined
+them. Review caught eight; sweeping for *meaning* rather than for filenames caught three more, in
+two files this section never listed (`docs/development.md`, `sql/02_document.sql`).
 
-**Scope:** the `sql/07` comment; `sql/README.md` decisions 5–7 marked settled by D-13; the C1–C8
-table and T0.4/T0.5 in `tasks.md`; `current-state.md` and the C4/C6/C7 traceability rows.
+The scope was written as four documents. The goal was "no document contradicts the decisions".
+**Those are not the same thing, and scoping a reconciliation by filename is what produced
+leftovers twice.**
 
-**Verify:** `grep -c "D-1[345]"` non-zero in each of the four files, and no `||`-concatenation
-hash sketch remains in `sql/07`.
+**Verified at merge:** `D-1[345]` appears 7 / 5 / 8 / 3 times across the four tracking documents;
+no prescriptive `||`-concatenation sketch remains; both revisions of `sql/` apply to a live
+PostgreSQL and produce a byte-identical schema, confirming the changes were comment-only at
+runtime rather than only in the diff.
 
 ---
 
@@ -232,12 +246,12 @@ rejected at the boundary; `tests/test_fixtures.py` still passes.
 
 ## Clarifications needed
 
-| # | Question | Blocks | Who |
-|---|---|---|---|
-| Q-1 | D-15's two facts: does any executed NDA go beyond "Representatives with a need to know", and is anyone on the evaluation conflicted with a specific bidder? | C7 finalisation; hardens at first ingest | Procurement lead — a fact, not a preference |
-| Q-2 | Does D-14 get a `Decimal` rule, and is the encoder required to be injective? | Track 1a — must be answered *before* the encoder is written | Maintainer + Team 1 |
-| Q-3 | Team assignment for Tracks 4 and 5 | Both start immediately, so this is the first thing to settle | Maintainer |
-| Q-4 | Who holds copyright for `NOTICE`? Currently "The procurement-agent authors" | Nothing; cosmetic but visible | Maintainer |
+| # | Question | Status |
+|---|---|---|
+| Q-2 | Does D-14 get a `Decimal` rule, and must the encoder be injective? | ✅ **Answered 2026-08-11.** Yes to both, and the shape changed on review: D-14 keeps its enumeration and gains **two** cases — `Decimal` and `date` — rather than a general "tag every non-primitive" rule, which would have tagged `StrEnum` members and broken injectivity by making one value encode two ways. The requirement is the *property*; the table is one implementation |
+| Q-3 | Team assignment for Tracks 4 and 5 | ✅ **Answered 2026-08-11.** Track 4 → Team 4, Track 5 → Team 5 (Team 1 contract review, Team 3 reviews the tier table), and Track 1a → Team 6 to take the critical path off Team 1 |
+| Q-4 | Who holds copyright for `NOTICE`? | ✅ **Answered 2026-08-11.** Leave "The procurement-agent authors" — the standard collective convention, and `NOTICE` is attribution while `LICENSE` is the grant. Revisit only if the answer to one question is yes: *was any of this authored as work-for-hire, or under an employment IP-assignment agreement?* |
+| Q-1 | D-15's two facts — does any executed NDA exceed "Representatives with a need to know", and is any evaluator conflicted with a specific bidder? | ⏳ **Open, and not answerable here.** Someone reads the NDAs and the roster. Three outcomes, not two: both no → keep the boolean; NDA yes → `restricted_group`; recusal only → a per-person **deny-list**, keeping the boolean. See [D-15](clarifications.md). Hardens at first ingest, and re-arms with each new NDA or evaluator |
 
 The **gold set (B.9 / D-11)** is in no track because no agent can produce it.
 

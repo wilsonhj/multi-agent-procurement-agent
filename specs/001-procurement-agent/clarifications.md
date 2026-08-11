@@ -774,10 +774,53 @@ fields by name, then:
   reintroduce the exact hazard the rule above closes. See [A-50](analysis.md).
 - **Condition groups sort by their `encode_value()` form**, for the same reason.
 
-**One frozen `encode_value()`** for `value: object` — `DeclaredBand` via `model_dump`, datetimes
-as RFC 3339 UTC with microseconds **always** printed (`isoformat()` omits `.000000` when zero, so
-pin a formatter rather than relying on it), enums via `.value`, frozensets sorted as `derived`
-already is.
+**One frozen `encode_value()`** for `value: object`, **closed-world** — it raises on any type not
+listed here rather than falling back, so a new value type is a loud decision instead of a silent
+encoding:
+
+| Type | Encoding |
+|---|---|
+| `Decimal` | `{"$decimal": str(v)}` — **added 2026-08-11** |
+| `date` | `{"$date": v.isoformat()}` — **added 2026-08-11** |
+| `datetime` | RFC 3339 UTC, microseconds **always** printed (`isoformat()` omits `.000000` when zero, so pin a formatter) |
+| `DeclaredBand` | `model_dump` |
+| enums | `.value` |
+| `frozenset` | sorted, as `derived` already is |
+| `tuple` | list — needed for condition grouping keys on the sort path, never for a stored value |
+| `str`, `int`, `float`, `bool`, `None` | bare |
+
+**The requirement is a property, not the table: `encode_value()` must be injective over the
+value domain, enforced by test.** The table is one implementation of it. Two consequences that
+are easy to get backwards:
+
+- **Equal values must encode identically.** Every enum in `schema/enums.py` is a `StrEnum`
+  (`Severity` is an `IntEnum`), so `MeasurementBasis.STC == "stc"` is `True` — one value, not
+  two. Tagging enums would make a single value encode two ways and *break* injectivity rather
+  than protect it. Bare `.value` is correct.
+- **Distinct values must encode distinctly**, which is why `Decimal` and `date` need tags and
+  nothing else does. Bare JSON primitives already distinguish themselves in *text* — `22`,
+  `22.0`, `"22"`, `true`, `null` are five different tokens — but `Decimal("22")` and the string
+  `"22"` both want to become `"22"`, and `date(2026,8,11)` collides with `"2026-08-11"` the same
+  way. `DeclaredBand` encodes to a dict and cannot collide with a scalar.
+
+**Why `Decimal` earns a tag at all.** `Decimal("22")` and `Decimal("22.0")` are `==` in Python
+and hash identically, but `conflict_hitl._decimals` reads precision from `str(value)`, and that
+precision sets D-2's rounding floor:
+
+```
+Decimal("22")   vs 22.4  ->  no conflict   (0 places -> floor 0.5)
+Decimal("22.0") vs 22.4  ->  CONFLICT      (1 place  -> floor 0.05)
+```
+
+The trailing zero decides whether a human is asked to review, so collapsing the two is a
+behaviour change, not a formatting one. ⚠️ **Never call `Decimal.normalize()`** — it strips
+trailing zeros and destroys exactly the precision the tag exists to carry.
+
+**Why `$` as the sigil.** `list[str]` is a real contract type on 18 fields, so a positional
+`["decimal", …]` tag would live inside a legitimate value domain; bare dicts are not a value type
+at all. And `$` cannot collide with a `model_dump` key by construction: pydantic field names are
+Python identifiers, so only a deliberate alias could mint one. Assert no dumped key begins with
+`$` if a backstop is wanted.
 
 **Two judgement calls, both decided 2026-08-07 as recommended:**
 
@@ -905,10 +948,23 @@ constraints here are contractual — NDAs and trade-secret exposure — not stat
    consultant, the owner's engineer, a prior relationship — such that they must be walled off
    from *one* supplier rather than from all pricing?
 
-If either is yes, the label becomes `restricted_group text NULL` (NULL = general) and the
-boolean becomes the degenerate single-group case. **Note what question 2 actually asks for: a
-per-person deny-list, not a clearance matrix.** That is a cheaper mechanism than groups and
-would be the right shape if recusal is the only driver.
+**The two answers do not lead to the same place**, and an earlier summary of this decision
+wrongly collapsed them into "either yes → `restricted_group`":
+
+| Answers | Adopt |
+|---|---|
+| Both no | The boolean, as built. Restrict by document type; that is standard practice. |
+| **1 yes** (an NDA exceeds "need to know") | `restricted_group text NULL` (NULL = general); the boolean becomes the degenerate single-group case. |
+| **2 only** (recusal, no NDA trigger) | **A per-person deny-list, keeping the boolean.** Question 2 asks who may *not* see one supplier — that is an exclusion, not a clearance matrix, and it is much cheaper than groups. |
+
+**Both are document checks, not opinions.** Question 1 means reading each executed NDA for three
+concrete triggers — named individuals, access-log requirements, segregation from personnel who
+work with competing suppliers. Question 2 means reading the evaluation roster, external
+consultants and the owner's engineer included.
+
+**Record the answer as an artifact** — which NDAs were read, and the roster as of a date. The
+model hardens at first ingest, but new NDAs and new evaluators arrive afterwards, so the question
+re-arms with each one rather than being settled once.
 
 **Cost of the retrofit, stated honestly because it has been mis-quoted in both directions.**
 `access_restricted` appears 34 times across three SQL files, against 40 `CREATE POLICY`

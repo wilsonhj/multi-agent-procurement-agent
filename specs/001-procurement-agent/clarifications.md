@@ -782,12 +782,58 @@ encoding:
 |---|---|
 | `Decimal` | `{"$decimal": str(v)}` — **added 2026-08-11** |
 | `date` | `{"$date": v.isoformat()}` — **added 2026-08-11** |
-| `datetime` | RFC 3339 UTC, microseconds **always** printed (`isoformat()` omits `.000000` when zero, so pin a formatter) |
-| `DeclaredBand` | `model_dump` |
+| `datetime` | `{"$datetime": …}`, RFC 3339 UTC, microseconds **always** printed (`isoformat()` omits `.000000` when zero, so pin a formatter). Aware only — **amended 2026-08-12** |
+| `DeclaredBand` | `model_dump`, then **every leaf back through `encode_value`** — **amended 2026-08-12** |
 | enums | `.value` |
 | `frozenset` | sorted, as `derived` already is |
 | `tuple` | list — needed for condition grouping keys on the sort path, never for a stored value |
-| `str`, `int`, `float`, `bool`, `None` | bare |
+| `list` | list, elementwise — **added 2026-08-12** |
+| `str`, `int`, `float`, `bool`, `None` | bare (finite floats only) |
+
+**Three amendments, all found by implementing this table in Track 1a and all required by the
+property below rather than by preference.** Recorded here because the code now differs from what
+this table said, and a table that lies is worse than one that is silent:
+
+1. **`list` was absent, and `list[str]` is the declared type of 18 contract fields** — so a
+   closed-world encoder raised on real data. Encoded elementwise; order is content, never sorted.
+   It shares the JSON array with `tuple` and `frozenset`, which is sound only because neither of
+   those ever reaches the polymorphic `CanonicalField.value` slot: `derived` is a frozenset at a
+   fixed key, and tuples exist solely on the sort path. **Injectivity is required over the
+   polymorphic value domain**, which is the domain that needs it — `value` is typed
+   `object | None`, so one key path carries a `Decimal` for one field and a `str` for another and
+   position cannot disambiguate. That is the whole reason the tagged types are tagged. Adding
+   `$tuple`/`$frozenset` sigils would buy nothing and put sigils into sort keys.
+2. **`model_dump` alone leaks raw enum members.** Plain `model_dump()` runs in *python mode* and
+   returns `kind` as the `ToleranceKind` member, which is not JSON and is one `repr()` away from
+   `<ToleranceKind.ABSOLUTE: 'absolute'>` — the A-6 class, where a hash moves because a member was
+   renamed. `mode="json"` fixes that one case and creates a worse one: a `Decimal` field added to
+   the model later would be serialised by pydantic's rules instead of earning its `$decimal` tag,
+   so two distinct precisions would collide. Recursing keeps one encoding authority per leaf.
+
+   ⚠️ **This defect is invisible under equality assertions.** A `StrEnum` member equals its own
+   value and `json.dumps` writes it as a plain string, so the leak passes every `==` test and
+   surfaces only when a non-`str`/`int` field is added. It is caught by a structural check that
+   every leaf is *exactly* a JSON type — `type(x) is str`, not `isinstance`.
+3. **`datetime` pinned a format but no tag**, so an encoded datetime would collide with the equal
+   plain string — precisely the argument that earned `date` its tag one row above. Tagged
+   `$datetime`. Naive datetimes are **refused**: a naive datetime names no instant, and assuming
+   UTC would encode it identically to an aware noon-UTC that it is *not equal to*, breaking
+   injectivity in the silent direction. Aware datetimes are converted to UTC before formatting,
+   which is what makes `14:00+02:00` and `12:00Z` — one value, two spellings — encode once.
+
+Non-finite floats are refused for the same reason: JSON cannot represent them, and `NaN != NaN`
+means no injective map can place a value that is not equal to itself. The schema already rejects
+these at construction (`_reject_non_finite`); the encoder declines to be the hole in that.
+
+Two Python equalities are deliberately **not** honoured, both warts rather than semantics:
+`True == 1` and `1 == 1.0` encode distinctly, which this decision already implied by calling
+`22`, `22.0`, `"22"`, `true` and `null` "five different tokens" below. `Severity.INFORMATIONAL == 0`
+*is* honoured, because an `IntEnum` member is the integer. Over-separating a coincidence is safe;
+under-separating a precision is not.
+
+Implemented at `src/procurement_agent/schema/encoding.py`, with the property tests at
+`tests/test_encoding.py`. Placement follows `schema/component.py:74` — `schema` sits below
+`services` and cannot import it, and both consumers live in `services`.
 
 **The requirement is a property, not the table: `encode_value()` must be injective over the
 value domain, enforced by test.** The table is one implementation of it. Two consequences that

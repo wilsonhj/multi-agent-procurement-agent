@@ -7,18 +7,26 @@ dropping the comparison. `comparison_pairs` carries the relation as pairs.
 """
 
 import itertools
+from decimal import Decimal
+from enum import StrEnum
+from typing import get_args
 
 import pytest
 
 from procurement_agent.schema import (
     Condition,
+    ConditionDimensions,
     ConflictCandidate,
     MeasurementBasis,
     PowerSide,
+    RteBoundary,
     SourceRef,
     SourceTier,
+    UnencodableValueError,
 )
 from procurement_agent.services.conflict_hitl import (
+    _canonical,
+    _ordering_key,
     comparison_groups,
     comparison_pairs,
     conflict_groupings,
@@ -336,3 +344,246 @@ def test_the_bridging_candidate_appears_in_two_entries() -> None:
     groups = conflict_groupings([eu, bare, cec])
     assert len(groups) == 2
     assert sum(1 for g in groups if any(c.value == 320.0 for c in g)) == 2
+
+
+#: Deliberately all-lowercase and free of `<`, `_` and every vocabulary spelling,
+#: so the assertions below about what does *not* appear in the key cannot pass or
+#: fail for a reason coming from the fixture rather than from the encoding.
+_PLAIN = ConflictCandidate(
+    value=650.0,
+    unit="w",
+    verbatim_value=None,
+    condition=Condition(),
+    source_tier=SourceTier.WEB_SUPPLEMENT,
+    source_ref=SourceRef(document_id="doc-plain"),
+    confidence=0.9,
+)
+
+
+def _key_text(candidate: ConflictCandidate) -> str:
+    """The whole ordering key as one searchable string.
+
+    Joined on a newline, which no component can contain: `json.dumps` escapes it
+    inside a string, so a match below is always a match in one component rather
+    than one straddling a boundary.
+    """
+    return "\n".join(_ordering_key(candidate))
+
+
+def _vocabulary_members() -> list[tuple[str, StrEnum]]:
+    """`(dimension, member)` for every closed vocabulary on a condition.
+
+    Read off the annotations rather than from a hand-kept list, the same way
+    `tests/test_condition_grouping._vocabulary_of` does, so a vocabulary added to
+    `ConditionDimensions` is covered here without anyone remembering to register
+    it - which is the only way this check keeps up with A-50's blast radius.
+    """
+    pairs: list[tuple[str, StrEnum]] = []
+    for name, info in ConditionDimensions.model_fields.items():
+        for arg in get_args(info.annotation):
+            if isinstance(arg, type) and issubclass(arg, StrEnum):
+                pairs.extend((name, member) for member in arg)
+    return pairs
+
+
+_VOCABULARY_MEMBERS = _vocabulary_members()
+
+
+def test_the_vocabularies_are_actually_reached() -> None:
+    """The parametrisation below is generated, so an annotation change that
+    yielded nothing would silently turn every case into zero cases."""
+    assert len(_VOCABULARY_MEMBERS) > 20
+    assert {name for name, _ in _VOCABULARY_MEMBERS} == {
+        "basis",
+        "side",
+        "weighting",
+        "standards_regime",
+        "rte_boundary",
+    }
+
+
+@pytest.mark.parametrize(
+    "dimension,member",
+    _VOCABULARY_MEMBERS,
+    ids=[f"{name}-{member.name}" for name, member in _VOCABULARY_MEMBERS],
+)
+def test_a_vocabulary_member_orders_by_its_value_not_its_identity(
+    dimension: str, member: StrEnum
+) -> None:
+    """A-50, stated as the property that makes it impossible rather than as a
+    ban on one function.
+
+    `repr()` of an enum member is `<MeasurementBasis.STC: 'stc'>` - it carries
+    the class name and the *member name* alongside the value. Both are identity,
+    not data: renaming `STC` to `STC_1000` changes the key, therefore the sort
+    order, therefore the row order of any artifact composed from it, while every
+    measurement in the store is untouched. That is the A-6 class this repo has now
+    hit three times (unpinned `openpyxl`, `repr(grouping_key())`, and
+    `_ordering_key` reintroducing it inside the fix for the second).
+
+    Asserting the member name is *absent* is a proof rather than a proxy: if the
+    name does not appear in the key, no rename of it can move the key.
+    """
+    # The dimension is chosen at runtime, so mypy sees the kwargs as one dict
+    # widened to `StrEnum` rather than as the specific vocabulary each field
+    # declares - the same reason the coercion tests in test_condition_grouping.py
+    # carry this ignore.
+    condition = Condition(**{dimension: member})  # type: ignore[arg-type]
+    candidate = _PLAIN.model_copy(update={"condition": condition})
+    text = _key_text(candidate)
+    assert f'"{member.value}"' in text, "the value has to reach the key, or nothing is ordered"
+    assert member.name not in text, f"{member.name} is a rename away from a different sort order"
+    assert type(member).__name__ not in text, "the class name is identity, not data"
+
+
+def test_the_ordering_key_carries_no_repr_artifact() -> None:
+    """The cheap tripwire that would have caught A-50 on sight, kept alongside
+    the property test because it needs no knowledge of which vocabularies exist.
+
+    `<` cannot occur in a canonically encoded key here - `json.dumps` escapes
+    nothing to it and no fixture value contains one - but it opens every enum,
+    object and function `repr`, so its absence is exactly "nothing was repr'd".
+    """
+    rich = _PLAIN.model_copy(
+        update={
+            "condition": Condition(
+                basis=MeasurementBasis.STC,
+                side=PowerSide.DC,
+                rte_boundary=RteBoundary.DC_DC_TERMINALS,
+                temperature_c=25.0,
+                derived=frozenset({"basis", "side"}),
+            ),
+            "source_tier": SourceTier.SYSTEM_OF_RECORD,
+        }
+    )
+    assert "<" not in _key_text(rich)
+    assert "0x" not in _key_text(rich), "a memory address in a sort key is not a canonical order"
+
+
+def test_renaming_a_member_moves_neither_the_candidate_order_nor_the_display_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A-50 as the event that must not happen, not as a ban on one function.
+
+    Everything else here checks that `repr`'s artifacts are absent, which is a
+    proof only for the artifacts anyone thought to name. This performs the rename
+    and asserts the output does not move - the property itself, and the only test
+    in this file that catches the display partition's outer sort, since no pair of
+    real grouping keys happens to order differently under the two encodings.
+
+    `STC` -> `AAA_RENAMED` is chosen so the *name* order against `NOCT` flips
+    while the *value* order (`noct` before `stc`) cannot. Both surfaces are
+    asserted against literals rather than against a second evaluation: the
+    before-and-after form alone passes for any implementation that is merely
+    self-consistent, which is the shape that once kept a whole-suite pair
+    reversal green.
+    """
+    stc = _candidate(1.0, Condition(basis=MeasurementBasis.STC))
+    noct = _candidate(2.0, Condition(basis=MeasurementBasis.NOCT))
+
+    assert _values_of(comparison_groups([stc, noct])) == [[2.0], [1.0]]
+    assert [c.value for c in sorted([stc, noct], key=_ordering_key)] == [2.0, 1.0]
+
+    monkeypatch.setattr(MeasurementBasis.STC, "_name_", "AAA_RENAMED")
+    assert repr(MeasurementBasis.STC) == "<MeasurementBasis.AAA_RENAMED: 'stc'>", (
+        "the rename did not take, so the assertions below are vacuous"
+    )
+    assert MeasurementBasis.STC.value == "stc", "a rename must not touch the data"
+
+    assert _values_of(comparison_groups([stc, noct])) == [[2.0], [1.0]]
+    assert [c.value for c in sorted([stc, noct], key=_ordering_key)] == [2.0, 1.0]
+
+
+def test_the_display_group_order_carries_no_repr_artifact() -> None:
+    """The second half of A-50. `comparison_groups` sorted its buckets by
+    `repr(grouping_key())`, which is the same defect one level up: the *order of
+    the groups* moved on a rename.
+
+    No pair of grouping keys actually reorders between the two encodings - within
+    a tuple position the type set is {member, None} or {float, None}, and both
+    encodings put the non-`None` first - so this cannot be written as an order
+    assertion today. It is written as the property instead, which is the part
+    that has to hold when a vocabulary is added.
+    """
+    key = Condition(
+        basis=MeasurementBasis.STC, rte_boundary=RteBoundary.DC_DC_TERMINALS
+    ).grouping_key()
+    text = _canonical(key)
+    assert "<" not in text
+    assert "DC_DC_TERMINALS" not in text and "MeasurementBasis" not in text
+    assert '"stc"' in text and '"dc_dc_terminals"' in text
+
+
+def test_the_display_partition_is_ordered_by_that_same_encoding() -> None:
+    """Binds `comparison_groups` to `_canonical` rather than leaving the check
+    above testing a helper nothing is proven to call."""
+    candidates = [
+        _candidate(1.0, Condition(basis=MeasurementBasis.STC)),
+        _candidate(2.0, Condition()),
+        _candidate(3.0, Condition(temperature_c=30.0)),
+        _candidate(4.0, Condition(side=PowerSide.DC)),
+    ]
+    groups = comparison_groups(candidates)
+    keys = [group[0].condition.grouping_key() for group in groups]
+    assert len(keys) == 4
+    assert keys == sorted(keys, key=_canonical)
+
+
+def test_a_decimal_and_an_absent_value_order_by_the_encoded_form() -> None:
+    """The one pair in the realistic value domain where `repr` and the canonical
+    encoding disagree, so this is what makes the `_ordering_key` change *visible*
+    rather than merely argued.
+
+    `repr(Decimal("650"))` is `Decimal('650')` and sorts before `None`; the
+    encoded forms are `{"$decimal":"650"}` and `null`, and `{` sorts after `n`.
+    Both candidates are realistic: D-2's EXACT catalog values are naturally
+    `Decimal`, and `values_conflict` has a branch for a candidate with no value
+    at all.
+
+    The order itself carries no meaning and is not meant to - what it has to be
+    is a function of the *content*, which `Decimal('650')` is not.
+    """
+    priced = _PLAIN.model_copy(update={"value": Decimal("650")})
+    absent = _PLAIN.model_copy(update={"value": None})
+    pairs = comparison_pairs([priced, absent])
+    assert len(pairs) == 1
+    assert pairs[0][0].value is None, "the key must follow the encoding, not repr"
+    assert comparison_pairs([absent, priced]) == pairs
+
+
+#: Six values D-2 and the schema all treat as distinct, four of which print `650`
+#: in some form. A key that collapses any two of them is *worse* than a wrong
+#: order: `sorted` is stable, so a tie does not reorder - it silently readmits
+#: arrival order, which is the exact defect `_ordering_key` exists to prevent and
+#: the one an encoder can introduce where `repr` could not.
+_INJECTIVITY_DOMAIN: list[object] = [Decimal("650"), Decimal("650.0"), 650, 650.0, "650", None]
+
+
+def test_the_value_domain_does_not_collapse_under_the_encoding() -> None:
+    """`repr` separated these by accident of syntax. The encoder has to separate
+    them on purpose, which is why `Decimal` carries a tag and `bool` does not."""
+    candidates = [_PLAIN.model_copy(update={"value": value}) for value in _INJECTIVITY_DOMAIN]
+    keys = [_ordering_key(candidate) for candidate in candidates]
+    assert len(set(keys)) == len(_INJECTIVITY_DOMAIN)
+    # `Decimal("650")` and `Decimal("650.0")` are `==` and hash alike, so a key
+    # built from the value rather than its printed text ties them - and D-2 reads
+    # the rounding floor off exactly that text (`_decimals`), so they are two
+    # different comparisons, not two spellings of one.
+    assert keys[0] != keys[1]
+
+
+def test_a_value_outside_the_encoding_table_is_refused_rather_than_ordered() -> None:
+    """The closed world, at the one place it changes behaviour.
+
+    `ConflictCandidate.value` is `object | None`, so `repr` was happy to order a
+    bare object by `<object object at 0x...>` - an address that differs between
+    runs, which is a canonical order that silently is not one. Refusing is the
+    only honest answer: the same value has to be encodable for the C6 projection
+    anyway, so failing at the sort surfaces it at the earliest point instead of
+    at artifact time.
+    """
+    exotic = _PLAIN.model_copy(update={"value": object()})
+    with pytest.raises(UnencodableValueError):
+        comparison_pairs([exotic, _PLAIN])
+    with pytest.raises(UnencodableValueError):
+        _ordering_key(exotic)

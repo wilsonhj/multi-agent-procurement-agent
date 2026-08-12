@@ -11,10 +11,11 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .enums import ComponentCategory, DocumentType
 from .field import CanonicalField
+from .registry import require_contract_key
 
 
 class SourceDocument(BaseModel):
@@ -42,6 +43,28 @@ class SourceDocument(BaseModel):
             "retrieval time via metadata filtering, not only at the API edge."
         ),
     )
+
+    @field_validator("ingested_at", "data_vintage")
+    @classmethod
+    def _must_name_an_instant(cls, value: datetime | None) -> datetime | None:
+        """The same constraint `SourceRef.retrieved_at` carries, for the same
+        reason: `encode_value` refuses a naive datetime because one names no
+        instant, so a schema that accepts one accepts a value the canonical
+        encoder cannot encode.
+
+        Applied here as well as there because the defect is the type, not the
+        file - `data_vintage` is what FR-OUT-06 reports and what temporal conflict
+        detection compares, and a wall-clock reading with no zone cannot order
+        two revisions. Nothing constructs a `SourceDocument` yet, which is exactly
+        why this would otherwise have been found by whoever wrote the first
+        ingestion boundary, after the naive timestamps were already stored.
+        """
+        if value is not None and (value.tzinfo is None or value.tzinfo.utcoffset(value) is None):
+            raise ValueError(
+                "SourceDocument timestamps must be timezone-aware; a naive datetime "
+                "names no instant. Attach the zone at the boundary that produced it."
+            )
+        return value
 
 
 class ComponentInstance(BaseModel):
@@ -94,6 +117,32 @@ class ComponentInstance(BaseModel):
             "The contract keeps those; this is the general mechanism beside them."
         ),
     )
+
+    @model_validator(mode="after")
+    def _keys_are_on_contract(self) -> ComponentInstance:
+        """Contract C2's first enforcement point: `fields` is where a key is
+        *used as a key*, so it is where an off-contract one has to be refused.
+
+        Nothing checked this, and the type could not: `dict[str, ...]` admits any
+        string. Downstream that is not a validation nuisance but a permanent one -
+        claims are append-only, so a parameter stored under `nameplate_power_w`
+        yields rows that can be superseded and never corrected, and the B.9 gold
+        set gets labelled against a key no table looks up.
+
+        **Checked against the category, not the union of all keys.** `chemistry`
+        is a genuine contract key and nonsense on a PV module, and a union check
+        passes it. The category is what makes a key mean something - see
+        `registry.spec_for`, and the two `insulation_type` rows it exists for.
+
+        Known limit, stated rather than implied: this runs at construction and on
+        `model_validate`, so `instance.fields["junk"] = [...]` afterwards is not
+        seen. Closing that needs `validate_assignment` plus a `fields` that is not
+        a bare dict, which is a wider change than this contract needs - the
+        boundary that matters is the one values arrive through.
+        """
+        for key in self.fields:
+            require_contract_key(key, self.component_category)
+        return self
 
     @field_validator("nameplate")
     @classmethod

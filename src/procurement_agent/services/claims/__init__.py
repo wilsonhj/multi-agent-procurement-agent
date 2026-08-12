@@ -32,12 +32,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...schema import (
     CanonicalField,
+    ComponentCategory,
     Condition,
     ConflictCandidate,
     ConflictStatus,
     SourceRef,
     SourceTier,
 )
+from ...schema.registry import OffContractFieldError, require_contract_key
 from ..conflict_hitl import assert_no_autonomous_overwrite
 
 
@@ -348,6 +350,7 @@ def commit_claims(
     claims: Sequence[FieldClaim],
     *,
     writer: ClaimWriter,
+    category: ComponentCategory | None = None,
 ) -> list[CanonicalField]:
     """The single serial reducer. The only path from a claim to a stored value.
 
@@ -374,7 +377,27 @@ def commit_claims(
     function of them, so a group can only vanish because the caller passed a
     subset; folding the leftovers back in would hide that and make the store a
     function of commit history rather than of the claims.
+
+    **`field_name` has to be a contract key**, and that is checked first - before
+    the foreign-field check, before the projection, and before the empty-claim-set
+    early return. Order is load-bearing: an invented key arriving with no claims
+    is exactly what a broken extractor produces, and a check placed after the
+    early return would wave it through. Contract C2, and the reason it is a
+    boundary rather than a lint is that claims are append-only: there is no
+    correcting a row once it is written under a key nothing looks up.
+
+    `category` is optional because the store is keyed on the field name alone and
+    a caller reducing one field does not always have a `ComponentInstance` in
+    hand. Passing it is strictly stronger and should be preferred: without it the
+    check is membership in the union of all keys, which admits `chemistry` for an
+    inverter. The other enforcement point (`ComponentInstance.fields`) always has
+    the category and always uses it, so the weaker form here is a narrower window
+    rather than an open one.
     """
+    try:
+        require_contract_key(field_name, category)
+    except OffContractFieldError as exc:
+        raise ProposalError(str(exc)) from exc
     foreign = sorted({claim.field_name for claim in claims} - {field_name})
     if foreign:
         raise ProposalError(

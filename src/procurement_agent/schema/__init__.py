@@ -1,6 +1,7 @@
 """Canonical data model. TRS sections 5 and 7."""
 
 from .component import ComponentInstance, SourceDocument
+from .encoding import UnencodableValueError, encode_value
 from .enums import (
     CATEGORY_TO_TAB,
     CellFlag,
@@ -61,6 +62,8 @@ __all__ = [
     "ToleranceCondition",
     "ToleranceKind",
     "ToleranceRule",
+    "UnencodableValueError",
     "VocabularyError",
     "WorkbookTab",
+    "encode_value",
 ]

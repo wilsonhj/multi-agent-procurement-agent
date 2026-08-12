@@ -145,10 +145,15 @@ def test_str_enum_members_encode_as_their_own_value() -> None:
     violation of the property in the direction that is easy to mistake for
     safety.
     """
-    assert MeasurementBasis.STC == "stc"
+    # mypy narrows both sides to `Literal[...]` and calls the comparison
+    # non-overlapping, because it does not model a StrEnum member as a `str` for
+    # equality. At runtime it overlaps - that is the entire fact this test
+    # asserts and the fact D-14's "bare `.value` is correct" rests on - so the
+    # ignore records a checker limitation rather than silencing a defect.
+    assert MeasurementBasis.STC == "stc"  # type: ignore[comparison-overlap]
     assert canonical(MeasurementBasis.STC) == canonical("stc")
 
-    assert Severity.HIGH == 3
+    assert Severity.HIGH == 3  # type: ignore[comparison-overlap]
     assert canonical(Severity.HIGH) == canonical(3)
 
 
@@ -208,8 +213,12 @@ def test_a_datetime_is_never_encoded_as_a_date() -> None:
     `$date` tag and colliding midnight UTC with the bare day."""
     assert isinstance(datetime(2026, 8, 11, tzinfo=UTC), date)
     midnight = datetime(2026, 8, 11, 0, 0, tzinfo=UTC)
-    assert encode_value(midnight) != encode_value(date(2026, 8, 11))
-    assert "$date" not in encode_value(midnight)
+    encoded = encode_value(midnight)
+    assert encoded != encode_value(date(2026, 8, 11))
+    # `encode_value` returns `object`, so the tag check needs the shape pinned
+    # first - which is worth asserting in its own right.
+    assert isinstance(encoded, dict)
+    assert "$date" not in encoded
 
 
 def test_datetime_always_prints_microseconds() -> None:

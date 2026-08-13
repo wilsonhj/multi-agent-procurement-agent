@@ -46,6 +46,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ...schema.registry import CONTRACT_KEYS, require_contract_key
+
 
 class CriticalityTier(StrEnum):
     """D-3's three tiers. Adoptable without the calibration, and adopted here."""
@@ -64,15 +66,18 @@ class CriticalityTier(StrEnum):
 
 #: The four field categories D-3 names as Tier A, as patterns over contract keys.
 #:
-#: This exists so the tier table can be checked in the direction that actually
-#: fails. Checking that every table key is a contract key catches invented names;
-#: it cannot catch a contract field that belongs in Tier A and was never listed,
-#: and that is how `ul_listing` became auto-acceptable. `test_no_tier_a_field_is
-#: _missing_from_the_table` walks the frozen contract with these patterns and
-#: fails on anything unlisted.
+#: These began as a *check* on a hand-written table, in the direction that
+#: actually fails: checking that every table key is a contract key catches
+#: invented names, and cannot catch a contract field that belongs in Tier A and
+#: was never listed - which is how `ul_listing` became auto-acceptable at 0.99.
 #:
-#: Patterns rather than a second hand-written list, because a hand-written list
-#: has the same failure mode as the one it is checking.
+#: They are now the definition rather than the check. `_TIER_A` applies them to
+#: `schema.registry.CONTRACT_KEYS`, so there is no second list for a field to be
+#: missing from, and `test_no_tier_a_field_is_missing_from_the_table` has become a
+#: regression guard on the derivation instead of a search for omissions.
+#:
+#: Patterns rather than a hand-written list, because a hand-written list has the
+#: same failure mode as the one it was checking.
 TIER_A_KEY_PATTERNS: tuple[str, ...] = (
     r"price",  # "Pricing"
     # "warranty terms". `degradation_year_1` and `degradation_annual` are the
@@ -113,77 +118,83 @@ def looks_tier_a(field_name: str) -> bool:
 #: Contract keys that match a Tier A pattern but are deliberately *not* Tier A.
 #:
 #: Empty, and that is the current finding rather than an oversight: every one of
-#: the 22 contract keys matching a D-3 category is genuinely a contractual, tax
-#: or certification position. The dict exists so that a future exclusion has to
-#: be written down with a reason instead of being achieved by omission - which is
-#: exactly how `ul_listing` was excluded the first time.
+#: the 28 contract keys matching a D-3 category is genuinely a contractual, tax
+#: or certification position. (This note said 22 while the count was never
+#: computed; deriving `_TIER_A` from the registry is what made it checkable.) The
+#: dict exists so that a future exclusion has to be written down with a reason
+#: instead of being achieved by omission - which is exactly how `ul_listing` was
+#: excluded the first time.
 TIER_A_EXCLUSIONS: dict[str, str] = {}
 
 
-#: Field-to-tier assignment, keyed by the frozen contract's `key` column.
+#: Tier A membership, **derived from `schema.registry` rather than restated.**
 #:
-#: Keyed on contract names deliberately: the tolerance table shipped keyed on
-#: invented names and 19 of its 20 rows silently matched nothing, so
-#: `test_every_tier_key_is_a_contract_key` checks this one the same way - and
-#: `test_no_tier_a_field_is_missing_from_the_table` checks the other direction.
-FIELD_TIERS: dict[str, CriticalityTier] = {
-    # --- Tier A: pricing ---
-    "price_per_watt_ac": CriticalityTier.A,
-    "price_per_watt_dc": CriticalityTier.A,
-    "price_per_metre": CriticalityTier.A,
-    # --- Tier A: warranty terms ---
-    "product_warranty_years": CriticalityTier.A,
-    "performance_warranty_years": CriticalityTier.A,
-    "performance_warranty_end_output": CriticalityTier.A,
-    "corrosion_warranty_years": CriticalityTier.A,
-    "warranty_years": CriticalityTier.A,
-    # The BESS capacity warranty. The first version filed these as Tier B, which
-    # read them as performance figures; they are the terms of the guarantee, and
-    # a wrong cycle count misstates a contractual position exactly as a wrong
-    # warranty term does.
-    "degradation_year_1": CriticalityTier.A,
-    "degradation_annual": CriticalityTier.A,
-    "degradation_warranty_years": CriticalityTier.A,
-    "degradation_warranty_cycles": CriticalityTier.A,
-    # --- Tier A: domestic content, BABA and FEOC ---
-    "domestic_content_percentage": CriticalityTier.A,
-    "domestic_content_status": CriticalityTier.A,
-    "country_of_origin": CriticalityTier.A,
-    "material_assistance_cost_ratio": CriticalityTier.A,
-    "baba_status": CriticalityTier.A,
-    "baba_certification_ref": CriticalityTier.A,
-    "feoc_pfe_status": CriticalityTier.A,
-    # --- Tier A: certification presence or absence ---
-    "certifications": CriticalityTier.A,
-    "cell_certification": CriticalityTier.A,
-    "pcs_certification": CriticalityTier.A,
-    "fire_safety_certifications": CriticalityTier.A,
-    "ul_listing": CriticalityTier.A,
-    # Standards compliance is certification presence or absence by the frozen
-    # contract's own definition of a certification field - see the note on
-    # TIER_A_KEY_PATTERNS. `ride_through_standards` carries IEEE 1547-2018,
-    # IEEE 2800-2022 and NERC PRC-029-1, which are ERCOT interconnection
-    # requirements for this project's own 500 MW ERCOT plant.
-    "standards": CriticalityTier.A,
-    "ride_through_standards": CriticalityTier.A,
-    "cybersecurity_standards": CriticalityTier.A,
-    "seismic_qualification": CriticalityTier.A,
-    # --- Tier B: decision-driving performance ---
-    "nameplate_power": CriticalityTier.B,
-    "stc_rating": CriticalityTier.B,
-    "nmot_rating": CriticalityTier.B,
-    "module_efficiency": CriticalityTier.B,
-    "rated_ac_power": CriticalityTier.B,
-    "cec_efficiency": CriticalityTier.B,
-    "usable_energy_per_container": CriticalityTier.B,
-    "nameplate_energy_per_container": CriticalityTier.B,
-    "round_trip_efficiency": CriticalityTier.B,
-    "cycle_life": CriticalityTier.B,
-    "rating_mva": CriticalityTier.B,
-    "no_load_loss": CriticalityTier.B,
-    "load_loss": CriticalityTier.B,
-    "impedance_percent": CriticalityTier.B,
-}
+#: The 28 Tier A rows used to be typed out here: a third hand-written copy of the
+#: frozen contract's key list, beside the tolerance table's and the criticality
+#: table's. The copy is the defect, not the typo - `ul_listing`,
+#: `country_of_origin` and `material_assistance_cost_ratio` were missing from it,
+#: fell to `DEFAULT_TIER` (B) and auto-accepted at 0.99, while this module's own
+#: docstring said a missing UL 9540A listing must never reach the workbook as a
+#: quiet blank.
+#:
+#: Deriving is what makes that unrepresentable. A key cannot now be in a D-3 Tier
+#: A category and absent from the gate at the same time, because there is no list
+#: to be absent from - and a *new* contract parameter matching a pattern arrives
+#: gated rather than arriving unclassified. That direction is the safe one: Tier A
+#: costs review time, and B is a threshold where A is a gate.
+#:
+#: What is kept hand-written is the part that is a judgement: the patterns above,
+#: and `TIER_A_EXCLUSIONS` for anything that matches one and should not be gated.
+_TIER_A: frozenset[str] = frozenset(
+    key for key in CONTRACT_KEYS if looks_tier_a(key) and key not in TIER_A_EXCLUSIONS
+)
+
+#: Tier B: decision-driving performance. Written out, because there is no pattern
+#: for "the numbers a procurement decision turns on" - it is a reading of D-3
+#: rather than a category of name, which is exactly why the Tier A block above
+#: could be derived and this one cannot.
+_TIER_B: tuple[str, ...] = (
+    "nameplate_power",
+    "stc_rating",
+    "nmot_rating",
+    "module_efficiency",
+    "rated_ac_power",
+    "cec_efficiency",
+    "usable_energy_per_container",
+    "nameplate_energy_per_container",
+    "round_trip_efficiency",
+    "cycle_life",
+    "rating_mva",
+    "no_load_loss",
+    "load_loss",
+    "impedance_percent",
+)
+
+
+def _tier_table() -> dict[str, CriticalityTier]:
+    """The two blocks joined, with every hand-written key checked on the way in.
+
+    `require_contract_key` rather than a test, for the reason the tolerance table
+    was rewritten: a table checked only under pytest holds a second copy of the
+    contract's names between runs, and 19 of 20 rows once matched nothing.
+
+    `sorted` because a frozenset of strings iterates in hash order, which Python
+    randomises per process. Nothing reads this dict in order today, but AC-7 wants
+    byte-identical output from an unchanged store and a container whose order
+    changes per run is the shape that breaks it - the same reason
+    `encode_value` sorts a frozenset and `Condition._sort_derived` exists.
+    """
+    table = {key: CriticalityTier.A for key in sorted(_TIER_A)}
+    for key in _TIER_B:
+        require_contract_key(key)
+        if key in table:
+            raise ValueError(f"{key!r} is both derived Tier A and listed Tier B")
+        table[key] = CriticalityTier.B
+    return table
+
+
+#: Field-to-tier assignment, keyed by the frozen contract's `key` column.
+FIELD_TIERS: dict[str, CriticalityTier] = _tier_table()
 
 #: The tier for a field nobody has classified. **B, not C.**
 #:

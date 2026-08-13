@@ -78,7 +78,21 @@ class SourceRef(BaseModel):
 
     url: str | None = None
     page_title: str | None = None
-    retrieved_at: datetime | None = None
+    retrieved_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the web source was fetched (FR-WEB-02). **Timezone-aware, and "
+            "checked.** A naive datetime names no instant, so `encode_value` "
+            "refuses one - which meant the schema accepted a value the canonical "
+            "encoder would then raise on, from the conflict sort path, where "
+            "`repr()` had previously ordered it without complaint. Found by "
+            "Track 1b. The constraint belongs here rather than in the encoder's "
+            "caller: the honest fix is to attach the zone at the boundary that "
+            "produced the timestamp, and this is the first boundary that can say "
+            "so. Nothing in the repo constructs a naive one today, so this "
+            "closes the hole rather than reporting one."
+        ),
+    )
     source_authority: str | None = Field(
         default=None,
         description=(
@@ -86,6 +100,25 @@ class SourceRef(BaseModel):
             "IEEE/NFPA, ERCOT/PUCT/TCEQ, IRS/Treasury"
         ),
     )
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def _must_name_an_instant(cls, value: datetime | None) -> datetime | None:
+        """Reject a naive `retrieved_at`, for the reason `encode_value` rejects one.
+
+        A naive datetime is a wall-clock reading with no zone, so it does not
+        identify a moment - and `retrieved_at` exists precisely to say *when* a web
+        value was true, which is what FR-WEB-04's temporal comparisons rest on.
+        Assuming UTC here would be worse than refusing: a naive noon and an aware
+        noon-UTC are not equal in Python, so two references to one fetch would
+        compare unequal while encoding identically.
+        """
+        if value is not None and (value.tzinfo is None or value.tzinfo.utcoffset(value) is None):
+            raise ValueError(
+                "retrieved_at must be timezone-aware; a naive datetime names no "
+                "instant. Attach the zone at the boundary that produced it."
+            )
+        return value
 
     @model_validator(mode="after")
     def _must_identify_a_source(self) -> SourceRef:

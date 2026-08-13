@@ -30,17 +30,42 @@ structures and passed over exactly that mutation, so the check now compares byte
 | `claims/sungrow-sg350hx-rated-ac-power.json` | C2, C3 | D-1's worked example — one datasheet, one field, three ambients. **Zero conflicts.** Three legitimate conditioned values, not a contradiction. |
 | `claims/trina-tsm-neg21c-nameplate.json` | C2, C3 | A record value and a web value that genuinely disagree under the same unstated condition. **One conflict.** |
 | `conflicts/trina-tsm-neg21c-nameplate.json` | C5, C3 | The `ConflictQueueEntry` the pair above projects to, at the severity `assign_severity` computes today (`MEDIUM`). |
+| `workbooks/two-supplier-pv-store.json` | C6 | T0.5's golden projection — a synthetic two-supplier PV store (a Sungrow inverter carrying D-1's trio, a Trina module carrying the disagreement), under a pinned policy. **All four `CellFlag` states occur.** |
+| `workbooks/two-supplier-pv-store.canonical-bytes.sha256` | C6 | `sha256(projection)` — the artifact of record. See *Two serialisations* below. |
 
 The two claim fixtures are deliberately a matched pair. A fixture set containing
 only the no-conflict case would let a change that suppresses *every* conflict pass
 green, and FR-5 is about surfacing disagreement, not hiding it.
 
-## What is deliberately absent
+## Two serialisations, one artifact (C6 only)
 
-**No C6 workbook projection fixture.** The canonical projection format is unfrozen
-— that is T0.5, and `tasks.md` calls C6 the contract that blocks WP-G entirely.
-Publishing a golden projection now would freeze by accident the one decision that
-is supposed to be made deliberately.
+The C6 fixture is the one file here whose committed bytes are **not** the bytes its
+hash covers, so the two are named apart rather than left to be discovered:
+
+| | Serialisation | Why |
+|---|---|---|
+| `two-supplier-pv-store.json` | the indented form above, like every other fixture | A 21 kB single-line artifact is one unreviewable diff line. The byte check above still applies to it unchanged. |
+| `…canonical-bytes.sha256` | `sha256` of **D-14's** bytes — `separators=(",", ":")`, no indent | That compact form is the artifact of record. `sha256(normalized xlsx)`, when WP-G's writer lands, is a renderer-regression check only and never the integrity claim. |
+
+So `sha256sum two-supplier-pv-store.json` does **not** reproduce the sidecar, by
+design — the filename says `canonical-bytes` for that reason. Round-tripping the
+committed JSON through `json.loads` and re-dumping compactly does, and
+`test_the_fixture_hash_covers_the_committed_file_and_not_just_the_code` asserts
+exactly that, so a hand-edit to the JSON cannot leave a self-consistently wrong hash.
+
+**Its behavioural assertion lives in `../test_workbook_projection.py`**, not in
+`test_fixtures.py`. The check that earns C6's place is regenerating the artifact
+from the synthetic store it was built from, and that store is code, not JSON. The
+loader here still does real work: it revalidates the top-level shape and recomputes
+`generated_on` from the payload alone.
+
+**Pin the policy in a C6 fixture, always.** The projection is a function of
+*(store, policy)* and D-14 puts the policy and the computed `CellFlag`s inside the
+hash, so a fixture reading a production threshold would re-baseline itself the first
+time τ moved. `tasks.md` sequences τ tuning after WP-B, which is precisely when that
+churn would be worst.
+
+## What is deliberately absent
 
 **No document fixtures** (PDF, DOCX, XLSX). Two reasons, and the second is binding:
 
@@ -70,6 +95,12 @@ is supposed to be made deliberately.
   Enforced by `test_no_fixture_carries_a_resolution`.
 - **Deterministic values only** — fixed timestamps, no `now()`. These files are
   compared byte-for-byte.
+- **`.json` is what gets swept.** `_fixture_files()` globs `*.json`, so the two
+  automatic checks — the known-directory test and the byte compare — do not see a
+  sidecar of any other extension. The `.sha256` above is covered because a named
+  test asserts it, which is the only thing keeping it honest. Give any future
+  non-JSON companion the same treatment rather than assuming this directory is
+  swept wholesale.
 
 ## Regenerating
 

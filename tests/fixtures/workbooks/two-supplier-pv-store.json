@@ -1,0 +1,649 @@
+{
+  "components": [
+    {
+      "component_category": "inverters_pcs",
+      "fields": [
+        {
+          "name": "cec_efficiency",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": "cec"
+              },
+              "confidence": 0.93,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-sungrow-ds",
+                "extractor_version": "fixture@1",
+                "page": 2,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Table 3: Efficiency",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "%",
+              "value": 98.5,
+              "verbatim_value": "98.5 %"
+            }
+          ]
+        },
+        {
+          "name": "certifications",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.9,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-sungrow-ds",
+                "extractor_version": "fixture@1",
+                "page": 4,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Certifications",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": null,
+              "value": [
+                "IEC 62109-1",
+                "IEC 62109-2",
+                "UL 1741 SB"
+              ],
+              "verbatim_value": "IEC 62109-1/-2, UL 1741 SB"
+            }
+          ]
+        },
+        {
+          "name": "rated_ac_power",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": 30.0,
+                "weighting": null
+              },
+              "confidence": 0.95,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-sungrow-ds",
+                "extractor_version": "fixture@1",
+                "page": 2,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Table 2: AC Output",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "kVA",
+              "value": 352.0,
+              "verbatim_value": "352 kVA @30°C"
+            },
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": 40.0,
+                "weighting": null
+              },
+              "confidence": 0.95,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-sungrow-ds",
+                "extractor_version": "fixture@1",
+                "page": 2,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Table 2: AC Output",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "kVA",
+              "value": 320.0,
+              "verbatim_value": "320 kVA @40°C"
+            },
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": 50.0,
+                "weighting": null
+              },
+              "confidence": 0.95,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-sungrow-ds",
+                "extractor_version": "fixture@1",
+                "page": 2,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Table 2: AC Output",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "kVA",
+              "value": 295.0,
+              "verbatim_value": "295 kVA @50°C"
+            }
+          ]
+        }
+      ],
+      "manufacturer_key": "sungrow",
+      "model": "SG350HX",
+      "model_family": "sg350hx",
+      "nameplate": 352.0,
+      "store_written_at": null,
+      "supplier": "Sungrow Power Supply Co., Ltd.",
+      "surrogate_id": "syn-inverter-0001"
+    },
+    {
+      "component_category": "pv_modules",
+      "fields": [
+        {
+          "name": "bifaciality_factor",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.3,
+              "conflict_status": "none",
+              "flags": [
+                "low_confidence",
+                "missing_data"
+              ],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 1,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Electrical Data (STC)",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "%",
+              "value": null,
+              "verbatim_value": null
+            }
+          ]
+        },
+        {
+          "name": "cell_technology",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.91,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 1,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Mechanical Data",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": null,
+              "value": "n_topcon",
+              "verbatim_value": "n-type TOPCon"
+            }
+          ]
+        },
+        {
+          "name": "module_efficiency",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": "stc",
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.55,
+              "conflict_status": "none",
+              "flags": [
+                "low_confidence"
+              ],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 1,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Electrical Data (STC)",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "%",
+              "value": 23.0,
+              "verbatim_value": "23.0 %"
+            }
+          ]
+        },
+        {
+          "name": "nameplate_power",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": "stc",
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.96,
+              "conflict_status": "open",
+              "flags": [
+                "unresolved_conflict"
+              ],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 1,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Electrical Data (STC)",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "Wp",
+              "value": 650.0,
+              "verbatim_value": "650 W"
+            },
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": "stc",
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.72,
+              "conflict_status": "open",
+              "flags": [
+                "low_confidence",
+                "unresolved_conflict",
+                "web_supplemented"
+              ],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": null,
+                "extractor_version": "fixture@1",
+                "page": null,
+                "page_title": "TSM-NEG21C.20 product page",
+                "retrieved_at": {
+                  "$datetime": "2026-06-28T11:00:00.000000Z"
+                },
+                "section": null,
+                "source_authority": "distributor listing",
+                "url": "https://distributor.example.invalid/tsm-neg21c"
+              },
+              "source_tier": "web_supplement",
+              "store_written_at": null,
+              "unit": "Wp",
+              "value": 655.0,
+              "verbatim_value": "655 W"
+            }
+          ]
+        },
+        {
+          "name": "power_tolerance",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.94,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 1,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Electrical Data (STC)",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": null,
+              "value": {
+                "high": 5.0,
+                "kind": "absolute",
+                "low": 0.0,
+                "unit": "W"
+              },
+              "verbatim_value": "0 ~ +5 W"
+            }
+          ]
+        },
+        {
+          "name": "product_warranty_years",
+          "values": [
+            {
+              "condition": {
+                "base_mva": null,
+                "basis": null,
+                "derived": [],
+                "duration_h": null,
+                "note": null,
+                "reference_temperature_c": null,
+                "rte_boundary": null,
+                "side": null,
+                "standards_regime": null,
+                "tap_position_pct": null,
+                "temperature_c": null,
+                "weighting": null
+              },
+              "confidence": 0.88,
+              "conflict_status": "none",
+              "flags": [],
+              "resolution": null,
+              "source_ref": {
+                "bounding_box": null,
+                "document_id": "syn-trina-ds",
+                "extractor_version": "fixture@1",
+                "page": 3,
+                "page_title": null,
+                "retrieved_at": null,
+                "section": "Warranty",
+                "source_authority": null,
+                "url": null
+              },
+              "source_tier": "system_of_record",
+              "store_written_at": null,
+              "unit": "yr",
+              "value": 25,
+              "verbatim_value": "25 years"
+            }
+          ]
+        }
+      ],
+      "manufacturer_key": "trina_solar",
+      "model": "TSM-NEG21C.20",
+      "model_family": "tsm_neg21c",
+      "nameplate": 650.0,
+      "store_written_at": null,
+      "supplier": "Trina Solar Co., Ltd",
+      "surrogate_id": "syn-module-0001"
+    }
+  ],
+  "conflicts": [
+    {
+      "candidates": [
+        {
+          "condition": {
+            "base_mva": null,
+            "basis": "stc",
+            "derived": [],
+            "duration_h": null,
+            "note": null,
+            "reference_temperature_c": null,
+            "rte_boundary": null,
+            "side": null,
+            "standards_regime": null,
+            "tap_position_pct": null,
+            "temperature_c": null,
+            "weighting": null
+          },
+          "confidence": 0.96,
+          "source_ref": {
+            "bounding_box": null,
+            "document_id": "syn-trina-ds",
+            "extractor_version": "fixture@1",
+            "page": 1,
+            "page_title": null,
+            "retrieved_at": null,
+            "section": "Electrical Data (STC)",
+            "source_authority": null,
+            "url": null
+          },
+          "source_tier": "system_of_record",
+          "store_written_at": null,
+          "unit": "Wp",
+          "value": 650.0,
+          "verbatim_value": "650 W"
+        },
+        {
+          "condition": {
+            "base_mva": null,
+            "basis": "stc",
+            "derived": [],
+            "duration_h": null,
+            "note": null,
+            "reference_temperature_c": null,
+            "rte_boundary": null,
+            "side": null,
+            "standards_regime": null,
+            "tap_position_pct": null,
+            "temperature_c": null,
+            "weighting": null
+          },
+          "confidence": 0.72,
+          "source_ref": {
+            "bounding_box": null,
+            "document_id": null,
+            "extractor_version": "fixture@1",
+            "page": null,
+            "page_title": "TSM-NEG21C.20 product page",
+            "retrieved_at": {
+              "$datetime": "2026-06-28T11:00:00.000000Z"
+            },
+            "section": null,
+            "source_authority": "distributor listing",
+            "url": "https://distributor.example.invalid/tsm-neg21c"
+          },
+          "source_tier": "web_supplement",
+          "store_written_at": null,
+          "unit": "Wp",
+          "value": 655.0,
+          "verbatim_value": "655 W"
+        }
+      ],
+      "component_category": "pv_modules",
+      "conflict_class": "record_vs_web",
+      "entry_id": "syn-conflict-0001",
+      "explanation": "The datasheet states 650 W at STC; a distributor listing states 655 W under the same condition. FR-HITL-02 forbids auto-arbitration between a system-of-record value and a web value.",
+      "field_name": "nameplate_power",
+      "model": "TSM-NEG21C.20",
+      "resolution": null,
+      "severity": 2,
+      "store_written_at": {
+        "$datetime": "2026-07-03T08:00:00.000000Z"
+      },
+      "supplier": "Trina Solar Co., Ltd"
+    }
+  ],
+  "generated_on": {
+    "$datetime": "2026-07-03T08:00:00.000000Z"
+  },
+  "policy": {
+    "confidence_threshold": 0.8,
+    "policy_version": "fixture-2026-08-12"
+  },
+  "projection_version": 1,
+  "sources": [
+    {
+      "access_restricted": false,
+      "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "data_vintage": {
+        "$datetime": "2026-03-01T00:00:00.000000Z"
+      },
+      "document_id": "syn-sungrow-ds",
+      "document_type": "spec_sheet",
+      "source_uri": "file:///synthetic/sungrow-sg350hx.pdf",
+      "store_written_at": {
+        "$datetime": "2026-07-01T09:15:30.000000Z"
+      }
+    },
+    {
+      "access_restricted": false,
+      "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "data_vintage": {
+        "$datetime": "2025-11-20T00:00:00.000000Z"
+      },
+      "document_id": "syn-trina-ds",
+      "document_type": "spec_sheet",
+      "source_uri": "file:///synthetic/trina-tsm-neg21c.pdf",
+      "store_written_at": {
+        "$datetime": "2026-07-02T14:22:05.500000Z"
+      }
+    }
+  ]
+}

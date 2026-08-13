@@ -20,10 +20,18 @@ repeated on each test:
 3. **It still means what it was written to mean.** Schema-valid, byte-canonical
    JSON encoding the wrong worked example is the failure neither check above sees.
 
-Only frozen contracts get fixtures. C2/C3 (claims) and C5 (conflicts) are covered.
-**C6 deliberately is not**: the canonical workbook projection is unfrozen (T0.5),
-and publishing a golden projection now would freeze by accident the one decision
-`tasks.md` says must be made deliberately.
+Only frozen contracts get fixtures. C2/C3 (claims), C5 (conflicts) and **C6 (the
+workbook projection)** are covered. C6 was deliberately absent while its format
+was unfrozen - publishing a golden projection then would have frozen by accident
+the one decision `tasks.md` says must be made deliberately - and it ships now
+that D-14 is adopted and T0.5 is closed.
+
+The C6 fixture is the one kind whose *behavioural* assertions live elsewhere, in
+`test_workbook_projection.py`: the check that earns its place is regenerating the
+artifact from the synthetic store it was built from, and that store is code, not
+JSON. What is checked here is the same three ways as everything else - the loader
+below revalidates the shape and recomputes the vintage stamp from the payload
+alone, which is a real check and not a pass-through.
 """
 
 from __future__ import annotations
@@ -48,6 +56,10 @@ from procurement_agent.services.conflict_hitl import (
     tolerance_for,
     values_conflict,
 )
+from procurement_agent.services.output.projection import (
+    PROJECTION_VERSION,
+    fold_generated_on,
+)
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
@@ -65,6 +77,33 @@ def _load_conflict(raw: Any) -> Any:
     return ConflictQueueEntry.model_validate(raw).model_dump(mode="json")
 
 
+def _load_workbook_projection(raw: Any) -> Any:
+    """Revalidate a C6 projection (D-14) without rebuilding it from a store.
+
+    There is no model to round-trip through: a projection is deliberately plain
+    encoded JSON, so `value` can hold a `$decimal` tag on one row and a bare
+    float on the next. What can be checked from the payload alone is the shape
+    D-14 fixes, and - the useful one - that `generated_on` is still the fold over
+    the write timestamps *inside* the file. That is the property decision 2 is
+    about, and it is checkable by anyone holding only the bytes.
+    """
+    assert set(raw) == {
+        "projection_version",
+        "policy",
+        "components",
+        "conflicts",
+        "sources",
+        "generated_on",
+    }, "not a D-14 projection"
+    assert raw["projection_version"] == PROJECTION_VERSION
+    assert raw["generated_on"] == fold_generated_on(raw), (
+        "generated_on is not the fold over this file's own store write timestamps - "
+        "the stamp was edited, or it was produced by a parallel query rather than "
+        "from inside the projection (D-14 decision 2)"
+    )
+    return raw
+
+
 #: Subdirectory -> the loader that validates it. A directory absent from this map
 #: is a fixture nothing validates. It is a *dispatch* table rather than a set of
 #: labels because the previous version fell through to `ConflictQueueEntry` for
@@ -73,6 +112,7 @@ def _load_conflict(raw: Any) -> Any:
 FIXTURE_LOADERS: dict[str, Callable[[Any], Any]] = {
     "claims": _load_claims,
     "conflicts": _load_conflict,
+    "workbooks": _load_workbook_projection,
 }
 
 

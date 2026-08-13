@@ -194,7 +194,7 @@ level security with a non-owner application role.
 | `services.confidence` | signal fusion into a confidence score, and the Tier A review gate | Implemented; used by `conflict_hitl.severity` |
 | `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; no production caller |
 | `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts, severity assignment | Implemented policy core |
-| `services.output` | flags, canonical workbook rendering, archive normalization | Flags and normalization only |
+| `services.output` | flags, canonical workbook rendering, archive normalization | Flags, normalization, and the C6 projection; the xlsx writer still raises |
 | `orchestrator` | jobs, retries, stage state, compose gate | Gate only |
 
 The six external swap points are synchronous structural Protocols:

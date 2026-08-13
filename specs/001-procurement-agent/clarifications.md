@@ -633,11 +633,14 @@ names, with a concrete implementation. [V] for the package metadata only — rea
 JSON API on 2026-08-06: version 0.1.4, Apache-2.0 (so it clears the dependency licence gate),
 **zero runtime dependencies** (everything in `requires_dist` is an extra).
 
-**The package has not been installed, locked, or executed against this repo's data** — it is not
-in `pyproject.toml` or `uv.lock`. Ratifying this decision should be paired with adding the
-dependency and a conformance test against RFC 8785's own published test vectors, because the
-whole argument for using a library rather than hand-rolling is that its conformance is somebody
-else's problem *only once you have checked it*.
+**Installed, locked and conformance-tested as of 2026-08-12** — `rfc8785==0.1.4` is pinned exactly
+in `pyproject.toml` (exactly, not `~=`: this library decides the bytes every chain is hashed over,
+so an output change would re-base all history while the data stands still, which is the A-6 class).
+`tests/test_audit_canonicalisation.py` runs it against RFC 8785's own published vectors - section
+3.2.4's hex byte dump, section 3.2.3's UTF-16 sorting vector, and all 26 rows of Appendix B
+Table 1 including the two that must raise. That pairing was this decision's own condition for
+ratification, because the whole argument for using a library rather than hand-rolling is that its
+conformance is somebody else's problem *only once you have checked it*.
 
 **Do not hand-roll this with `json.dumps(sort_keys=True)`.** [V] — the two disagree in at least
 two ways that matter, both verified in this repo's own venv: JCS sorts keys by **UTF-16 code
@@ -729,9 +732,10 @@ events at all under the normative text. `spec.md` governs. See A-49.
 ## D-14 — The canonical workbook projection (contract C6)
 
 > **Status: ADOPTED 2026-08-07** by the lead architect, as recommended, including both calls in
-> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero —
-> `write_workbook()` raises and no *workbook* projection function exists — and it blocked WP-G
-> entirely, including the gating G.6 desktop-Excel test. (`services.claims.project` is a
+> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero at that
+> point - `write_workbook()` raised and no *workbook* projection function existed - and it blocked
+> WP-G entirely. The projection and T0.5 landed 2026-08-12; `write_workbook()` and the gating G.6
+> desktop-Excel test remain. (`services.claims.project` is a
 > different projection: claims to canonical fields, contract C8. C6 is the projection of the
 > whole store to the hashed artifact.)
 

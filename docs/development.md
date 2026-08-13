@@ -154,8 +154,11 @@ Use this sequence for a parser, OCR, model, or store integration:
 8. document configuration without including credentials.
 
 > [!NOTE]
-> **There is no adapter layout convention yet, and no `adapters/` package.** No concrete adapter
-> exists, so the first one decides the layout for everyone after it. Do not assume `adapters/`:
+> **The adapter layout is now decided: `adapters/<port>/<backend>.py`,** one package per port and
+> one module per backend, with `memory.py` the in-memory reference inside each. The reasoning and
+> the rejected alternatives are in `adapters/__init__.py`. This note previously said no convention
+> and no package existed, which was true until the NFR-04 conformance suite landed. Historical
+> caution retained because it explains the shape of that decision:
 > `ports/__init__.py` once documented exactly that package, it did not exist, and removing the
 > claim is filed as [A-18](../specs/001-procurement-agent/analysis.md). Propose the location in
 > the issue — alongside the service that owns the port is the obvious candidate — and get it
@@ -229,11 +232,10 @@ first two apply to a new condition dimension, the third to a new field on `Canon
 
 ### What this recipe does not cover yet
 
-There is no output-projection step, because there is nothing to update: the canonical JSON
-projection is contract **C6** — format frozen by D-14 (2026-08-07), nothing built:
-`write_workbook()` raises `NotImplementedError`,
-and there is no `tests/fixtures/` directory — the existing tests build their inputs inline. When
-C6 lands, a projection-fixture step belongs here. There is likewise no store round-trip step:
+The output-projection step is `tests/fixtures/workbooks/` — C6's projection and its T0.5 golden
+hash, regenerated the same way as every other fixture. `write_workbook()` still raises
+`NotImplementedError`, so there is no *rendered workbook* to update; when G.2 lands, its
+normalised-archive digest belongs here alongside the projection hash. There is likewise no store round-trip step:
 C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no
 repository layer, so there is no round trip to exercise. Adding one is the step that turns
 `sql/` from a schema into a store.

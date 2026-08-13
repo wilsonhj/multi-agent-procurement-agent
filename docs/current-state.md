@@ -120,8 +120,11 @@ from a `pgvector/pgvector` container. Those are the 24 tests that skip locally.
 ### Integration ports
 
 Six Protocol interfaces define the intended parser, OCR, embedder, vector-store, reranker,
-and LLM boundaries. No concrete adapter exists and the Protocols are not currently covered
-by adapter contract tests.
+and LLM boundaries. Each has an **in-memory reference adapter** under `adapters/<port>/memory.py`
+and a capability-declaring conformance suite in `tests/port_contracts/`. No *vendor* adapter
+exists and no production path consumes a port, which is why NFR-04 is `partial` rather than
+`enforced`: a suite passing against a reference proves the contract is expressible, not that any
+real backend satisfies it.
 
 ### Service entry points
 
@@ -182,7 +185,7 @@ a signature exists, **open** means there is no home in the code yet.
 | AC-5 | Re-ingesting an unchanged document creates no duplicates | `sql/02_document.sql`'s `UNIQUE (content_hash)`, exercised against a live server by `test_a_duplicate_content_hash_is_refused`. The store half only: `services/ingestion.ingest`, the thing that would re-ingest, raises `NotImplementedError` | partial |
 | AC-6 | Inverter TRD against the IEEE 2800 limit; tax status per supplier | Nothing | open |
 | AC-7 | Two generations from an unchanged store are byte-identical | `normalize_archive()`, at archive level only. Without a writer there is no complete workbook to regenerate, and the desktop Excel/LibreOffice gate is unrun | partial |
-| AC-8 | An uncleared user cannot influence any retrieved result | `VectorStorePort.search(allowed_document_ids=...)` declares the parameter. No adapter, no enforcement, no test imports `ports` | declared |
+| AC-8 | An uncleared user cannot influence any retrieved result | `VectorStorePort.search(allowed_document_ids=...)` declares the parameter, and the port conformance suite exercises it against the in-memory reference — including that a filtered top-k still returns k. Still `declared`, because no retrieval path and no vendor adapter exist, and D-15 is explicit that RLS is the boundary and the allowlist only scopes within an entitlement | declared |
 
 Read that table as three groups, because they fail differently. AC-4 is genuinely covered.
 AC-2, AC-3, AC-5 and AC-7 each have a tested *half* and an unbuilt one — that split is the
@@ -301,11 +304,13 @@ about:
   `UNIQUE` idempotency key, but its own `COMMENT` says it is “this file's own C8-consistent
   design, not a mapping of an existing frozen type”, there is no Pydantic model for it, and
   `orchestrator.run()` raises `NotImplementedError`.
-- **C6** — **format frozen by D-14 (2026-08-07)**, nothing built. `write_workbook()` still
-  raises `NotImplementedError` and no *workbook* projection function exists. Note the wording:
-  `services.claims.project` does exist, but it is C8's claims-to-canonical-fields projection, a
-  different thing from C6's whole-store-to-hashed-artifact projection. The T0.5 golden fixture
-  does not exist either.
+- **C6** — **format frozen by D-14 (2026-08-07); the projection and its golden fixture have
+  landed, the writer has not.** `services/output/projection.py` emits the canonical bytes with
+  policy and the computed flags inside the hash and a store-derived `generated_on`, and T0.5
+  ships as `tests/fixtures/workbooks/`. `write_workbook()` still raises `NotImplementedError` —
+  G.2-G.8 and the gating G.6 desktop-Excel test follow. Note the wording: `services.claims.project`
+  is C8's claims-to-canonical-fields projection, a different thing from C6's
+  whole-store-to-hashed-artifact projection.
 
 An earlier version of this section named only five contracts and omitted C2 and C3, on the
 reasoning that `schema/` and `SourceRef` already existed and so were the ones most likely to be
@@ -345,15 +350,16 @@ contracts.
 
 Changes that are useful without depending on unfinished storage contracts include:
 
-- Protocol conformance tests and an adapter test kit — no test imports `ports` at all today;
+- a *vendor* adapter behind any of the six ports — the conformance suite and in-memory
+  references now exist to write one against;
 - table-driven tests that close remaining schema and traceability gaps;
 - sanitized golden fixtures for the existing conflict policy;
 - documentation checks and link validation; and
 - proposals for the unresolved shared contracts.
 
-Avoid inventing a production workbook shape in isolation: C6's *format* is frozen by D-14 but
-no projection exists, and it is
-explicitly a shared contract that needs an accepted design decision first. The database shape is
+Avoid inventing a production workbook *rendering* in isolation: C6's format is frozen by D-14 and
+the projection now implements it, but the xlsx writer it feeds is still a shared contract that
+needs an accepted design decision first. The database shape is
 no longer in that category — C1 has landed — but the same rule applies from the other side: build
 against `sql/` rather than beside it, and changing what is there is a contract change under
 [CONTRIBUTING.md](../CONTRIBUTING.md).

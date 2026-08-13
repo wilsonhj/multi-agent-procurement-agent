@@ -216,12 +216,15 @@ above is reverted. The behaviour is proven here; the regression guard is there.
 
 ### Still unproven by the above
 
-Concurrency. Decision 9's measured failure — 8 concurrent writers producing 42
-silent forks — is a property of the *caller's* advisory-lock discipline, not of
-this DDL, and nothing here exercises it. `audit_event_no_fork` converts such a
-fork from silent to loud, which is necessary and explicitly not sufficient. The
-pre-INSERT advisory lock still has to be written in Python, as its own statement
-before the INSERT, and load-tested.
+~~Concurrency.~~ **Proven 2026-08-12**, outside this DDL as predicted. Decision 9's
+measured failure — 8 concurrent writers producing 42 silent forks — is a property
+of the *caller's* advisory-lock discipline, and `audit/writer.py` now supplies it
+as its own statement before the INSERT. `tests/test_audit_live.py` reproduces all
+three arms against a live server: locked gives 48/48 rows and no forks; unlocked
+with these constraints in place gives 6/48 rows and 42 unique-violation errors,
+so the DDL converts silent to loud exactly as claimed; unlocked with the fork
+constraints dropped gives 48/48 rows and **41 silent forks that fail
+verification** — Decision 9's original setup, reproduced within one.
 
 Performance of the confidentiality derivation. `document_is_restricted` and
 `conflict_is_restricted` are `STABLE` SQL functions called from RLS policies, so

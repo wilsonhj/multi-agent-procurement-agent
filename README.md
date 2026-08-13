@@ -99,7 +99,8 @@ on each CI run, while nothing in `src/` opens a connection to them. Workers will
 `FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
 Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
 parsers, OCR, models, and storage adapters without changing the domain core. Those six
-Protocols are declared; no adapter implements any of them.
+Protocols are declared, and each has an in-memory reference adapter plus a conformance suite; no
+vendor adapter implements any of them yet.
 
 Read [Architecture](docs/architecture.md) for the component boundaries, invariants,
 storage model, and important design trade-offs.

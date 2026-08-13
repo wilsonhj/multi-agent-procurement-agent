@@ -13,6 +13,7 @@ AC-2 tests it directly.
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import re
 import unicodedata
@@ -30,10 +31,57 @@ from ...schema import (
     StandardsRegime,
     ToleranceCondition,
     ToleranceRule,
+    encode_value,
 )
 from .severity import assign_severity as assign_severity  # re-exported: the D-3 lookup
 from .tolerance import FieldTolerance
 from .tolerance import tolerance_for as tolerance_for  # re-exported: the table's entry point
+
+
+def _canonical(value: object) -> str:
+    """One sort component: `value` as canonical JSON text.
+
+    `encode_value` is the authority on *what* a value is (D-14, contract C4), but
+    it returns JSON-representable Python, and that is not sortable. The domain
+    here is polymorphic on purpose - `ConflictCandidate.value` is `object | None`,
+    so one component holds a `Decimal` for one candidate and `None` for the next,
+    and `sorted()` across those raises `TypeError`. Something has to turn the
+    encoded form into a single ordered type.
+
+    Canonical JSON text is that something, and it is the same device
+    `encoding._sort_key` already uses to order frozenset members - deliberately
+    the same idea rather than the same function, because that helper is private
+    to `encoding` and named for the one case it serves, and importing it would
+    make a narrowing there a breaking change here. The properties are what this
+    needs and all of what it needs:
+
+    * **Total.** Every encoded value has a text form, so no mixed-type pair is
+      incomparable the way the underlying values are.
+    * **Deterministic.** `separators` fixes the spacing, so the text depends on
+      nothing but the value.
+    * **Stable across processes.** Nothing in it derives from a hash seed or a
+      memory address, which `repr()` of a set or a bare object does.
+
+    `sort_keys` is redundant today and kept anyway: every object reaching here
+    comes from `_encode_model`, which builds its dict in pydantic's field
+    declaration order, so insertion order is already fixed. No test can therefore
+    catch its removal - the reason it is written down here rather than only in a
+    test is that the day an encoded object is built any other way, key order
+    would start depending on construction order and nothing would say so.
+
+    The induced order is not meaningful and is not read as a ranking anywhere -
+    `"$decimal"` sorting after `null` says nothing about decimals. What it has to
+    be is the *same* order every run, on every machine, which is the whole of
+    what `_ordering_key` and the display partition ask of it.
+
+    Closed world, inherited: a value outside D-14's table raises here rather than
+    sorting. That is the intended direction. `repr()` would have ordered a bare
+    object by `<object object at 0x7f...>`, an address that moves between runs -
+    a canonical order that silently is not one - and the same value has to be
+    encodable for the C6 projection anyway, so failing at the sort surfaces it at
+    the earliest point rather than at artifact time.
+    """
+    return json.dumps(encode_value(value), sort_keys=True, separators=(",", ":"))
 
 
 def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
@@ -49,10 +97,26 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     then preserved arrival order in both the list and each pair's orientation.
     A key that is not total is not a canonical order.
 
-    Every optional element is `repr`'d rather than folded through `x or ""`, which
-    was the same defect wearing different clothes: `None` and `""` are distinct
-    candidate states, and mapping both onto the empty string tied two candidates
-    that genuinely differ.
+    Every element goes through `_canonical` rather than being folded through
+    `x or ""`, which was the same defect wearing different clothes: `None` and
+    `""` are distinct candidate states, and mapping both onto the empty string
+    tied two candidates that genuinely differ. The encoding keeps them apart -
+    `null` and `""` - which is the property that matters, not the spelling.
+
+    **`repr()` was the A-50 defect and is why `_canonical` exists.** `repr` of an
+    enum member is `<MeasurementBasis.STC: 'stc'>`, so the key embedded a class
+    name and a member name: renaming `STC` moved this key, hence the sort order,
+    hence the row order of every artifact composed from it, while not one
+    measurement in the store had changed. That is the same class as the unpinned
+    `openpyxl` and as `repr(grouping_key())` in the display partition below - the
+    third recurrence, and the reason the question to ask of anything entering a
+    hashed artifact is *could this change without the data changing?*
+
+    `source_ref` goes in as the model, not as `model_dump(mode="json")`. Pydantic's
+    JSON mode is a second encoder: it would serialise a `Decimal` field added to
+    `SourceRef` later by its own rules rather than under the `$decimal` tag, so
+    two distinct precisions would collide here while staying distinct in the
+    audit preimage. One authority or none.
 
     `schema.field._normalise_token` establishes that the substitution is real -
     it exists partly to handle an extractor emitting `""` where `None` is meant -
@@ -65,15 +129,18 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     distinction is the only way the order stays total.
     """
     return (
-        repr(candidate.condition.grouping_key()),
-        repr(candidate.value),
-        repr(candidate.unit),
-        candidate.source_tier.value,
-        repr(candidate.source_ref.model_dump(mode="json")),
-        repr(candidate.verbatim_value),
-        repr(candidate.confidence),
-        repr(candidate.condition.note),
-        repr(sorted(candidate.condition.derived)),
+        _canonical(candidate.condition.grouping_key()),
+        _canonical(candidate.value),
+        _canonical(candidate.unit),
+        _canonical(candidate.source_tier),
+        _canonical(candidate.source_ref),
+        _canonical(candidate.verbatim_value),
+        _canonical(candidate.confidence),
+        _canonical(candidate.condition.note),
+        # The frozenset goes in whole: `encode_value` sorts its members by the
+        # same canonical text, so the pre-sort this line used to do would now be a
+        # second ordering rule saying the same thing.
+        _canonical(candidate.condition.derived),
     )
 
 
@@ -167,13 +234,18 @@ def comparison_groups(candidates: Sequence[ConflictCandidate]) -> list[list[Conf
     decide what to compare: this partition strands a candidate whose condition is
     merely less specific than its neighbours', which is a presentation choice, not
     a comparison rule.
+
+    The group order comes from `_canonical`, not `repr`, for the reason
+    `_ordering_key` gives: a grouping key is mostly enum members, and `repr` names
+    them by class and member name, so renaming one silently reordered the display.
+    The keys cannot be sorted directly - a tuple position holds a member for one
+    condition and `None` for another, and `sorted` raises on that pair - so the
+    encoding is what makes an order exist at all, not merely an honest one.
     """
     grouped: dict[tuple[object, ...], list[ConflictCandidate]] = {}
     for candidate in candidates:
         grouped.setdefault(candidate.condition.grouping_key(), []).append(candidate)
-    return [
-        sorted(grouped[key], key=_ordering_key) for key in sorted(grouped, key=lambda k: repr(k))
-    ]
+    return [sorted(grouped[key], key=_ordering_key) for key in sorted(grouped, key=_canonical)]
 
 
 class AutonomousOverwriteError(RuntimeError):

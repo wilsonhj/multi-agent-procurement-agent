@@ -14,6 +14,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .encoding import encode_value
 from .enums import ComponentCategory, DocumentType
 from .field import CanonicalField
 from .registry import require_contract_key
@@ -169,18 +170,33 @@ class ComponentInstance(BaseModel):
     def _stored_values(self) -> str:
         """A canonical rendering of everything this instance actually says.
 
-        Not a second serialisation invented for the sort: it is
-        `model_dump(mode="json")` under `json.dumps(sort_keys=True)`, which is the
-        form `tests/test_fixtures.py` byte-compares the committed fixtures
-        against. One answer to "what does this row say", not two.
+        Routed through `encode_value` - the one authority - rather than through
+        `model_dump(mode="json")`, which is what this first shipped as and which
+        was wrong in a way that mattered.
 
-        `sort_keys` is what makes it a *function of the content*. The contract has
-        three dict-valued parameters, and a dict iterates in insertion order, so
-        two extractions that read one cooling table's rows in different orders
-        hold equal values that render differently without it -
-        `services.claims._render` records the same hazard on the claim-identity
-        side. `Condition.derived` is a frozenset and is sorted on the way out by
-        its own serialiser, for the same reason one level down.
+        `CanonicalField.value` is typed `object | None`, so it is the polymorphic
+        slot `schema/encoding.py` exists for. Pydantic's JSON mode collapses that
+        slot: `Decimal("22.00")` and the string `"22.00"` dump to the same text,
+        so two instances differing only in which one they store **tie here** -
+        while `services/output/projection.py` routes the same values through
+        `encode_value` and renders them differently (`{"$decimal": "22.00"}`
+        against `"22.00"`). A tie between rows that are not identical hands their
+        relative order back to `sorted`'s stability, which is arrival order: the
+        A-6 class in its mirror form, where two artifacts differing in content
+        have a byte position that is not a function of content.
+
+        The original reason for the workaround was real - `encode_value` could
+        not encode a `CanonicalField`, because `model_dump()` flattened nested
+        models to plain dicts and the closed world had no `dict` rule. That was
+        fixed in this same change, and this call site was not revisited with it.
+
+        `sort_keys` is belt and braces: `encode_value` already sorts a map's
+        pairs by canonical text, which is what makes this a function of content
+        rather than of insertion order. The contract has three dict-valued
+        parameters, and a dict iterates in insertion order, so two extractions
+        that read one cooling table's rows in different orders hold equal values
+        that would otherwise render differently - `services.claims._render`
+        records the same hazard on the claim-identity side.
 
         Deliberately reads `fields` and nothing else. The raw `supplier` and
         `model` are excluded because D-4 stage 1 exists to make `Trina Solar` and
@@ -189,10 +205,7 @@ class ComponentInstance(BaseModel):
         the one that breaks the thing the key was normalised for.
         """
         return json.dumps(
-            {
-                name: [value.model_dump(mode="json") for value in values]
-                for name, values in self.fields.items()
-            },
+            encode_value(self.fields),
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,

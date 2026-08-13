@@ -49,7 +49,8 @@ def _canonical(value: object) -> str:
     encoded form into a single ordered type.
 
     Canonical JSON text is that something, and it is the same device
-    `encoding._sort_key` already uses to order frozenset members - deliberately
+    `encoding._sort_key` uses for both of its unordered containers, frozenset
+    members and map pairs - deliberately
     the same idea rather than the same function, because that helper is private
     to `encoding` and named for the one case it serves, and importing it would
     make a narrowing there a breaking change here. The properties are what this
@@ -108,9 +109,12 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     name and a member name: renaming `STC` moved this key, hence the sort order,
     hence the row order of every artifact composed from it, while not one
     measurement in the store had changed. That is the same class as the unpinned
-    `openpyxl` and as `repr(grouping_key())` in the display partition below - the
-    third recurrence, and the reason the question to ask of anything entering a
-    hashed artifact is *could this change without the data changing?*
+    `openpyxl`, and as the `repr(grouping_key())` the display partition below
+    *used to* carry - `comparison_groups` was converged onto `_canonical` in the
+    same change that fixed this one, so the pointer is history rather than
+    somewhere to look. Third recurrence, and the reason the question to ask of
+    anything entering a hashed artifact is *could this change without the data
+    changing?*
 
     `source_ref` goes in as the model, not as `model_dump(mode="json")`. Pydantic's
     JSON mode is a second encoder: it would serialise a `Decimal` field added to

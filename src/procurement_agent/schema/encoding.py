@@ -125,7 +125,8 @@ def encode_value(value: object) -> object:
         return _encode_map(value)
 
     if isinstance(value, list | tuple):
-        # `list` is the declared type of 18 contract fields, and order there is
+        # `list` is the declared type of 18 contract rows (14 distinct keys, three of
+        # which recur across categories), and order there is
         # content rather than presentation, so it is never sorted. `tuple` is
         # admitted for condition grouping keys on the sort path and never for a
         # stored value; the two share the JSON array deliberately, which is sound
@@ -235,12 +236,17 @@ def _rfc3339(value: datetime) -> str:
 
 
 def _sort_key(encoded: object) -> str:
-    """A total order over encoded values, for `frozenset` output only.
+    """A total order over encoded values, for both unordered containers here.
 
-    Set members can be of mixed type, where `sorted()` on the values themselves
-    raises. Ordering by canonical JSON text is total, deterministic across
-    processes, and never consulted for anything a reader sees - the projection's
-    meaning does not depend on which order a set is written in, only on its being
-    the *same* order every run.
+    Two call sites, not one: the `frozenset` branch of `encode_value` and
+    `_encode_map`'s pair list. Both need the same thing - members can be of mixed
+    type, where `sorted()` on the values themselves raises, and both are
+    unordered in the source, so their written order has to come from content
+    rather than from iteration.
+
+    Ordering by canonical JSON text is total, deterministic across processes, and
+    never consulted for anything a reader sees: the projection's meaning does not
+    depend on which order a set or a map is written in, only on its being the
+    *same* order every run.
     """
     return json.dumps(encoded, sort_keys=True, separators=(",", ":"))

@@ -22,6 +22,7 @@ reads stored values and never the raw supplier or model.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from itertools import permutations
 
 import pytest
@@ -67,6 +68,23 @@ def _adani(ptc: float | None) -> ComponentInstance:
             if ptc is not None
             else {}
         ),
+    )
+
+
+def _adani_valued(value: object) -> ComponentInstance:
+    """`_adani`, with the stored value's *type* under the caller's control.
+
+    `_adani` takes a `float | None` because that is the shape of the worked
+    example. The tiebreak's failure mode is about the type of the stored value,
+    not its magnitude, so it needs a constructor that can hold a `Decimal` and a
+    `str` in the same slot.
+    """
+    return ComponentInstance(
+        supplier="Adani",
+        model="ASB-M10-144-550",
+        component_category=ComponentCategory.PV_MODULES,
+        nameplate=550.0,
+        fields={"nameplate_power": [_value(value, basis=MeasurementBasis.PTC)]},
     )
 
 
@@ -194,18 +212,42 @@ def test_the_key_is_in_memory_only_and_says_so() -> None:
         encode_value(list(key))
 
 
-def test_the_tiebreak_is_the_serialisation_the_repo_already_uses() -> None:
-    """Not a second canonical form invented for the sort. It is
-    `model_dump(mode="json")` under `json.dumps(sort_keys=True)`, which is what
-    `tests/test_fixtures.py` byte-compares the committed fixtures against - so
-    there is one answer to "what does this row say", not two."""
+def test_the_tiebreak_routes_through_the_one_encoding_authority() -> None:
+    """Not a second canonical form invented for the sort.
+
+    This replaces a test that recomputed `model_dump(mode="json")` and asserted
+    the key equalled it - which is `assert f(x) == f(x)`, true of any
+    implementation including the wrong one it was guarding. It passed against
+    exactly the defect described below.
+    """
     instance = _adani(509.9)
     assert instance.ordering_key()[5] == json.dumps(
-        {
-            name: [value.model_dump(mode="json") for value in values]
-            for name, values in instance.fields.items()
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
+        encode_value(instance.fields), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
+
+
+def test_two_instances_differing_only_in_value_type_do_not_tie() -> None:
+    """Why the tiebreak may not use `model_dump(mode="json")`.
+
+    `CanonicalField.value` is `object | None` - the polymorphic slot
+    `schema/encoding.py` exists for. Pydantic's JSON mode collapses it:
+    `Decimal("22.00")` and the string `"22.00"` dump to the same text. The
+    projection does *not* collapse them, because it routes values through
+    `encode_value` and renders `{"$decimal": "22.00"}` against `"22.00"`.
+
+    So under the old tiebreak these two instances tied while rendering different
+    rows, and `sorted`'s stability handed their relative order to arrival order -
+    the A-6 class in its mirror form: two artifacts that differ in content, whose
+    byte position is not a function of content. This is the case the previous
+    test could not see.
+    """
+    decimal_valued, string_valued = _adani_valued(Decimal("22.00")), _adani_valued("22.00")
+
+    # equal under the encoder pydantic would have used...
+    assert decimal_valued.fields["nameplate_power"][0].model_dump(
+        mode="json"
+    ) == string_valued.fields["nameplate_power"][0].model_dump(mode="json")
+
+    # ...and distinct under the one the projection actually renders with
+    assert decimal_valued.ordering_key() != string_valued.ordering_key()
+    assert decimal_valued.ordering_key()[:5] == string_valued.ordering_key()[:5]

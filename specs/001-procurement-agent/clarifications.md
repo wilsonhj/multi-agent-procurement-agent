@@ -798,7 +798,7 @@ encoding:
 property below rather than by preference.** Recorded here because the code now differs from what
 this table said, and a table that lies is worse than one that is silent:
 
-1. **`list` was absent, and `list[str]` is the declared type of 18 contract fields** — so a
+1. **`list` was absent, and `list[str]` is the declared type of 18 contract rows** — so a
    closed-world encoder raised on real data. Encoded elementwise; order is content, never sorted.
    It shares the JSON array with `tuple` and `frozenset`, which is sound only because neither of
    those ever reaches the polymorphic `CanonicalField.value` slot: `derived` is a frozenset at a

@@ -79,7 +79,9 @@ class ValueType(StrEnum):
 
 
 class Shape(StrEnum):
-    """Scalar, list or map - the distinction the 18 `list[str]` rows turn on.
+    """Scalar, list or map - the distinction the 18 `list[str]` rows turn on
+    (14 distinct keys: `certifications` appears on three categories, `standards`
+    and `communication_protocols` on two each, and a recurring key is one spec).
 
     The contract's preamble spends a paragraph on it: an empty list means "we
     looked and found none stated", which is materially different from `None`

@@ -421,7 +421,7 @@ def test_tuples_and_lists_share_an_encoding_by_design() -> None:
 
     D-14 admits `tuple` for condition grouping keys on the sort path and says
     plainly: **never for a stored value**. Lists are the opposite - `list[str]`
-    is the declared type of 18 contract fields. The two domains are disjoint, so
+    is the declared type of 18 contract rows. The two domains are disjoint, so
     sharing the JSON array costs nothing, and the property D-14 states is
     injectivity over the *value* domain, which tuples are not in.
 
@@ -459,7 +459,7 @@ _POLYMORPHIC_VALUE_DOMAIN: tuple[object, ...] = (
     PowerSide.AC,
     Severity.INFORMATIONAL,
     Severity.CRITICAL,
-    # `list[str]`, the declared type of 18 contract fields
+    # `list[str]`, the declared type of 18 contract rows over 14 distinct keys
     [],
     ["IEC 61215"],
     ["IEC 61215", "IEC 61730"],

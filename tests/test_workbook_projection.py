@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from procurement_agent.schema import (
     CanonicalField,
@@ -568,12 +569,20 @@ def test_arrival_order_does_not_reach_the_bytes() -> None:
 
 
 def test_two_components_that_tie_on_ordering_key_still_order_by_content() -> None:
-    """`ComponentInstance.ordering_key()` is not total, and stable sort is not a
-    tiebreak - it is arrival order wearing one.
+    """The projection of an unchanged store cannot depend on arrival order.
 
-    Two instances agreeing on category, manufacturer, family, nameplate and
-    surrogate id tie completely, so without a content tiebreak the projection of
-    an unchanged store depends on the order rows came back from the database.
+    Written when `ComponentInstance.ordering_key()` was not total - its last
+    element was `surrogate_id or ""`, which is `""` on both sides when no
+    surrogate has been assigned, so these two twins tied completely and stable
+    sort preserved the order the rows arrived in. This file carried its own
+    content tiebreak to cover that.
+
+    The key is now total at the source, so the twins no longer tie and the local
+    tiebreak has been removed. **The assertion this test exists for is
+    unchanged** - two arrival orders, identical bytes - because that property was
+    never about where the tiebreak lived. Only the premise moved, and it is
+    asserted below in its new form so a regression at the source shows up here
+    too rather than only in `test_ordering_totality.py`.
     """
 
     def _twin(supplier_verbatim: str, page: int) -> ComponentInstance:
@@ -598,7 +607,11 @@ def test_two_components_that_tie_on_ordering_key_still_order_by_content() -> Non
         )
 
     first, second = _twin("Adani Solar", 1), _twin("Adani Green", 2)
-    assert first.ordering_key() == second.ordering_key()
+    # The first five elements still tie - raw supplier is deliberately not among
+    # them, so that D-4 stage 1's entity split is not reopened in the row order.
+    # The sixth, derived from stored values, is what separates them.
+    assert first.ordering_key()[:5] == second.ordering_key()[:5]
+    assert first.ordering_key() != second.ordering_key()
     forward = project_store(
         components=[first, second], conflicts=[], sources=[], policy=FIXTURE_POLICY
     )
@@ -829,9 +842,18 @@ def test_every_row_in_the_projection_declares_a_write_timestamp_slot() -> None:
 def test_a_value_outside_the_encoding_table_is_refused() -> None:
     """The projection inherits `encode_value`'s closed world rather than
     softening it: a new value type must be a loud decision recorded in D-14, not
-    an artifact hashed over an encoding nobody wrote down."""
+    an artifact hashed over an encoding nobody wrote down.
+
+    This used to pass a `dict`, which was outside the table when it was written.
+    D-14 gained a `$map` rule since - the contract declares three dict-valued
+    parameters, so the premise that "bare dicts are not a value type at all" was
+    simply false - and a value the table now covers is no longer a test of the
+    closed world. A `set` is: plausible enough that someone will try it,
+    genuinely absent from the table, and unordered, so it could not be admitted
+    without a canonicalisation decision.
+    """
     store = synthetic_store()
-    store["components"][0].fields["rated_ac_power"][0].value = {"kVA": 352}
+    store["components"][0].fields["rated_ac_power"][0].value = {"352 kVA", "320 kVA"}
     with pytest.raises(UnencodableValueError):
         project_store(
             components=store["components"],
@@ -879,7 +901,7 @@ def test_every_leaf_is_exactly_a_json_type_not_merely_equal_to_one() -> None:
 
 
 def test_a_naive_retrieved_at_is_refused_rather_than_assumed_to_be_utc() -> None:
-    """A boundary gap in `schema/field.py`, pinned here rather than papered over.
+    """No projection can carry a datetime that names no instant - two layers deep.
 
     `SourceRef.retrieved_at` is `datetime | None` with **no tz-awareness
     validator**, while `encode_value` refuses naive datetimes - so the schema
@@ -895,13 +917,23 @@ def test_a_naive_retrieved_at_is_refused_rather_than_assumed_to_be_utc() -> None
     silent assumption.
     """
     store = synthetic_store()
-    naive = SourceRef(
+    # Layer 1, the boundary: the store cannot be built with one at all.
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        SourceRef(
+            url="https://distributor.example.invalid/tsm-neg21c",
+            page_title="TSM-NEG21C.20 product page",
+            retrieved_at=datetime(2026, 6, 28, 11, 0, 0),  # noqa: DTZ001 - the point of the test
+        )
+
+    # Layer 2, the backstop: reached by bypassing validation the way a row
+    # hydrated straight from the database in production would.
+    unvalidated = SourceRef.model_construct(
         url="https://distributor.example.invalid/tsm-neg21c",
         page_title="TSM-NEG21C.20 product page",
         retrieved_at=datetime(2026, 6, 28, 11, 0, 0),  # noqa: DTZ001 - the point of the test
     )
-    store["components"][1].fields["nameplate_power"][1].source_ref = naive
-    with pytest.raises(UnencodableValueError, match="naive datetime"):
+    store["components"][1].fields["nameplate_power"][1].source_ref = unvalidated
+    with pytest.raises(UnencodableValueError, match="naive"):
         project_store(
             components=store["components"],
             conflicts=store["conflicts"],

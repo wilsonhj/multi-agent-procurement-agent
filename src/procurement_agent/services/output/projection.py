@@ -406,26 +406,34 @@ def _source_row(document: SourceDocument) -> dict[str, object]:
 def _sorted_components(
     components: Sequence[ComponentInstance], *, policy: ProjectionPolicy
 ) -> list[dict[str, object]]:
-    """D-4 stage 5's order, with a content tiebreak that it needs and lacks.
+    """D-4 stage 5's order, straight from `ordering_key()`.
 
-    `ordering_key()` is documented as the canonical sort position, but it is not
-    *total*: two instances agreeing on category, normalised manufacturer, family,
-    nameplate and surrogate id tie completely - and D-4 records that
-    (category, supplier, model) is provably non-unique on real data, with two
-    Adani entities publishing `ASB-M10-144-550` with different specs. `sorted` is
-    stable, so a tie preserves arrival order rather than breaking it, which is
-    the precise defect FR-OUT-06 forbids. The row's own canonical text breaks it
-    by content instead.
+    This function used to append its own content tiebreak, because
+    `ordering_key()` was not *total*: its last element was `surrogate_id or ""`,
+    which is `""` on both sides when no surrogate has been assigned, so two
+    instances agreeing on category, normalised manufacturer, family and nameplate
+    tied completely. `sorted` is stable, so the tie preserved arrival order -
+    the precise defect FR-OUT-06 forbids.
+
+    **That is now fixed at the source**, where D-4 says the canonical sort
+    position lives: `ordering_key()` carries a sixth element derived from the
+    instance's stored values. The local tiebreak came out with it rather than
+    being left in as a belt-and-braces second rule - two orderings for one
+    concept is how the two of them come to disagree, and a consumer that quietly
+    repairs its dependency hides the defect from every other consumer.
+
+    The order is total *up to equality*: two instances that still tie agree on
+    every stored value, so they render identical rows and their relative order is
+    unobservable. That is all AC-7 needs.
     """
     rows = [
         (component.ordering_key(), _component_row(component, policy=policy))
         for component in components
     ]
-    # Sorted by a key *function*, never by comparing the tuples directly: a tuple
-    # comparison that reached the third element would be comparing two dicts,
-    # which raises. Building the tiebreak into the key keeps the payload out of
-    # the comparison entirely.
-    return [row for _, row in sorted(rows, key=lambda pair: (pair[0], _canonical_text(pair[1])))]
+    # Sorted by a key *function* reading only element 0, never by comparing the
+    # pairs directly: a tuple comparison that fell through to element 1 would be
+    # comparing two dicts, which raises.
+    return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
 
 
 def _sorted_values(

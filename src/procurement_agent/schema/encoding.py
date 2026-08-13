@@ -121,6 +121,9 @@ def encode_value(value: object) -> object:
         # for a mixed-type set, where `sorted()` on the members would raise.
         return sorted((encode_value(item) for item in value), key=_sort_key)
 
+    if isinstance(value, dict):
+        return _encode_map(value)
+
     if isinstance(value, list | tuple):
         # `list` is the declared type of 18 contract fields, and order there is
         # content rather than presentation, so it is never sorted. `tuple` is
@@ -139,29 +142,71 @@ def encode_value(value: object) -> object:
 
 
 def _encode_model(model: BaseModel) -> dict[str, object]:
-    """Dump a model and route every leaf back through `encode_value`.
+    """Walk a model's fields and route every value back through `encode_value`.
 
-    D-14 says `model_dump` for `DeclaredBand`, which needs one clarification and
-    one correction. Plain `model_dump()` runs in *python mode* and returns `kind`
-    as the `ToleranceKind` member itself, which is not JSON and is one `repr()`
-    away from `<ToleranceKind.ABSOLUTE: 'absolute'>` - the A-6 class of defect,
-    where an artifact hash moves because a member was renamed. And `mode="json"`
-    would fix that single case while creating a worse one: a `Decimal` field
-    added to this model later would be serialised by pydantic's rules instead of
-    earning its `$decimal` tag, so two distinct precisions would collide.
-    Recursing keeps one encoding authority for every leaf.
+    D-14 says `model_dump` for `DeclaredBand`. That reading is wrong twice, and
+    the second one only became visible when a nested model was tried:
+
+    * Plain `model_dump()` runs in *python mode* and returns `kind` as the
+      `ToleranceKind` member itself, which is not JSON and is one `repr()` away
+      from `<ToleranceKind.ABSOLUTE: 'absolute'>` - the A-6 class, where a hash
+      moves because a member was renamed. `mode="json"` fixes that single case
+      and creates a worse one: a `Decimal` field added later would be serialised
+      by pydantic's rules instead of earning its `$decimal` tag, so two distinct
+      precisions would collide.
+    * **`model_dump()` also flattens the whole tree in one call**, so a
+      `CanonicalField`'s `condition` and `source_ref` arrive as plain `dict`.
+      With no `dict` rule that hit the closed-world raise, which meant
+      `encode_value` could not encode the repo's central model at all.
+
+    Reading `model_fields` and taking the live attribute fixes both at once:
+    nested models stay models and re-enter through the same door, and pydantic's
+    serialiser is never in the path, so there is no second encoder to disagree
+    with. `Condition._sort_derived` is bypassed as a result, which changes
+    nothing - `encode_value` sorts a frozenset itself, for the same reason.
     """
-    dumped = model.model_dump()
-    for key in dumped:
-        if key.startswith("$"):
+    encoded: dict[str, object] = {}
+    for name in type(model).model_fields:
+        if name.startswith("$"):
             # D-14's backstop. `$` is safe as a sigil because pydantic field names
             # are Python identifiers, so only a deliberate alias could mint a key
             # that shadows a tag - and if one ever does, it must not do so quietly.
             raise UnencodableValueError(
-                f"{type(model).__name__} dumps a key {key!r} beginning with the tag "
-                "sigil, which would be indistinguishable from an encoded scalar."
+                f"{type(model).__name__} declares a field {name!r} beginning with the "
+                "tag sigil, which would be indistinguishable from an encoded scalar."
             )
-    return {key: encode_value(item) for key, item in dumped.items()}
+        encoded[name] = encode_value(getattr(model, name))
+    return encoded
+
+
+def _encode_map(mapping: dict[object, object]) -> dict[str, object]:
+    """A dict-valued contract parameter, as a tagged list of encoded pairs.
+
+    D-14 argues the `$` sigil is safe because "bare dicts are not a value type at
+    all". That premise is false: the contract declares three of them -
+    `harmonic_spectrum` (`dict[int, float]`), `rating_mva_by_cooling`
+    (`dict[str, float]`) and `ercot_compliance_items` (`dict[str, str]`).
+
+    They cannot be encoded as bare JSON objects, because **JSON object keys are
+    always strings**: `{1: 0.5}` and `{"1": 0.5}` both serialise to `{"1": 0.5}`,
+    so two distinct values collide. Both types can occupy the polymorphic `value`
+    slot, so that is a live collision rather than a hypothetical one. Encoding
+    the *key* preserves its type and restores injectivity.
+
+    Pairs are sorted by their canonical text because a dict's insertion order is
+    not part of its value - two extractions reading one cooling table's rows in
+    different orders hold equal maps, and they must hash alike.
+    """
+    pairs = []
+    for key, item in mapping.items():
+        if isinstance(key, str) and key.startswith("$"):
+            raise UnencodableValueError(
+                f"map key {key!r} begins with the tag sigil. Pydantic field names are "
+                "identifiers so a model cannot mint one, but a `dict[str, str]` takes "
+                "arbitrary keys - refused here so the sigil means one thing everywhere."
+            )
+        pairs.append([encode_value(key), encode_value(item)])
+    return {"$map": sorted(pairs, key=_sort_key)}
 
 
 def _rfc3339(value: datetime) -> str:

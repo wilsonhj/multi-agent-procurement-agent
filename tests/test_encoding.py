@@ -22,12 +22,15 @@ from decimal import Decimal
 import pytest
 
 from procurement_agent.schema import (
+    CanonicalField,
     Condition,
     ConditionDimensions,
     DeclaredBand,
     MeasurementBasis,
     PowerSide,
     Severity,
+    SourceRef,
+    SourceTier,
     ToleranceKind,
 )
 from procurement_agent.schema.encoding import UnencodableValueError, encode_value
@@ -116,6 +119,72 @@ def test_encoded_output_contains_only_json_native_types() -> None:
 
     for value in _VALUE_DOMAIN:
         check(encode_value(value), type(value).__name__)
+
+
+def test_a_model_holding_other_models_encodes_all_the_way_down() -> None:
+    """`CanonicalField` is the repo's central model and nests three others.
+
+    The first implementation used `model_dump()`, which flattens the whole tree
+    in one call - so `condition` and `source_ref` arrived as plain `dict` and hit
+    the closed-world raise. `encode_value` could not encode the one model it most
+    needs to. Walking the fields instead keeps nested models *as models*, so each
+    one re-enters through the same door.
+    """
+    field = CanonicalField(
+        value=Decimal("550"),
+        unit="Wp",
+        condition=Condition(basis=MeasurementBasis.STC, derived=frozenset({"basis"})),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(url="https://example.invalid/ds"),
+        confidence=0.9,
+    )
+    encoded = encode_value(field)
+    assert isinstance(encoded, dict)
+    assert encoded["value"] == {"$decimal": "550"}  # the tag survives the nesting
+    assert isinstance(encoded["condition"], dict)
+    assert encoded["condition"]["basis"] == "stc"
+    assert encoded["condition"]["derived"] == ["basis"]
+    assert encoded["source_tier"] == "system_of_record"
+
+
+def test_maps_are_tagged_because_json_keys_are_always_strings() -> None:
+    """The contract has three genuinely dict-valued parameters, so D-14's premise
+    that "bare dicts are not a value type at all" is false.
+
+    A bare JSON object cannot carry them injectively: object keys are strings, so
+    `{1: 0.5}` and `{"1": 0.5}` both serialise to `{"1": 0.5}` and two distinct
+    values collide. `harmonic_spectrum` is `dict[int, float]` while
+    `rating_mva_by_cooling` is `dict[str, float]`, and both can occupy the
+    polymorphic `value` slot - so this is a live collision, not a hypothetical.
+
+    `$map` carries pairs with the key *encoded*, which keeps the key's type and
+    restores injectivity. Pairs are sorted so a dict's insertion order - which is
+    not part of its value - cannot reach the bytes.
+    """
+    assert encode_value({1: 0.5}) == {"$map": [[1, 0.5]]}
+    assert encode_value({"1": 0.5}) == {"$map": [["1", 0.5]]}
+    assert canonical({1: 0.5}) != canonical({"1": 0.5})
+
+    # insertion order is not content
+    assert canonical({"b": 2, "a": 1}) == canonical({"a": 1, "b": 2})
+
+    # and a map cannot be confused with a model, which encodes bare
+    assert "$map" not in str(
+        encode_value(DeclaredBand(low=0.0, high=1.0, kind=ToleranceKind.RELATIVE))
+    )
+
+
+def test_a_dollar_key_inside_a_map_is_refused() -> None:
+    """`$` is only a safe sigil while nothing else can mint one.
+
+    D-14's argument covers model dumps - pydantic field names are identifiers -
+    but a `dict[str, str]` like `ercot_compliance_items` takes arbitrary keys, so
+    a caller could supply `"$decimal"`. Inside `$map` that is harmless, since the
+    pair list is unambiguous; refusing anyway keeps one rule for the whole
+    encoding rather than one that holds in some positions.
+    """
+    with pytest.raises(UnencodableValueError, match=r"\$"):
+        encode_value({"$decimal": "22"})
 
 
 def test_no_encoding_contains_a_repr_artifact() -> None:
@@ -288,7 +357,7 @@ def test_equal_values_of_one_type_always_encode_identically() -> None:
 def test_unlisted_types_raise() -> None:
     """A new value type must be a loud decision. Silence here is how an encoding
     acquires a second, undocumented rule."""
-    for value in (object(), {"a": 1}, {1, 2}, b"bytes", 1 + 2j):
+    for value in (object(), {1, 2}, b"bytes", 1 + 2j, range(3)):
         with pytest.raises(UnencodableValueError):
             encode_value(value)
 
@@ -395,6 +464,14 @@ _POLYMORPHIC_VALUE_DOMAIN: tuple[object, ...] = (
     ["IEC 61215"],
     ["IEC 61215", "IEC 61730"],
     ["IEC 61730", "IEC 61215"],  # order is content, not presentation: never sorted
+    # the three dict-valued contract parameters, including the int/str key pair
+    # that a bare JSON object would collapse
+    {},
+    {1: 0.5},
+    {"1": 0.5},
+    {3: 0.02, 5: 0.01},
+    {"onan": 40.0},
+    {"onan": "verified"},
     # models
     DeclaredBand(low=0.0, high=5.0, kind=ToleranceKind.ABSOLUTE, unit="W"),
     DeclaredBand(low=0.0, high=5.0, kind=ToleranceKind.RELATIVE, unit=None),

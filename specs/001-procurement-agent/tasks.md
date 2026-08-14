@@ -28,11 +28,13 @@ an unfrozen contract.
 | **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS enforces the one label the schema has (`access_restricted`). [D-15](clarifications.md) adopts that model **provisionally** and closes T0.4's written-decision criterion, but two facts remain outstanding and they are facts rather than preferences: whether any executed NDA exceeds "need to know", and whether any evaluator is conflicted with a specific bidder. Either yes makes the label `restricted_group` |
 | **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | **partial** — the append-only invariant is enforced in both halves; `job` is the DDL's own proposal and `orchestrator.run` raises `NotImplementedError` |
 
-Three of the eight are done and five are partial; none is now untouched. Read the four partials
-carefully rather than by their marker: **C4 and C8 each have a finished SQL half and an unstarted
-Python half**, and they are the pair most likely to be mistaken for finished, because `sql/` is
-the visible artifact and what is missing — WP-H's canonicalisation library, WP-I's runner — is a
-file nobody has opened yet.
+Three of the eight are done and five are partial; none is now untouched. Read the five partials
+carefully rather than by their marker. **C8 is the one with a finished SQL half and an unstarted
+Python half** — `sql/08_job.sql` has the states, the lease and the idempotency key, and WP-I's
+runner is a file nobody has opened yet, so it is the contract most likely to be mistaken for
+finished because `sql/` is the visible artifact. C4 was in that pair until 2026-08-12, when
+WP-H's library landed; what it now waits on is an **emitter**, which is a different kind of gap —
+the code exists and nothing calls it.
 
 > **C8 invariant — workers propose, they do not commit.** Each extraction writes an **immutable
 > claim row** keyed by `(document_id, field, extractor_version)`; the canonical value is a

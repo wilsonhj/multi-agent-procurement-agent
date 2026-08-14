@@ -67,9 +67,15 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > so the bytes the `hash` column covers are **defined**. The taxonomy is version 1 with
 > additive-only amendment.
 >
-> What is missing is code: H.2's canonicalisation library does not exist in `src/`, and
-> `rfc8785` is not yet a dependency. **Nothing may emit an event until that library exists** —
-> not because the bytes are unknown, but because nothing can compute them yet.
+> That library landed 2026-08-12: `src/procurement_agent/audit/` supplies H.2's canonicalisation
+> (`rfc8785==0.1.4`, pinned exactly and conformance-tested against RFC 8785's published vectors),
+> H.3's envelope and preimage, H.4's pre-INSERT advisory lock — load-tested against a live server,
+> where dropping it reproduced 41 silent forks — and H.5's chain-verification CLI. The bar this
+> paragraph set is met: an event can now be computed, so one may be emitted.
+>
+> **What is missing is an emitter.** No production path writes an event, which is why C4 stays
+> partial. `audit.run_event`, the A-49 taxonomy fix and `recorded_at`'s stale `DEFAULT` land with
+> the first one, because none of them can be verified against a caller that does not exist.
 
 > ⚠️ **C7 is a single decision constraining two work packages at opposite ends of the pipeline**
 > (labelling at ingest, enforcement at retrieval). This is the most common place this kind of

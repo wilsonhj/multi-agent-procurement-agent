@@ -9,7 +9,7 @@ see docs/open-questions.md.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .schema import Severity
@@ -26,16 +26,40 @@ class Settings(BaseSettings):
     )
 
     # --- Endpoints (swappable per NFR-04, self-hosted for confidential data per NFR-03) ---
+    #
+    # The bearer tokens and the DSNs are `SecretStr`; the endpoint and model names
+    # beside them are not. A `SecretStr` renders as `**********` in `repr()`,
+    # `str()`, an f-string and both `model_dump` forms, and yields its value only
+    # to an explicit `get_secret_value()`.
+    #
+    # **This is a precaution, not a fix for an observed leak.** Nothing in `src/`
+    # reads these five fields today and `Settings` has no export path - nothing
+    # serves it over a wire, and no audit payload embeds it, so unlike Kedro's
+    # session snapshot there is no boundary it currently crosses. What the plain
+    # `str` gave away was the *default*: a credential rendered itself into any
+    # log line, exception message or hashed payload that ever touched the object,
+    # with nothing at the type level to make that a decision. Wrapping them now
+    # is cheap precisely because there are no readers to update; wrapping them
+    # after WP-A wires a real endpoint means auditing every call site instead.
+    #
+    # The split is deliberate rather than blanket. A DSN carries a password in
+    # its userinfo and an API key authorises calls; an endpoint URL and a model
+    # name authorise nothing and belong in a log line, where masking them would
+    # cost debuggability and buy nothing. `tests/test_settings_secrets.py`
+    # enforces the rule by *name shape* rather than against a list, so a
+    # credential-shaped field added later arrives protected instead of arriving
+    # plain and waiting to be noticed - the failure `services/confidence` already
+    # shipped, where `ul_listing` fell out of a hand-written roster.
     llm_endpoint: str | None = None
     llm_model: str | None = None
-    llm_api_key: str | None = None
+    llm_api_key: SecretStr | None = None
     embedding_endpoint: str | None = None
     embedding_model: str | None = None
 
-    database_url: str | None = None
-    vector_store_url: str | None = None
-    object_store_url: str | None = None
-    web_search_api_key: str | None = None
+    database_url: SecretStr | None = None
+    vector_store_url: SecretStr | None = None
+    object_store_url: SecretStr | None = None
+    web_search_api_key: SecretStr | None = None
 
     # --- Review routing ---
     # There is deliberately no `hitl_confidence_threshold` float. A hardcoded

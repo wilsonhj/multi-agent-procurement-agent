@@ -26,6 +26,13 @@ transaction as the business write it describes: "Rollback erasing the audit
 record is correct, not a bug: if the extraction rolled back, it did not happen".
 So the caller owns the transaction, and this module only ever adds to it.
 
+**This also means a future parallel caller must call `append_event` itself, once
+per worker transaction - never through a shared observer.** Nothing here assumes
+a single caller; a hook or callback shared across worker processes would not see
+what a sibling process just committed, the same race one layer up. See
+`docs/architecture.md`'s "Persistence and execution" section for the argument and
+an external example of the failure mode.
+
 **No psycopg import.** The connection is a structural `Protocol`. `psycopg` sits
 behind the `store` extra for NFR-04, and C4's envelope is not swappable
 infrastructure - it should be importable, and testable, without a driver

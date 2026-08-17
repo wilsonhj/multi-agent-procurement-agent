@@ -233,12 +233,30 @@ self-referencing foreign key from each event to its parent. The chain is walked 
 server by `test_a_valid_chain_appends`, `test_a_fabricated_parent_is_refused`,
 `test_a_second_disconnected_root_is_refused` and `test_a_chain_loop_is_refused`.
 
-**The advisory lock is the part that is not implemented, and it is deliberately not in the DDL.**
-Decision 9's measured finding is that a lock taken inside a trigger on this table is acquired too
-late to serialise the read of the previous hash, so `pg_advisory_xact_lock` must be its own
-statement issued by the caller *before* the `INSERT`. That caller does not exist yet — nothing in
-`src/` writes an audit event — so the constraints above are currently the whole of the
-enforcement, and they turn a lost race into a loud failure rather than preventing one.
+**The advisory lock is implemented, in Python and as its own statement, deliberately not in the
+DDL.** Decision 9's measured finding is that a lock taken inside a trigger on this table is
+acquired too late to serialise the read of the previous hash, so `pg_advisory_xact_lock` must be
+issued by the caller *before* the `INSERT`. `audit/writer.py`'s `append_event` is that caller: lock
+the stream, read the tip, build the envelope, insert — all in the caller's own transaction. The
+sequence is asserted without a server (`tests/test_audit_writer.py`) and measured with one
+(`tests/test_audit_live.py`). What is still missing is a *production* caller — nothing in
+`services/` or `orchestrator/` invokes `append_event` yet — so the DDL constraints above remain the
+only enforcement any real pipeline run currently has.
+
+**A future parallel worker must call `append_event` itself, per transaction — never through a
+shared observer.** Nothing about `append_event` assumes it has a single caller; each write commits
+independently under its own per-stream lock. If a process-pool worker mode is added to
+`orchestrator.run()` (see "Services and boundaries" above), each worker process must open its own
+connection and call `append_event` from inside its own transaction — not route emission through a
+callback or hook registered on some central, single-process manager. An observer that only sees
+what its own process holds cannot see what a sibling process just committed, which is the same
+class of bug the advisory lock already exists to prevent, one layer up. Kedro's `ParallelRunner` is
+a concrete example of the failure mode: its docstring claims it "will not execute node and dataset
+hooks," but its `Task` class actually rebuilds a fresh, unshared `PluginManager` inside every worker
+process instead (`kedro-org/kedro@c3e1c9c`, `kedro/runner/parallel_runner.py:46-49` and
+`kedro/runner/task.py:115-143`) — any hook that accumulates state across calls silently fragments
+across workers with no reconciliation. `append_event`'s design already avoids this: there is no
+shared accumulator to fragment, because every write is independently transactional.
 
 ## Retrieval design
 

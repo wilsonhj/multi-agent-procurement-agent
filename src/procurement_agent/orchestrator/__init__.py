@@ -8,6 +8,12 @@ NFR-02 already forces the audit trail into Postgres and FR-OUT-06 makes
 composition a pure function of the canonical store, so a workflow checkpointer
 would be a second copy of state we already own. See plan.md Decision 1.
 
+**A worker-process pool, if one is added here, must call `audit.append_event`
+itself, per transaction.** Each worker owns its own connection and its own
+commit; audit emission is not something a supervisor observes after the fact.
+See `audit/writer.py` and docs/architecture.md's "Persistence and execution"
+section.
+
 **The human gate does not block the pipeline.** Conflict resolution is detached:
 the gate is a policy check at compose time - a query, not an interrupt. "Defer"
 is one of the five mandated resolution actions (FR-HITL-04), and a blocking

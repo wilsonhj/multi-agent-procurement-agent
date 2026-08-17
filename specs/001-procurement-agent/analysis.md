@@ -846,6 +846,8 @@ D-14](clarifications.md).
 | A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Fixed** — D-14 adopted 2026-08-07. `generated_on` is the maximum store write-timestamp over the rows the projection reflects, folded from timestamps already inside the projection so AC-7-safety is structural; an empty store renders an explicit null |
 | A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Fixed in principle** — D-13 adopted 2026-08-07: run-scoped events get a separately chained `audit.run_event` table keyed `run:<id>`, which is where gap-triggered web searches land. The event type stays in `audit.event`'s v1 taxonomy but is unreachable there; removing it is a taxonomy amendment WP-H should make when it writes the emitter |
 | A-50 | **H** | **D-14 banned enum `repr()` from hashed array order in one bullet and prescribed it in the next.** The condition-group bullet correctly routed ordering through `encode_value()`; the candidate bullet pinned ordering to `conflict_hitl._ordering_key`, whose **first component is `repr(candidate.condition.grouping_key())`** (`conflict_hitl/__init__.py:67`) — verified to render as `(<MeasurementBasis.STC: 'stc'>, None, …)`. Third instance of A-6's class, and the first to survive the remediation of its own predecessor | **Fixed** — D-14 now states one rule governing both bullets: nothing deciding hashed array order may contain an enum `repr()`. The projection sorts by `_ordering_key`'s *field sequence* with every component routed through `encode_value()` |
+| A-51 | **M** | **`ProjectionPolicy.policy_version` is a label for a τ table that is not yet built, and how the label would be checked against it is undecided.** `project_store` (`projection.py:167`) hashes `ProjectionPolicy` directly, and `confidence_threshold` — a bare `float` today — is embedded byte-for-byte in the preimage, so changing it now moves the hash; there is no live exploit. `policy_version`'s own docstring (`projection.py:120-126`) instead ties it to task B.10's field-tiered `threshold_for(field_name)` (D-3), which nothing in the codebase implements yet — already deferred once, for the same reason, at [A-11](#a-11-medium--output-flagging-assumes-one-global-threshold). `services/conflict_hitl/tolerance.py` is a distinct, already-shipped table for a *different* contract (D-2/task E.1's numeric conflict tolerance), and `projection.py:47` states this module does not import `conflict_hitl` — that table plays no part in this gap | **Deferred** — same root cause as A-11. Closing it needs a decision, made when B.10 lands, that the tiered table is embedded by value in `ProjectionPolicy` rather than looked up through the label alone |
+| A-52 | **M** | **Audit emission must originate from wherever a state transition commits, never from a parent-process observer — a constraint this architecture satisfies today by accident, not by rule.** `audit/writer.py`'s advisory-lock design (D-13) forces every writer to `INSERT` independently under its own per-stream lock, because a lock taken inside a trigger reads a stale chain tip — 8 concurrent writers measured 42 silent forks without it (`audit/writer.py:1-8`). That shape happens to also rule out a failure Kedro's `ParallelRunner` demonstrates concretely: its docstring claims it "will not execute node and dataset hooks" while `Task._run_node_synchronization` (`kedro/runner/task.py:115-143`) rebuilds a fresh, unshared `PluginManager` per worker — hooks *do* fire, and a hook accumulating state across calls silently fragments with no reconciliation. `orchestrator.run()` raises `NotImplementedError` (`orchestrator/__init__.py:95-97`), so nothing exercises this today and no code is broken | **Constraint recorded, not a defect** — already written into `orchestrator/__init__.py:11-14` and `docs/architecture.md`'s "Persistence and execution" section by a separate task; this row only indexes it into the register |
 
 ## A-48 (Medium) — a constraint that only one docstring knows about
 
@@ -956,6 +958,112 @@ both, cannot be satisfied by one and violated by the other.
 must not reach for either when it writes the projection, and converging them on `encode_value()`
 before WP-G would remove the trap rather than documenting around it.
 
+---
+
+## A-51 (Medium) — a label for a table that has not landed
+
+**Artifacts:** `src/procurement_agent/services/output/projection.py` vs [clarifications.md D-14](clarifications.md)
+
+D-14's first judgement call is "Policy version and the computed `CellFlag`s both go inside the
+projection" (`clarifications.md:877`), and `project_store` does exactly that: `"policy":
+encode_value(policy)` (`projection.py:167`) walks every field of `ProjectionPolicy` through the
+same closed-world encoder the store itself uses. `confidence_threshold` — a bare `float` today —
+is one of those fields, so it is embedded byte-for-byte in the preimage. **There is no live
+exploit here:** change `confidence_threshold` and the hash moves, exactly as D-14 requires.
+
+**The gap is in the field beside it.** `policy_version`'s own docstring (`projection.py:120-126`)
+does not describe it as redundant with `confidence_threshold` — it ties it to a *different* τ
+that does not exist in code yet: "The same decision makes the B.10 tau table **versioned,
+append-only data**… That table joins this model when it lands." Task B.10 is
+`threshold_for(field_name)`, D-3's field-tiered confidence threshold (`tasks.md:166`) — already
+deferred once, for the same reason, at
+[A-11](#a-11-medium--output-flagging-assumes-one-global-threshold): "the tiering policy it
+depends on is itself an output of the calibration work in WP-B." Nothing in `src/` defines
+`threshold_for` today; the only places it is named are `tasks.md`, A-11, and this entry.
+
+**A correction to how this finding first arrived.** The B.10 table is not
+`services/conflict_hitl/tolerance.py`. That module implements a different, already-shipped table
+for a different contract — D-2's per-field numeric conflict tolerance, task **E.1** by its own
+docstring's citation (`tolerance.py:1`) — and it has no version field either, but for an
+unrelated reason: it was never required to have one. `services/output/projection.py:47` states
+plainly that this module does not import `services.conflict_hitl`, so the D-2 table's values
+reach the projection only indirectly, already folded into stored `conflict_status`/`resolution`
+data before the projection ever runs — the same pattern `ProjectionPolicy`'s own docstring uses
+to justify leaving `assign_severity` out of the policy model entirely (`projection.py:128-131`).
+The D-2 table is not part of this gap.
+
+**What is actually undecided.** Once B.10's tiered table exists, `ProjectionPolicy` needs to hold
+something that lets a verifier reconstruct exactly which thresholds produced a given projection —
+and the docstring's own words, "versioned, append-only data" referenced by a label, describe a
+*lookup-by-reference* design, not the *embed-by-value* design `confidence_threshold` already uses
+safely. Lookup-by-reference is exactly the shape D-14's decision 1 was ratified to rule out: a
+caller-typed `policy_version` string trusted to match the constants actually deployed, with
+nothing checking it. Two operators re-tuning τ differently could commit different thresholds
+under the same label, and a hash covering only the label, not the table, would not catch it. That
+failure mode does not exist today only because the table it would apply to does not exist today
+either.
+
+**Severity: Medium, not High.** Nothing in shipped code is wrong: `confidence_threshold` is
+safely embedded, and the docstring is honest that the τ table "joins this model when it lands"
+rather than claiming coverage it does not have. This is drift between a ratified decision's
+stated consequence ("must land with it," `clarifications.md:892`) and an unimplemented feature,
+not a live contradiction — the same shape as
+[A-49](#a-49-medium--an-event-type-with-nowhere-to-go), which this register also holds at Medium.
+
+**Deferred** — same root cause as A-11 (WP-B calibration work not done). No code or decision yet
+says whether the B.10 table will be embedded by value in `ProjectionPolicy`, as `confidence_
+threshold` is today, or referenced by `policy_version` alone. That decision should be made when
+B.10 lands, not deferred a second time along with it.
+
+---
+
+## A-52 (Medium) — a constraint satisfied by accident, now written down
+
+**Artifacts:** `src/procurement_agent/audit/writer.py`, `src/procurement_agent/orchestrator/__init__.py` vs Kedro `ParallelRunner`
+
+`audit/writer.py`'s advisory-lock design exists for a reason unrelated to process pools: a lock
+taken inside a trigger on `audit.event` reads the chain tip too late to serialise concurrent
+writers — 8 concurrent writers measured **42** silent forks without it (`audit/writer.py:1-8`,
+matching `sql/07_audit_event.sql:20`). The fix `append_event` (`audit/writer.py:174` onward)
+settled on is that every writer locks its own stream, reads the tip, builds the envelope and
+inserts — all inside its own transaction, independently of any other writer.
+
+That design has a second property nobody asked it for: it also rules out a distinct failure mode,
+demonstrated concretely in Kedro (`kedro-org/kedro@c3e1c9c`). `ParallelRunner`'s docstring claims
+"This runner will not execute `node` and `dataset` hooks" (`kedro/runner/parallel_runner.py:46-
+49`) — read on its own, a reasonable design note. The code contradicts it:
+`Task._run_node_synchronization` (`kedro/runner/task.py:115-143`) builds a fresh `PluginManager`
+and registers `settings.HOOKS` in every worker process, and `Task.execute` uses it. Hooks *do*
+fire — against a fresh, unshared manager per process. A hook that accumulates state across calls
+(a running total, a buffer meant to flush once) silently fragments across N processes with
+nothing to reconcile the pieces, and nothing detects it — the docstring's flat "will not execute"
+is exactly wrong in the direction that hides the danger.
+
+**The constraint this generalises to:** audit emission must happen from wherever a state
+transition actually commits — per worker, per transaction — never from a parent-process observer
+assuming it saw everything its children did. `append_event`'s design already satisfies this,
+because there is no shared accumulator for a worker pool to fragment: every write is
+independently transactional by construction, for D-13's reasons, not for this one.
+
+**This is recorded as a constraint, not a defect, because none exists.** `orchestrator.run()`
+(`orchestrator/__init__.py:95-97`) raises `NotImplementedError` — there is no process-pool mode to
+violate the constraint yet, and no code anywhere routes audit emission through a shared observer.
+The substance of this finding — what a future worker-pool mode must do, and the Kedro citation
+that makes the failure concrete — is already written into `orchestrator/__init__.py:11-14` and
+`docs/architecture.md`'s "Persistence and execution" section, by a separate task running in
+parallel with this one. This entry only indexes that work into the register so a future audit of
+the register does not have to rediscover it.
+
+**Severity: Medium.** Not High or Critical, because nothing is currently broken and no artifact
+contradicts another — `orchestrator/__init__.py` and `docs/architecture.md` already agree with
+each other and with the code. Not Low, because the failure mode it heads off — an audit chain
+that looks complete and silently is not — is exactly the class of defect D-13's advisory lock
+exists to prevent one layer down, and a system built to survive a superuser bypass (Decision 9)
+has the least margin for a *silent* gap in what it can attest to.
+
+**Constraint recorded** — no code changed by this entry. Closing action, if any, belongs to
+whoever implements a process-pool orchestrator: keep audit emission inside each worker's own
+transaction, never behind a shared hook/observer.
 
 ## Consistency checks that passed
 

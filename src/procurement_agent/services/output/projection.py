@@ -123,7 +123,8 @@ class ProjectionPolicy(BaseModel):
     fixture churn would otherwise be worst. The same decision makes the B.10 tau
     table **versioned, append-only data** - otherwise historical projections
     become unrecomputable the first time tau moves. That table joins this model
-    when it lands.
+    when it lands - and until it does, nothing derives this label from anything;
+    see analysis.md A-51.
 
     What is *not* here: conflict severity. `assign_severity` is policy too, but
     its output is persisted on `ConflictQueueEntry.severity` and so reaches the

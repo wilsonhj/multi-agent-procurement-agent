@@ -211,7 +211,7 @@ class ComponentInstance(BaseModel):
             ensure_ascii=False,
         )
 
-    def ordering_key(self) -> tuple[str, str, str, float, str, str, str, str]:
+    def ordering_key(self) -> tuple[str, str, str, float, str, str, str]:
         """Canonical sort position for deterministic workbook regeneration.
 
         AC-7 requires byte-identical output from an unchanged store, which needs a
@@ -274,27 +274,60 @@ class ComponentInstance(BaseModel):
             self.nameplate if self.nameplate is not None else float("-inf"),
             self.surrogate_id or "",
             self._stored_values(),
-            # The raw strings, **last**, and only as a final tie-break.
-            #
-            # The paragraph above is right that sorting *on* them would undo the
-            # entity split - but excluding them entirely made a different claim
-            # false. `services/output/projection.py:_component_row` emits raw
-            # `supplier` and `model`, so two spellings that D-4 stage 1 folds
-            # onto one `manufacturer_key` tied on every element here and still
-            # rendered different rows. `sorted` is stable, so the tie handed
-            # their byte order to arrival order: A-6, in the exact Adani case
-            # this docstring is written around and the `surrogate_id is None`
-            # state it calls the dangerous one.
-            #
-            # Position is what makes this safe. Everything the entity split
-            # exists for is decided by elements 1-5; two spellings of one
-            # manufacturer still sort adjacently, and these two only ever
-            # separate rows that agree on category, identity, nameplate,
-            # surrogate and every stored value. At that point the rows differ in
-            # the output, so leaving them unordered is the defect and ordering
-            # them cannot merge anything.
-            self.supplier,
-            self.model,
+            self._identity_values(),
+        )
+
+    def _identity_values(self) -> str:
+        """The five raw identity strings, **last**, and only as a final tie-break.
+
+        The paragraph above is right that *sorting on* the raw supplier would
+        undo the entity split - but excluding these entirely made a different
+        claim false. `services/output/projection.py:_component_row` emits all
+        five unfolded, so instances differing in any of them tied on every
+        element of the key and still rendered different rows. `sorted` is
+        stable, so the tie handed their byte order to arrival order.
+
+        **Three of the five are lost to a fallback operator rather than to
+        omission**, which is why naming only `supplier` and `model` here did not
+        finish the job. Elements 2, 3 and 5 above are written `x or y`, and each
+        `or` collapses an absent value into another field's:
+
+            manufacturer_key or supplier    model_family or model
+            surrogate_id or ""
+
+        so `manufacturer_key=None` and `manufacturer_key="Adani Solar"` produce
+        one key when the supplier is `"Adani Solar"`. That is reachable rather
+        than contrived: `identity_keys("sungrow", ...)` returns
+        `manufacturer_key == "sungrow"`, so any supplier already in normalised
+        form ties - in exactly the partially-normalised store the docstring
+        above says must be supported.
+
+        Rendered through `encode_value` rather than as bare tuple members
+        because the distinction that matters here is `None` against `""`, and
+        only the encoder keeps those apart (`null` versus `""`). That makes this
+        element a function of the emitted row **by construction** rather than by
+        enumeration - the same reason `_stored_values()` routes through the one
+        authority instead of restating a rendering.
+
+        Position is what makes it safe. Everything the entity split exists for
+        is decided by elements 1-5, so two spellings of one manufacturer still
+        sort adjacently; this element only ever separates rows that already
+        agree on category, identity, nameplate, surrogate and every stored
+        value. At that point the rows differ in the output, so leaving them
+        unordered is the defect and ordering them cannot merge anything.
+        """
+        return json.dumps(
+            encode_value(
+                [
+                    self.supplier,
+                    self.model,
+                    self.manufacturer_key,
+                    self.model_family,
+                    self.surrogate_id,
+                ]
+            ),
+            separators=(",", ":"),
+            ensure_ascii=False,
         )
 
     def unresolved_conflicts(self) -> list[str]:

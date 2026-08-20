@@ -54,6 +54,7 @@ from procurement_agent.schema import (
 from procurement_agent.schema.encoding import UnencodableValueError, encode_value
 from procurement_agent.services.output.projection import (
     ProjectionPolicy,
+    _component_row,
     _field_row,
     _value_sort_key,
     project_store,
@@ -94,15 +95,28 @@ def _instance(
     *,
     supplier: str = "Adani Solar",
     model: str = "ASB-M10-144-550",
-    manufacturer_key: str = "adani",
+    manufacturer_key: str | None = "adani",
+    model_family: str | None = "ASB-M10-144",
+    surrogate_id: str | None = None,
 ) -> ComponentInstance:
+    """Every field `_component_row` emits is settable.
+
+    The first version of this helper hardcoded `manufacturer_key` and
+    `model_family` and never took `surrogate_id`, which made the three fallback
+    branches of `ordering_key()` - `manufacturer_key or supplier`, and its two
+    siblings - **unreachable from the file written to cover them**. Section 1
+    below was verified structurally by a tripwire and section 2 only by example,
+    so the gap survived. The same accident as the old twin test giving its two
+    instances `page=1` and `page=2`, which is why they never actually tied.
+    """
     return ComponentInstance(
         supplier=supplier,
         model=model,
         component_category=ComponentCategory.PV_MODULES,
         nameplate=550.0,
         manufacturer_key=manufacturer_key,
-        model_family="ASB-M10-144",
+        model_family=model_family,
+        surrogate_id=surrogate_id,
         fields={"nameplate_power": fields},
     )
 
@@ -225,6 +239,70 @@ def test_arrival_order_of_two_components_cannot_reach_the_digest() -> None:
     b = _instance([_field()], supplier="Adani Green")
 
     assert _digest([a, b]) == _digest([b, a])
+
+
+@pytest.mark.parametrize(
+    ("field_name", "absent", "present"),
+    [
+        ("manufacturer_key", None, "Adani Solar"),
+        ("model_family", None, "ASB-M10-144-550"),
+        ("surrogate_id", None, ""),
+    ],
+)
+def test_a_fallback_operator_does_not_collapse_a_field_the_row_emits(
+    field_name: str, absent: str | None, present: str | None
+) -> None:
+    """The residual the first version of this fix left behind.
+
+    Three elements of `ordering_key()` are written `x or y`:
+
+        manufacturer_key or supplier
+        model_family     or model
+        surrogate_id     or ""
+
+    Each `or` collapses an *absent* value into another field's value, while
+    `_component_row` emits all three raw and unfolded. So adding the raw
+    `supplier`/`model` closed the two missing fields and left the three lossy
+    *operators* - 3 of 7 emitted identity fields still undiscriminated.
+
+    `manufacturer_key` is naturally reachable rather than contrived:
+    `identity_keys("sungrow", ...).manufacturer_key == "sungrow"`, so any
+    supplier already in normalised form makes the fallback and the value equal,
+    and a partially-normalised store - the state `ordering_key`'s docstring says
+    must be supported - ties.
+    """
+    a = _instance([_field()], **{field_name: absent})  # type: ignore[arg-type]
+    b = _instance([_field()], **{field_name: present})  # type: ignore[arg-type]
+
+    assert a != b
+    assert a.ordering_key() != b.ordering_key()
+    assert _digest([a, b]) == _digest([b, a])
+
+
+def test_every_component_row_key_is_discriminated_by_the_ordering_key() -> None:
+    """Section 2's tripwire, missing from the first version of this file.
+
+    Section 1 got one and section 2 did not, which is exactly why the three
+    fallback operators survived: a structural check catches a *class* of gap,
+    an example catches the instance you thought of. Adding a key to
+    `_component_row` now fails here.
+
+    `fields` is covered through `_stored_values()`, and `component_category`,
+    `nameplate` and `store_written_at` are read directly; the remaining five are
+    the identity strings the final canonical element covers.
+    """
+    emitted = set(_component_row(_instance([_field()]), policy=POLICY))
+    assert emitted == {
+        "supplier",
+        "model",
+        "component_category",
+        "nameplate",
+        "surrogate_id",
+        "manufacturer_key",
+        "model_family",
+        "fields",
+        "store_written_at",
+    }, "a key joined `_component_row`; decide whether `ordering_key()` must read it"
 
 
 def test_the_entity_split_still_governs_the_primary_order() -> None:

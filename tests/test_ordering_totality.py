@@ -141,16 +141,29 @@ def test_two_indistinguishable_instances_still_tie_and_that_is_correct() -> None
 
 def test_the_tiebreak_does_not_reopen_the_entity_split() -> None:
     """D-4 stage 1 exists so `Trina Solar` and `Trina Solar Co.,Ltd` sort
-    together. A tie-break that read the raw supplier or model - the obvious way
-    to make a key unique - would undo that silently, so it reads stored values
-    only. `test_identity.test_two_entity_spellings_sort_together` pins the same
-    invariant from the other side."""
+    together. A tie-break that *sorted on* the raw supplier or model - the
+    obvious way to make a key unique - would undo that silently.
 
-    def built(supplier: str) -> ComponentInstance:
-        keys = identity_keys(supplier, "TSM-700NEG21C.20", 700.0)
+    **The raw strings are now in the key, and this test is what makes that
+    safe.** It asserted complete key equality, which was too strong in the
+    precise way that was the defect: `projection._component_row` emits the raw
+    supplier, so two spellings tied on every element and rendered different
+    rows, and `sorted`'s stability handed the bytes to arrival order. The raw
+    strings are now the *last* two elements, so they separate only rows that
+    agree on everything the split governs.
+
+    What this checks is therefore position, not equality: the first six elements
+    still agree, and a different manufacturer cannot sort between the two
+    spellings. Both would fail if the raw strings moved earlier in the tuple.
+    `test_identity.test_two_entity_spellings_sort_together` pins the same
+    invariant from the other side.
+    """
+
+    def built(supplier: str, model: str = "TSM-700NEG21C.20") -> ComponentInstance:
+        keys = identity_keys(supplier, model, 700.0)
         return ComponentInstance(
             supplier=supplier,
-            model="TSM-700NEG21C.20",
+            model=model,
             component_category=ComponentCategory.PV_MODULES,
             nameplate=700.0,
             manufacturer_key=keys.manufacturer_key,
@@ -159,7 +172,15 @@ def test_the_tiebreak_does_not_reopen_the_entity_split() -> None:
             fields={"nameplate_power": [_value(700.0)]},
         )
 
-    assert built("Trina Solar").ordering_key() == built("Trina Solar Co.,Ltd").ordering_key()
+    short, long = built("Trina Solar"), built("Trina Solar Co.,Ltd")
+    assert short.ordering_key()[:6] == long.ordering_key()[:6]
+
+    other = built("Jinko Solar", "JKM610N-66HL4M-V")
+    ordered = sorted([other, long, short], key=ComponentInstance.ordering_key)
+    positions = [i for i, c in enumerate(ordered) if c.supplier.startswith("Trina")]
+    assert positions in ([0, 1], [1, 2]), (
+        f"the entity split reopened: {[c.supplier for c in ordered]}"
+    )
 
 
 def test_a_dict_valued_field_orders_by_content_not_insertion_order() -> None:

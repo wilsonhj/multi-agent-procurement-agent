@@ -91,12 +91,43 @@ def encode_value(value: object) -> object:
                 "rejects these at construction (`_reject_non_finite`); this is the "
                 "encoder refusing to be the hole in that."
             )
-        return value
+        # `+ 0.0` folds `-0.0`, and this is an *injectivity* fix rather than a
+        # cosmetic one. `-0.0 == 0.0` and the two hash alike, so they are one
+        # value by every test this codebase can make - and `json.dumps` writes
+        # them as two. One value with two encodings is the direction that breaks
+        # AC-7; one encoding for two genuinely different values would be the
+        # other, and there is none here.
+        #
+        # Folded in the encoder rather than only at the schema slots because
+        # `CanonicalField.value` is typed `object | None` and has no validator:
+        # the polymorphic slot is exactly where a stored `-0.0` arrives from a
+        # JSON or database round-trip, and there is no per-field place to catch
+        # it. The three schema folds upstream stay - they keep `-0.0` out of
+        # in-memory sort keys, which never reach this function.
+        return value + 0.0
 
     if isinstance(value, str):
         return value
 
     if isinstance(value, Decimal):
+        # The same guard the `float` branch carries, for the same reason and one
+        # type over. `Decimal` has its own NaN and infinities, and this branch had
+        # none - so the rule the float branch calls "the encoder refusing to be
+        # the hole" had a hole beside it: `Decimal("Infinity")` was encoded where
+        # `float("inf")` is refused, the same mathematical value answered two
+        # ways, and two `Decimal("NaN")` values that are *not equal to each other*
+        # shared one byte string.
+        #
+        # `is_finite()` rather than `math.isfinite()`: it is false for NaN, sNaN
+        # and both infinities without routing the value through a float, which
+        # would lose the printed precision the next comment depends on.
+        if not value.is_finite():
+            raise UnencodableValueError(
+                f"non-finite Decimal {value!r}: JSON cannot represent it, and NaN is not "
+                "equal to itself so no injective encoding of it exists. Same rule as the "
+                "float branch above - `CanonicalField.value` is typed `object | None`, so "
+                "this is the slot a Decimal NaN actually arrives through."
+            )
         # `str()`, never `normalize()`: `Decimal("22")` and `Decimal("22.0")` are
         # equal and hash alike, but `conflict_hitl._decimals` reads precision from
         # this exact text and it sets D-2's rounding floor - 0 places gives 0.5,

@@ -562,11 +562,31 @@ def test_the_ordering_uses_the_normalised_keys_when_they_are_filled() -> None:
 
 
 def test_two_entity_spellings_sort_together() -> None:
-    def _built(supplier: str) -> ComponentInstance:
-        keys = identity_keys(supplier, "TSM-700NEG21C.20", 700.0)
+    """D-4 stage 1 exists so `Trina Solar` and `Trina Solar Co.,Ltd` end up
+    adjacent in the workbook rather than pages apart.
+
+    **The assertion is adjacency, not key equality - and the change is a
+    strengthening, not a re-baseline.** This read
+    `_built(a).ordering_key() == _built(b).ordering_key()`, which asserted the
+    two keys were *identical*. That was true, and it was the defect:
+    `ordering_key()` deliberately omits the raw supplier while
+    `services.output.projection._component_row` emits it, so the two spellings
+    tied on every element and still rendered different rows - and `sorted` is
+    stable, so their byte order came from arrival order. A-6, in the case D-4
+    exists for.
+
+    The raw strings are now the key's final tie-break, so the keys differ. What
+    the entity split actually promises is untouched, because elements 1-5 decide
+    which rows are neighbours: a third manufacturer cannot come between them.
+    That is what this now checks, and it would have failed under a key that
+    sorted on the raw supplier - the change this test exists to prevent.
+    """
+
+    def _built(supplier: str, model: str = "TSM-700NEG21C.20") -> ComponentInstance:
+        keys = identity_keys(supplier, model, 700.0)
         return ComponentInstance(
             supplier=supplier,
-            model="TSM-700NEG21C.20",
+            model=model,
             component_category=ComponentCategory.PV_MODULES,
             nameplate=700.0,
             manufacturer_key=keys.manufacturer_key,
@@ -574,7 +594,19 @@ def test_two_entity_spellings_sort_together() -> None:
             surrogate_id=keys.surrogate_id,
         )
 
-    assert _built("Trina Solar").ordering_key() == _built("Trina Solar Co.,Ltd").ordering_key()
+    short, long = _built("Trina Solar"), _built("Trina Solar Co.,Ltd")
+
+    # one entity: everything the split governs agrees, and only the raw
+    # tie-break separates them
+    assert short.ordering_key()[:6] == long.ordering_key()[:6]
+    assert short.ordering_key() != long.ordering_key()
+
+    # and nothing from another manufacturer can land between them
+    other = _built("Jinko Solar", "JKM610N-66HL4M-V")
+    ordered = sorted([other, long, short], key=ComponentInstance.ordering_key)
+    suppliers = [c.supplier for c in ordered]
+    trina_positions = [i for i, s in enumerate(suppliers) if s.startswith("Trina")]
+    assert trina_positions in ([0, 1], [1, 2]), f"the entity split reopened: {suppliers}"
 
 
 def test_an_unnormalised_instance_still_has_a_total_order() -> None:

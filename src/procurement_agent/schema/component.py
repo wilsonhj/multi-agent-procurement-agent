@@ -211,7 +211,7 @@ class ComponentInstance(BaseModel):
             ensure_ascii=False,
         )
 
-    def ordering_key(self) -> tuple[str, str, str, float, str, str]:
+    def ordering_key(self) -> tuple[str, str, str, float, str, str, str, str]:
         """Canonical sort position for deterministic workbook regeneration.
 
         AC-7 requires byte-identical output from an unchanged store, which needs a
@@ -234,11 +234,25 @@ class ComponentInstance(BaseModel):
         the scenario it was written for**, and the test covering it happened to
         give both sides a surrogate.
 
-        So `_stored_values()` is the final element, and the order is now total *up
-        to equality*: two instances that still tie agree on category, identity,
-        nameplate, surrogate and every stored value, so they produce identical
-        rows and their relative order cannot be observed in the output at all.
-        That is the strongest guarantee available and the only one AC-7 needs.
+        So `_stored_values()` joined the key, and the order became total *up to
+        equality* over everything the key read.
+
+        **That was not the same as total over the row it orders, and the
+        difference was a live A-6 defect.** `services/output/projection.py`'s
+        `_component_row` emits the raw `supplier` and `model` that the paragraph
+        below deliberately keeps out of the sort, so two spellings folded onto
+        one `manufacturer_key` tied on all six elements and rendered different
+        rows - and `sorted`'s stability handed their byte order to arrival order.
+        The cited Adani pair is exactly such a tie whenever the matcher has not
+        run, which is the state a freshly ingested store is in. The claim that
+        stood here - that two tying instances "produce identical rows" - was
+        false for the case this docstring is written around.
+
+        The raw strings are therefore the last two elements. The order is now
+        total up to equality *over the emitted row*: two instances that still tie
+        agree on every field `_component_row` writes, so their relative order
+        cannot be observed in the output at all. That is the strongest guarantee
+        available and the only one AC-7 needs.
 
         D-4 stage 5 sorts on the *normalised* keys, not the raw strings: sorting on
         `supplier` puts `Trina Solar` and `Trina Solar Co.,Ltd` far apart, so the
@@ -260,6 +274,27 @@ class ComponentInstance(BaseModel):
             self.nameplate if self.nameplate is not None else float("-inf"),
             self.surrogate_id or "",
             self._stored_values(),
+            # The raw strings, **last**, and only as a final tie-break.
+            #
+            # The paragraph above is right that sorting *on* them would undo the
+            # entity split - but excluding them entirely made a different claim
+            # false. `services/output/projection.py:_component_row` emits raw
+            # `supplier` and `model`, so two spellings that D-4 stage 1 folds
+            # onto one `manufacturer_key` tied on every element here and still
+            # rendered different rows. `sorted` is stable, so the tie handed
+            # their byte order to arrival order: A-6, in the exact Adani case
+            # this docstring is written around and the `surrogate_id is None`
+            # state it calls the dangerous one.
+            #
+            # Position is what makes this safe. Everything the entity split
+            # exists for is decided by elements 1-5; two spellings of one
+            # manufacturer still sort adjacently, and these two only ever
+            # separate rows that agree on category, identity, nameplate,
+            # surrogate and every stored value. At that point the rows differ in
+            # the output, so leaving them unordered is the defect and ordering
+            # them cannot merge anything.
+            self.supplier,
+            self.model,
         )
 
     def unresolved_conflicts(self) -> list[str]:

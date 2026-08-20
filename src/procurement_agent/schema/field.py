@@ -585,6 +585,29 @@ class CanonicalField(BaseModel):
     conflict_status: ConflictStatus = ConflictStatus.NONE
     resolution: Resolution | None = None
 
+    @field_validator("confidence")
+    @classmethod
+    def _fold_negative_zero(cls, value: float) -> float:
+        """`ge=0.0` does not keep `-0.0` out, because `-0.0 >= 0.0` is True.
+
+        The repo folds `-0.0` in three other places - `ConditionDimensions`,
+        `DeclaredBand` and `ComponentInstance.nameplate` - and this slot was
+        missed. It is the one that matters most, because `confidence` reaches the
+        C6 projection *unencoded*: `_field_row` emits it as a bare float, so
+        `json.dumps` writes `-0.0` and the digest moves.
+
+        `-0.0 == 0.0` and the two hash alike, so **every equality this codebase
+        has calls the two stores identical** while their SHA-256s differ - A-6
+        stated literally, and invisible to any test written as an assertion about
+        values. Not producible by `confidence.fuse` today, which sums
+        non-negative terms; it arrives through any boundary that deserialises a
+        stored `-0.0`, which is every JSON or database round-trip.
+
+        No finiteness check here: NaN fails `ge=0.0` and both infinities fail one
+        of the two bounds, so the bounds already close that door.
+        """
+        return value + 0.0
+
     def _assert_resolution_matches_status(self) -> None:
         """The FR-HITL-06 state invariant, as a plain method.
 
@@ -816,6 +839,19 @@ class ConflictCandidate(BaseModel):
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("confidence")
+    @classmethod
+    def _fold_negative_zero(cls, value: float) -> float:
+        """The same fold `CanonicalField.confidence` carries, for the same reason.
+
+        Applied here as well because the defect is the *type*, not the file: a
+        candidate's confidence is one of the elements
+        `conflict_hitl._ordering_key` sorts on, so an unfolded `-0.0` moves a
+        candidate's position in a hashed array rather than only its rendered
+        text.
+        """
+        return value + 0.0
 
 
 class ConflictQueueEntry(BaseModel):

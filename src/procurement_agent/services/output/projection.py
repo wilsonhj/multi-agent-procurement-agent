@@ -486,6 +486,26 @@ def _value_sort_key(field: CanonicalField) -> str:
             field.confidence,
             field.condition.note,
             sorted(field.condition.derived),
+            # `conflict_status` and `resolution` close the gap this function's
+            # own promise above depends on. `_ordering_key`'s sequence was
+            # written for `ConflictCandidate`, which has neither - so restating
+            # that sequence here made the key a function of a *different* type
+            # from the row it orders. The row emits both, and two values
+            # differing only in them tied: `sorted` is stable, so the tie handed
+            # byte order to arrival order, and the rows are not even
+            # interchangeable - `flags_for` reads the status, so they render
+            # different `flags` too.
+            #
+            # `flags` itself needs no element: it is a pure function of `value`,
+            # `confidence`, `conflict_status` and `source_tier` under a fixed
+            # policy, and the key now reads all four.
+            #
+            # The invariant, kept honest by
+            # `test_every_field_row_key_is_discriminated_by_the_sort_key`: every
+            # key `_field_row` emits is either read here or derived from one that
+            # is.
+            encode_value(field.conflict_status),
+            encode_value(field.resolution),
         ]
     )
 

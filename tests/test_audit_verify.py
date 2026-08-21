@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
+import types
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -317,3 +319,77 @@ def _rehash(row: StoredEvent) -> StoredEvent:
         payload=json.loads(row.payload_canonical),
     )
     return dataclasses.replace(row, hash=digest_of(preimage))
+
+
+# --- the CLI's "verified nothing" outputs ---------------------------------------
+
+
+class _EmptyCursor:
+    """Every query returns no rows - an empty log, or a stream that is not there."""
+
+    def fetchone(self) -> None:
+        return None
+
+
+class _EmptyConn:
+    def execute(self, query: object, params: object = None) -> _EmptyCursor:
+        return _EmptyCursor()
+
+    def __enter__(self) -> _EmptyConn:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+@pytest.fixture
+def _empty_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reachable server holding nothing, injected as `psycopg`.
+
+    `verify.main` imports psycopg inside the function so the module stays
+    importable without the `store` extra, which is also what makes this
+    substitutable without a database.
+    """
+    fake = types.ModuleType("psycopg")
+    fake.connect = lambda *a, **k: _EmptyConn()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg", fake)
+
+
+def test_a_named_stream_that_is_not_there_is_a_failure_not_an_ok(
+    _empty_server: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The half `test_a_stream_that_cannot_exist_is_refused` does not cover.
+
+    That test's docstring names the hazard correctly - "what an operator would
+    see after mistyping a document id" - but `document_id_for_stream` only
+    validates the `doc:` **prefix**. Document ids are UUIDs, so the realistic
+    typo is *inside* the id, which passes the prefix check, selects zero rows,
+    and produced `OK (0 events)` with exit 0: the one output the comment above
+    that check says an operator must never get.
+
+    A cron pinned to a single document would report success forever.
+    """
+    code = verify_main(
+        ["--dsn", "postgresql:///unused", "--stream", "doc:11111111-1111-4111-8111-111111111112"]
+    )
+    out = capsys.readouterr().out
+    assert "OK" not in out, out
+    assert code != 0
+
+
+def test_an_empty_log_says_so_rather_than_printing_nothing(
+    _empty_server: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no `--stream` and nothing discovered, `main` printed **nothing at
+    all** and exited 0 - indistinguishable from a clean pass over a real log.
+
+    Exit 0 stays: an empty log is a legitimate state for a fresh deployment, and
+    failing CI on it would be wrong. What must change is the silence, because
+    "I verified nothing" and "I verified everything and it was fine" had the
+    same output.
+    """
+    code = verify_main(["--dsn", "postgresql:///unused"])
+    out = capsys.readouterr().out
+    assert out.strip(), "printed nothing at all"
+    assert "no audit streams" in out.lower()
+    assert code == 0

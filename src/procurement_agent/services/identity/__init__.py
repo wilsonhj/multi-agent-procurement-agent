@@ -50,6 +50,7 @@ a green suite:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from enum import StrEnum
@@ -57,6 +58,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...schema import ConflictCandidate, SourceRef, SourceTier
+from ...schema.encoding import encode_value
 from ..conflict_hitl import tolerance_for, values_conflict
 from ..conflict_hitl.tolerance import DEFAULT_TOLERANCE, FieldTolerance
 
@@ -660,10 +662,50 @@ def identity_keys(supplier: str, model: str, nameplate: float | None) -> Identit
     one product — which is the entity split D-4 names as the regression test. A
     hash of the raw strings would reintroduce it in the tie-break after Stage 1
     had removed it everywhere else.
+
+    **`variant_tokens` is in the hash, and leaving it out was an over-merge.**
+    `decompose` is a *two-part* decomposition — `family` is "tokens up to and
+    including the masked bin", and everything after the bin is `variant_tokens`.
+    Hashing `family` alone made the equivalence class *every model in the family
+    at that nameplate*, not one product: `TSM-700NEG21C.20` (n-type) and
+    `TSM-700DE21` (p-type) shared an id, as did `SIL-380HC` and `SIL-380HC+` —
+    the pair `score()`'s own docstring cites as "genuinely different products,
+    Isc 11.36 vs 10.28" — and `SPR-MAX6-440` and `-BLK`, whose `NEVER_STRIP` row
+    is the one hand-written rule in `SUFFIX_RULES` and was inert here.
+
+    `score()`, in this same module, returns `variant_mismatch` for every one of
+    those pairs. The module disagreed with itself, and the half a downstream
+    consumer keys on was the wrong half — `surrogate_id` exists precisely to
+    disambiguate the 36 duplicated `(Manufacturer, Model Number)` pairs.
+
+    The failure got *worse with better input*, which is why it survived review:
+    with no nameplate, no bin token matches, the whole model string stays in
+    `family`, and the two are correctly distinct. Supplying the true nameplate
+    masked the bin, moved the distinguishing token into `variant_tokens`, and
+    fused them. `test_different_bins_get_different_ids` passed throughout,
+    because it only ever varied the bin — which *is* in the hash.
+
+    Rendered through the canonical encoder rather than `repr()` and a `\\x1f`
+    join. `repr(nameplate)` put `380` and `380.0` in different classes, which is
+    A-50's `repr()`-in-a-key class in the under-merge direction; casting to
+    `float` first fixes it. The nesting matters too: `variant_tokens` goes in as
+    its own list, so a token cannot migrate across the family boundary and
+    produce a colliding flat sequence.
     """
     mfr = manufacturer_key(supplier)
-    family = decompose(model, nameplate).family
+    parts = decompose(model, nameplate)
     digest = hashlib.sha256(
-        "\x1f".join((mfr, family, repr(nameplate))).encode("utf-8")
+        json.dumps(
+            encode_value(
+                [
+                    mfr,
+                    parts.family,
+                    list(parts.variant_tokens),
+                    float(nameplate) if nameplate is not None else None,
+                ]
+            ),
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
     ).hexdigest()[:16]
-    return IdentityKeys(manufacturer_key=mfr, model_family=family, surrogate_id=digest)
+    return IdentityKeys(manufacturer_key=mfr, model_family=parts.family, surrogate_id=digest)

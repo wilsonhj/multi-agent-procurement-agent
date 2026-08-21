@@ -404,9 +404,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         # sql/07: the verifier runs as an operator identity that sets this,
         # "exactly as the confidentiality model intends".
         conn.execute("SET app.allow_restricted = 'true'")
-        streams = args.streams or read_streams(conn)
+        requested = list(args.streams or ())
+        streams = requested or read_streams(conn)
+
+        # An empty result is not a pass, and both ways of reaching one used to
+        # look like one.
+        #
+        # The prefix check above says a stream that cannot exist "would otherwise
+        # return zero rows and report OK, which is the one output an operator
+        # must never get from a typo" - but `document_id_for_stream` validates
+        # only the `doc:` prefix, and document ids are UUIDs. The realistic typo
+        # is *inside* the id, which passes the prefix check and lands in exactly
+        # the state the comment forbids. A cron pinned to one document reported
+        # success forever.
+        if not streams:
+            # Nothing discovered, and no stream was named. Legitimate on a fresh
+            # deployment, so this is not a failure - but printing nothing made
+            # "I verified nothing" and "I verified everything and it was fine"
+            # the same output, and only one of those is a guarantee.
+            print("no audit streams found; nothing was verified.")
+            return 0
+
         for stream in streams:
             report = verify_stream(conn, stream)
+            if stream in requested and report.events == 0:
+                # Asked for by name and absent. Unlike the discovery case there
+                # is a caller expecting a guarantee about this specific stream,
+                # and it cannot be given - whether the cause is a typo or a
+                # missing chain, silence is the wrong answer.
+                print(f"{stream}: NOT FOUND (0 events)")
+                failed += 1
+                continue
             status = "OK" if report.ok else "FAILED"
             print(f"{report.stream}: {status} ({report.events} events)")
             for defect in report.defects:

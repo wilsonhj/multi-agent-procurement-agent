@@ -543,6 +543,76 @@ def test_different_bins_get_different_ids() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("supplier", "left", "right", "nameplate", "why"),
+    [
+        ("Trina Solar", "TSM-700NEG21C.20", "TSM-700DE21", 700.0, "n-type Vertex vs p-type DE21"),
+        ("Silfab", "SIL-380HC", "SIL-380HC+", 380.0, "score()'s own case: Isc 11.36 vs 10.28"),
+        ("Maxeon", "SPR-MAX6-440", "SPR-MAX6-440-BLK", 440.0, "the ('maxeon','blk') rule"),
+        ("Jinko Solar", "JKM605N-66HL4M-BDV", "JKM605N-78HL4M-TV", 605.0, "66-cell vs 78-cell"),
+    ],
+)
+def test_two_products_in_one_family_at_one_bin_get_different_ids(
+    supplier: str, left: str, right: str, nameplate: float, why: str
+) -> None:
+    """`decompose` is a **two-part** decomposition and `identity_keys` read one part.
+
+    `family` is "tokens up to and including the masked bin"; everything after the
+    bin is `variant_tokens`. Hashing `family` alone made the equivalence class
+    *every model in the family at that nameplate*, against a docstring promising
+    "one id for one product".
+
+    Every pair here is one the module's own measurements call distinct - `score()`
+    returns `variant_mismatch` for all four, so the same module disagreed with
+    itself. `SIL-380HC` vs `SIL-380HC+` is the pair `score()`'s docstring names
+    verbatim; `-BLK` is the single hand-written `SUFFIX_RULES` entry, which was
+    inert on this path.
+
+    `test_different_bins_get_different_ids` above passed throughout, because
+    `nameplate` is in the hash - it only ever varied the bin.
+    """
+    a = identity_keys(supplier, left, nameplate)
+    b = identity_keys(supplier, right, nameplate)
+    assert a.surrogate_id != b.surrogate_id, f"{left} and {right} fused ({why})"
+
+
+def test_supplying_a_nameplate_does_not_collapse_two_distinct_products() -> None:
+    """The information inversion, which is what made this more than an oversight:
+    **more evidence produced a worse key.** Without a nameplate no bin token
+    matches, so the whole model string stays in `family` and the two are
+    correctly distinct. Supplying the true nameplate masked the bin, moved the
+    distinguishing token into `variant_tokens`, and fused them."""
+    without = (
+        identity_keys("Silfab", "SIL-380HC", None).surrogate_id
+        != identity_keys("Silfab", "SIL-380HC+", None).surrogate_id
+    )
+    with_np = (
+        identity_keys("Silfab", "SIL-380HC", 380.0).surrogate_id
+        != identity_keys("Silfab", "SIL-380HC+", 380.0).surrogate_id
+    )
+    assert without, "the no-nameplate case was never broken"
+    assert with_np, "supplying the nameplate collapsed two products that were distinct without it"
+
+
+def test_the_entity_split_survives_the_variant_tokens() -> None:
+    """The regression `identity_keys`' docstring names: hashing the *normalised*
+    manufacturer and family is what keeps `Trina Solar` and `Trina Solar Co.,Ltd`
+    on one id. Adding variant tokens must not reintroduce the raw strings."""
+    assert (
+        identity_keys("Trina Solar", "TSM-700NEG21C.20", 700.0).surrogate_id
+        == identity_keys("Trina Solar Co.,Ltd", "TSM-700NEG21C.20", 700.0).surrogate_id
+    )
+
+
+def test_an_int_and_a_float_nameplate_are_one_product() -> None:
+    """`repr(nameplate)` put `380` and `380.0` in different equivalence classes -
+    the same `repr()`-in-a-key class as A-50, in the under-merge direction."""
+    assert (
+        identity_keys("Silfab", "SIL-380HC", 380).surrogate_id
+        == identity_keys("Silfab", "SIL-380HC", 380.0).surrogate_id
+    )
+
+
 def test_the_ordering_uses_the_normalised_keys_when_they_are_filled() -> None:
     """The composition this rewrite exists to make: identity computes the keys,
     the schema declares the slots, and there is exactly one total order rather

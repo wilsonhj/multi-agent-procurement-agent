@@ -520,16 +520,33 @@ def values_conflict(
             "FR-WEB-01 search rather than raising a conflict",
         )
 
-    if (
-        a.unit is not None
-        and b.unit is not None
-        and _normalise_text(a.unit) != _normalise_text(b.unit)
-    ):
+    # `None` is compared as its own value rather than skipping the check. The
+    # guard read `a.unit is not None and b.unit is not None and ...`, which put
+    # **the permissive branch on the suppressing side**: one missing unit skipped
+    # the gate entirely and the pair fell through to a numeric comparison in
+    # whatever unit each side happened to be in. Measured: `0.35` against
+    # `0.35 USD/kW` returned "no conflict" on a 1000x price error, on a Tier A
+    # field. The old form also produced an inversion - `Wp` vs `W` raised a
+    # conflict while `None` vs `kW` did not - and tasks.md E.3a makes suppression
+    # a spec violation where noise is only a cost.
+    #
+    # Two absent units still compare equal, which is load-bearing rather than
+    # incidental: every text-valued contract field carries `unit=None` on both
+    # sides, and `a.unit != b.unit` alone would turn each of them into a unit
+    # conflict.
+    unit_a = _normalise_text(a.unit) if a.unit is not None else None
+    unit_b = _normalise_text(b.unit) if b.unit is not None else None
+    if unit_a != unit_b:
+        stated = f"units differ ({a.unit!r} vs {b.unit!r})"
+        missing = (
+            f"one side has no unit ({a.unit!r} vs {b.unit!r}), so the two numbers name "
+            "quantities that cannot be shown to be in the same scale"
+        )
         return ConflictVerdict(
             conflicts=True,
             conflict_class=ConflictClass.UNIT_NORMALIZATION,
-            reason=f"units differ ({a.unit!r} vs {b.unit!r}); a unit mismatch is never "
-            "resolved by tolerance (FR-ING-08)",
+            reason=(stated if unit_a is not None and unit_b is not None else missing)
+            + "; a unit mismatch is never resolved by tolerance (FR-ING-08)",
         )
 
     number_a, number_b = _as_number(a.value), _as_number(b.value)

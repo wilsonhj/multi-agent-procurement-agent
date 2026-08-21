@@ -81,6 +81,38 @@ def test_a_unit_mismatch_is_never_resolved_by_tolerance() -> None:
     assert verdict.conflict_class is ConflictClass.UNIT_NORMALIZATION
 
 
+def test_one_missing_unit_does_not_suppress_the_disagreement() -> None:
+    """The gate read `a.unit is not None and b.unit is not None and they differ`,
+    so **the permissive branch sat on the suppressing side**.
+
+    A dropped unit is representable — `ConflictCandidate.unit` is `str | None` —
+    and with one side missing, the whole check was skipped and the pair fell
+    through to a numeric comparison in whatever unit each side happened to be in.
+    `0.35` against `0.35 USD/kW` came back "no conflict" on a 1000x price error,
+    on a Tier A field, with no queue entry and the compose gate never firing.
+
+    Note the inversion the old form produced: `Wp` vs `W` was *raised* (a false
+    positive) while `None` vs `kW` was *silently accepted*. The module's stated
+    priority is the other way round — suppression is a spec violation under
+    tasks.md E.3a, noise is not.
+    """
+    verdict = values_conflict(_c(0.35, unit=None), _c(0.35, unit="USD/kW"), tolerance=NAMEPLATE)
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.UNIT_NORMALIZATION
+    assert "no unit" in verdict.reason
+
+
+def test_two_missing_units_are_still_one_unitless_quantity() -> None:
+    """The other side of the same change, and the reason it cannot simply
+    compare `a.unit != b.unit`: every text-valued contract field carries
+    `unit=None` on both sides, and those must keep comparing normally rather
+    than becoming a unit conflict apiece."""
+    verdict = values_conflict(
+        _c("China", unit=None), _c("China", unit=None), tolerance=DEFAULT_TOLERANCE
+    )
+    assert not verdict.conflicts
+
+
 def test_an_edition_difference_is_temporal_not_a_string_mismatch() -> None:
     """`IEC 61215:2021` vs `IEC 61215:2016` is the same standard at two editions.
     Dropping the year would equate them — a compliance claim nobody made."""

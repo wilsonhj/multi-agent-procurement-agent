@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from procurement_agent.schema import CanonicalField, Condition, SourceRef, SourceTier
 from procurement_agent.services.confidence import (
     DEFAULT_TIER,
     FIELD_TIERS,
@@ -296,3 +297,41 @@ def test_tier_a_ignores_the_threshold_entirely() -> None:
     everything else and still cannot accept a Tier A field."""
     assert requires_review("certifications", 1.0, threshold=0.0)
     assert not requires_review("nameplate_power", 1.0, threshold=0.0)
+
+
+def test_the_tier_gap_note_matches_what_the_code_actually_does() -> None:
+    """The note above is prose, and prose rots. This pins the *fact* it asserts.
+
+    `test_the_gap_between_the_gate_and_the_workbook_is_named` checks that the
+    note **exists**, and that is all it can check - so when the note's claim
+    ("`flags_for` has no live caller") became false, the suite stayed green and a
+    passing test protected a false statement. That is the failure mode this file
+    keeps rediscovering: a test that pins prose pins the prose, not the fact.
+
+    Two halves, both mechanical:
+
+    1. The caller exists. If someone removes it the note is wrong again, in the
+       other direction, and this says so.
+    2. The consequence is real - a Tier A field that `requires_review` refuses at
+       *any* score still carries no flag, and that empty list reaches the hashed
+       projection.
+    """
+    from procurement_agent.services.output import projection
+
+    assert "flags_for(" in inspect.getsource(projection._field_row), (
+        "the projection no longer calls flags_for; the note above needs rewriting"
+    )
+
+    field = CanonicalField(
+        value=["UL 61730"],
+        unit=None,
+        condition=Condition(),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="d"),
+        confidence=0.99,
+    )
+    assert tier_for("ul_listing") is CriticalityTier.A
+    assert requires_review("ul_listing", 0.99, threshold=0.8)
+    assert flags_for(field, confidence_threshold=0.8) == set(), (
+        "if this is no longer empty the gap has been closed and the note is stale"
+    )

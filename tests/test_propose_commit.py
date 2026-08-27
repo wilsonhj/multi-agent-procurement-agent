@@ -6,7 +6,9 @@ changelog, because each one passed a green suite.
 """
 
 import inspect
+import json
 from collections.abc import Sequence
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -18,6 +20,7 @@ from procurement_agent.schema import (
     MeasurementBasis,
     SourceRef,
     SourceTier,
+    encode_value,
 )
 from procurement_agent.services import claims as claims_module
 from procurement_agent.services.claims import (
@@ -276,6 +279,158 @@ def test_two_dicts_with_the_same_entries_are_one_assertion() -> None:
     # Same key, so the mismatch would have aborted the whole field rather than
     # merely mis-reporting it.
     assert len(canonical_claims([_claim(left, page=2), _claim(right, page=7)])) == 2
+
+
+# --- one number, spelled two ways ----------------------------------------------
+#
+# `_render`'s docstring promises "a textual rendering of a claim value that
+# respects equality" and delivered it only for container *order*. A number's
+# spelling was still `repr`, so `650` from a table cell and `650.0` from a unit
+# normaliser were two answers.
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "why"),
+    [
+        (650, 650.0, "int from a table cell against a float from unit normalisation"),
+        (650.0, 650, "and the same pair the other way round"),
+        (0.0, -0.0, "the fold ConditionDimensions._reject_non_finite already does one class over"),
+        (10**20, float(10**20), "an integral float wide enough that repr goes exponential"),
+    ],
+)
+def test_one_number_spelled_two_ways_is_one_assertion(
+    left: object, right: object, why: str
+) -> None:
+    """Review: `_render` fell through to `repr` for a number, so `650` and `650.0`
+    - `==`, and the same reading - were a disagreement.
+
+    Across documents that is a spurious OPEN conflict, sent to a human who finds
+    two identical values. Within one `claim_key` it is the hard failure the
+    docstring says the function exists to prevent for the dict case it did
+    handle: `ProposalError: two different values share the claim key ...
+    ('650','W') vs ('650.0','W')`, and the whole field is lost.
+    """
+    assert left == right, why
+    same_key = canonical_claims([_claim(left, page=2), _claim(right, page=7)])
+    assert len(project(same_key)) == 1
+    across_documents = project([_claim(left, doc="contract"), _claim(right, doc="datasheet")])
+    assert across_documents[0].conflict_status is ConflictStatus.NONE
+
+
+def test_a_number_nested_in_a_container_is_folded_too() -> None:
+    """The fold has to reach a dict value and a dict key, because that is where
+    the contract's numbers actually sit: `rating_mva_by_cooling` is a dict of
+    ratings, and a unit normaliser rewrites the values inside it, not the dict.
+
+    A dict *key* too: `{1: 'a'}` and `{1.0: 'a'}` are one dict by Python's own
+    reckoning - the two keys hash alike, so no dict can hold both.
+    """
+    by_value = project(
+        [
+            _claim({"onan": 100, "onaf": 125}, field="rating_mva_by_cooling", doc="d-1"),
+            _claim({"onaf": 125.0, "onan": 100.0}, field="rating_mva_by_cooling", doc="d-2"),
+        ]
+    )
+    assert by_value[0].conflict_status is ConflictStatus.NONE
+    by_key = project(
+        [
+            _claim({1: "a"}, field="harmonic_spectrum", doc="d-1"),
+            _claim({1.0: "a"}, field="harmonic_spectrum", doc="d-2"),
+        ]
+    )
+    assert by_key[0].conflict_status is ConflictStatus.NONE
+
+
+def test_a_set_and_a_frozenset_with_the_same_members_are_one_assertion() -> None:
+    """`{'a'} == frozenset({'a'})` - unlike a list against a tuple, set equality
+    ignores which spelling holds the members, so `certifications` read once into
+    a set and once into a frozenset is one answer.
+
+    Which spelling is *stored* is the same constraint the numeric fold carries,
+    with a sharper edge: `encode_value` accepts a frozenset and refuses a bare
+    set outright, so a fold inside `_identity` would collapse the two records and
+    leave arrival order deciding whether the artifact encodes at all. Asserted
+    on `type` and over both orders, because `==` cannot see the difference.
+    """
+    pair = [
+        _claim({"UL 61730"}, field="certifications"),
+        _claim(frozenset({"UL 61730"}), field="certifications"),
+    ]
+    assert len(canonical_claims(pair)) == 2, "two records, one assertion"
+    for ordering in (pair, list(reversed(pair))):
+        projected = project(ordering)
+        assert len(projected) == 1
+        assert projected[0].conflict_status is ConflictStatus.NONE
+        assert type(projected[0].value) is frozenset
+        assert projected[0].value == frozenset({"UL 61730"})
+
+
+def test_the_fold_stops_where_python_equality_stops() -> None:
+    """The three places the rule deliberately parts company with `==`, each with
+    a reason this repo already acts on somewhere else.
+
+    * **A bool is not a number here.** `True == 1`, and `severity._numeric_value`
+      excludes `bool` for exactly this reason - a stray boolean must not read as
+      a nameplate of 1. `encode_value` tests `bool` before `int` for the same
+      reason one type layer down.
+    * **A `Decimal`'s printed precision is data.** `Decimal("22.00") ==
+      Decimal("22")` and the two hash alike, but `encoding.py` encodes them by
+      `str()` and never `normalize()` because `conflict_hitl._decimals` reads
+      D-2's rounding floor off that text: 0 places gives 0.5, 1 place gives
+      0.05. Folding them would pick one precision silently and move the floor.
+    * **A list is not a tuple**, and Python agrees - so no fold is needed, and
+      the container type tag that distinguishes them must survive one that is.
+    """
+    cases: list[tuple[object, object, bool]] = [
+        (True, 1, True),
+        (Decimal("22.00"), Decimal("22"), True),
+        ([1], (1,), False),
+    ]
+    for left, right, python_calls_them_equal in cases:
+        assert (left == right) is python_calls_them_equal, (
+            f"{left!r} vs {right!r}: the premise of this row has changed"
+        )
+        pair = [_claim(left, doc="d-1"), _claim(right, doc="d-2")]
+        assert project(pair)[0].conflict_status is ConflictStatus.OPEN, (
+            f"{left!r} and {right!r} were folded into one assertion"
+        )
+        assert len(canonical_claims(pair)) == 2
+
+
+def test_folding_a_number_does_not_make_the_stored_spelling_order_dependent() -> None:
+    """The constraint the fold has to respect: `_render` also feeds `_identity`,
+    which is the dedup key *and* the total sort order.
+
+    Fold inside `_identity` and the two claims collapse to one row, leaving the
+    survivor to `{...}.values()`'s last-wins - so `project` stores `650` or
+    `650.0` depending on which worker finished first. That is not cosmetic:
+    `encode_value` renders them `650` and `650.0`, `ComponentInstance
+    ._stored_values` hashes that text into `ordering_key`, and the workbook's row
+    order - and its AC-7 hash - would become a function of arrival order. FR-OUT-06
+    is exactly the property that forbids it.
+
+    So the fold belongs to `_asserted` ("what does this claim say"), and
+    `_identity` ("which claim record is this") keeps every spelling apart. Both
+    claims survive, and `_preferred` breaks the tie by `_identity`, which is
+    total.
+
+    Two claims identical in **every** field but the spelling, deliberately: vary
+    the page as well and `_identity` differs whether or not it folds, the two
+    rows survive either way, and the mutation this test exists for goes
+    undetected. It did, on the first version of this test.
+
+    Compared as encoded text and never as values, for the same reason:
+    `CanonicalField.value` is `object | None`, so pydantic's `==` on two
+    otherwise-identical fields asks `650 == 650.0` and answers True. The
+    artifact is the JSON, and the JSON is `650` against `650.0`.
+    """
+    pair = [_claim(650), _claim(650.0)]
+    assert len(canonical_claims(pair)) == 2, "two records, one assertion"
+    stored = [json.dumps(encode_value(field.value)) for field in project(pair)]
+    assert stored == [
+        json.dumps(encode_value(field.value)) for field in project(list(reversed(pair)))
+    ]
+    assert stored == ["650"]
 
 
 def test_a_self_referential_value_does_not_blow_the_stack() -> None:

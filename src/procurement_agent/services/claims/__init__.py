@@ -144,34 +144,89 @@ class StoredValueLossError(ProposalError):
     """
 
 
-def _render(value: object, _containers: tuple[int, ...] = ()) -> str:
-    """A textual rendering of a claim value that respects equality.
+def _render(value: object, _containers: tuple[int, ...] = (), *, fold_equal: bool = False) -> str:
+    """A textual rendering of a claim value. Two modes, because two questions.
 
-    `repr` does not, and that is not a nicety: a dict reprs in *insertion* order,
-    so two extractions that read one cooling table's rows in different orders
-    give values that are `==` and reprs that are not. The contract has three
-    dict-valued parameters - `rating_mva_by_cooling`, `harmonic_spectrum`,
-    `ercot_compliance_items` - and under `repr` such a pair counted as a
-    disagreement: an OPEN conflict between two identical values, or a
-    `ProposalError` losing the whole field when the two shared a claim key.
+    `repr` answers neither. A dict reprs in *insertion* order, so two extractions
+    that read one cooling table's rows in different orders give values that are
+    `==` and reprs that are not. The contract has three dict-valued parameters -
+    `rating_mva_by_cooling`, `harmonic_spectrum`, `ercot_compliance_items` - and
+    under `repr` such a pair counted as a disagreement: an OPEN conflict between
+    two identical values, or a `ProposalError` losing the whole field when the
+    two shared a claim key. Canonicalising container order fixes that, and is
+    the whole of the default mode.
 
-    Containers are walked rather than repr'd whole, so the canonicalisation
-    reaches a nested dict. The cycle guard is not tidiness: `repr` already
-    handles a self-referential value, and a hand-rolled walk that did not would
-    trade a false conflict for a `RecursionError`.
+    **`fold_equal=True` additionally folds one number's spellings together.**
+    That is the mode `_asserted` wants, because "what does this claim say" is a
+    question about the number and not about how it was typed. One extractor
+    emits `650` from a table cell, another `650.0` after unit normalisation, and
+    under `repr` those were two answers - the same OPEN-conflict-or-lost-field
+    pair of costs as the paragraph above, on a plain scalar rather than a dict.
+    `ConditionDimensions._reject_non_finite` already folds `-0.0` to `0.0` one
+    class over for this reason; nothing folded numeric type here.
+
+    **The modes are separate because `_asserted` must fold and `_identity` must
+    not.** `_identity` is the dedup key *and* the total sort order. Fold there
+    and two claims differing only in spelling collapse to one row, leaving which
+    spelling survives to arrival order - and it is not cosmetic which does:
+    `encode_value` writes `650` and `650.0` as different JSON,
+    `ComponentInstance._stored_values` hashes that text into `ordering_key`, and
+    the workbook's byte output would become a function of which worker finished
+    first. That is the FR-OUT-06 failure this module's own docstring opens with.
+    So the fold answers "is this the same value" and never "is this the same
+    record", and both claims survive to be tied apart by the unfolded order.
+
+    **Where the fold stops short of `==`,** in both cases because the difference
+    `==` discards is read by something downstream:
+
+    * `bool`. `True == 1`, and `severity._numeric_value` excludes `bool` for
+      exactly this reason - a stray boolean must not read as a nameplate of 1.
+      `encode_value` tests `bool` before `int` one layer down for the same
+      reason. `repr` already separates them and no branch below rejoins them.
+    * `Decimal`. `Decimal("22.00") == Decimal("22")` and the two hash alike, but
+      `encoding.py` encodes a Decimal by `str()` and never `normalize()` because
+      `conflict_hitl._decimals` reads D-2's rounding floor off that exact text -
+      0 places gives 0.5, 1 place gives 0.05. Folding them would pick one
+      precision silently and move the floor, which is a behaviour change rather
+      than a formatting one. So a `Decimal` reaches `repr` in both modes.
+
+    A `list` against a `tuple` needs no rule at all: `[1] != (1,)`, so the type
+    tag telling them apart *is* `==`'s verdict rather than a departure from it.
+    A `set` against a `frozenset` is the opposite case - those are `==` - so the
+    folding mode gives the two one tag.
+
+    Containers are walked rather than repr'd whole, so both the canonicalisation
+    and the fold reach a nested dict - which is where the contract's numbers
+    actually sit. The cycle guard is not tidiness: `repr` already handles a
+    self-referential value, and a hand-rolled walk that did not would trade a
+    false conflict for a `RecursionError`.
     """
     if id(value) in _containers:
         return "..."
     nested = (*_containers, id(value))
     if isinstance(value, dict):
-        entries = sorted((_render(k, nested), _render(v, nested)) for k, v in value.items())
+        entries = sorted(
+            (_render(k, nested, fold_equal=fold_equal), _render(v, nested, fold_equal=fold_equal))
+            for k, v in value.items()
+        )
         return "{" + ", ".join(f"{key}: {item}" for key, item in entries) + "}"
     if isinstance(value, list | tuple):
-        return f"{type(value).__name__}[" + ", ".join(_render(v, nested) for v in value) + "]"
+        members = (_render(v, nested, fold_equal=fold_equal) for v in value)
+        return f"{type(value).__name__}[" + ", ".join(members) + "]"
     if isinstance(value, set | frozenset):
-        return (
-            f"{type(value).__name__}[" + ", ".join(sorted(_render(v, nested) for v in value)) + "]"
-        )
+        # One tag for both under the fold: `{'a'} == frozenset({'a'})`, unlike the
+        # list/tuple pair above. Outside it the spelling is part of the record,
+        # and it is a spelling with consequences - `encode_value` accepts a
+        # frozenset and refuses a bare set.
+        tag = "set" if fold_equal else type(value).__name__
+        sorted_members = sorted(_render(v, nested, fold_equal=fold_equal) for v in value)
+        return f"{tag}[" + ", ".join(sorted_members) + "]"
+    if fold_equal and isinstance(value, float) and value.is_integer():
+        # The exact `int` is the one spelling every `==`-equal int and float
+        # share, and it stays exact where `repr` goes exponential (`1e+20`).
+        # `is_integer()` is false for both infinities and for NaN, so those keep
+        # `repr` - and NaN is not equal to itself, so it has no fold to join.
+        return repr(int(value))
     return repr(value)
 
 
@@ -188,8 +243,15 @@ def _asserted(claim: FieldClaim) -> tuple[str, str]:
     a location, which is provenance in exactly the way `source_ref.page` is: a
     datasheet printing `650 W` in a summary table and `650` in the electrical
     table has stated one figure twice, not contradicted itself.
+
+    **`fold_equal=True` for the same reason `verbatim_value` is excluded.** How
+    a number was typed is not what the claim says: `650` from a table cell and
+    `650.0` from a unit normaliser are one reading, and the spelling belongs to
+    the record - `_identity` - rather than to the assertion. See `_render` for
+    where the fold stops short of `==`, and for why the two must not share one
+    rendering.
     """
-    return (_render(claim.value), claim.unit or "")
+    return (_render(claim.value, fold_equal=True), claim.unit or "")
 
 
 def _identity(claim: FieldClaim) -> tuple[str, ...]:
@@ -202,6 +264,14 @@ def _identity(claim: FieldClaim) -> tuple[str, ...]:
     `set(claims)` and raised `TypeError: unhashable type: 'list'` on
     `certifications`, which this module's own tier table calls Tier A. The
     projection crashed on the fields it classifies as most critical.
+
+    **Rendered without `_render`'s equality fold, and that is the load-bearing
+    half of the split.** This is the dedup key and the total sort order, so it
+    has to separate every claim record that is not byte-for-byte the same one -
+    including two whose values are `==` but spelled differently. Folding here
+    would collapse them to one row and hand the choice of surviving spelling to
+    arrival order, which `encode_value` then carries into the workbook's bytes.
+    `_asserted` is where the fold belongs; see `_render`.
     """
     return (
         claim.document_id,

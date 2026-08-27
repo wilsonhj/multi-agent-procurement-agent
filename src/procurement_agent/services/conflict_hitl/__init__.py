@@ -347,6 +347,51 @@ def _normalise_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
+#: Unit spellings the frozen contract declares to be **one unit**, folded to a
+#: single form. Not a unit-conversion table, and deliberately not the start of one.
+#:
+#: A temperature *coefficient* is per-degree-*interval*, and one degree Celsius is
+#: one kelvin as an interval, so `%/degC`, `%/K` and `%/°C` name the same quantity
+#: and need no conversion at all. Three documents say so: the frozen contract's
+#: Conditions table ("`%/degC` = `%/K`"), tasks.md B.3, and clarifications.md
+#: under the heading "The unit conversion that must NOT happen".
+#:
+#: **Never route these through a temperature converter.** A generic unit library
+#: applies the +273.15 offset, and `-0.29 %/K` silently becomes `272.86` - a
+#: number that passes every plausibility gate B.5 states except the sign. Folding
+#: the spelling is the whole of the fix; there is no arithmetic here.
+#:
+#: Without it, every temperature-coefficient comparison between a K-quoting source
+#: and a degC-quoting one came back a `UNIT_NORMALIZATION` conflict. All three
+#: coefficients are on contract and every PV datasheet prints them, so that is a
+#: queue item per module per pair on a field where nothing disagreed. FN-5.
+#:
+#: The degree-sign row carries the sign because a datasheet prints it; U+2103 is
+#: absent because NFKC already folds it to `°C`, and listing it would suggest the
+#: table is doing work `_normalise_text` has already done.
+_UNIT_ALIASES: dict[str, str] = {
+    "%/k": "%/degc",
+    "%/°c": "%/degc",
+}
+
+_SLASH_SPACING = re.compile(r"\s*/\s*")
+
+
+def _normalise_unit(value: str) -> str:
+    """A unit folded to its comparable form.
+
+    `_normalise_text` plus the alias table above, and nothing else. In particular
+    the slash-spacing collapse is applied *only* to build the lookup key: a
+    spelling that is not an alias comes back exactly as `_normalise_text` left it,
+    so `USD / W` against `USD/kW` is still the unit conflict it was. Widening this
+    into "units that look alike are alike" is the direction D-2 forbids - a unit
+    mismatch is never resolved by tolerance, because normalising here would hide
+    an extraction defect behind a successful comparison.
+    """
+    text = _normalise_text(value)
+    return _UNIT_ALIASES.get(_SLASH_SPACING.sub("/", text), text)
+
+
 def _split_edition(value: str) -> tuple[str, str | None]:
     """`IEC 61215:2021` -> `("iec 61215", "2021")`.
 
@@ -589,8 +634,8 @@ def values_conflict(
     # incidental: every text-valued contract field carries `unit=None` on both
     # sides, and `a.unit != b.unit` alone would turn each of them into a unit
     # conflict.
-    unit_a = _normalise_text(a.unit) if a.unit is not None else None
-    unit_b = _normalise_text(b.unit) if b.unit is not None else None
+    unit_a = _normalise_unit(a.unit) if a.unit is not None else None
+    unit_b = _normalise_unit(b.unit) if b.unit is not None else None
     if unit_a != unit_b:
         stated = f"units differ ({a.unit!r} vs {b.unit!r})"
         missing = (

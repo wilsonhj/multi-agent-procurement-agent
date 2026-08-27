@@ -27,7 +27,10 @@ class SourceDocument(BaseModel):
     require that re-ingesting an unchanged document creates no duplicates.
     """
 
-    model_config = ConfigDict(frozen=True)
+    # `extra="forbid"` for the reason `ComponentInstance` gives below: a mistyped
+    # optional field would otherwise vanish, and every field here except
+    # `access_restricted` is provenance FR-ING-09 and FR-OUT-06 report.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     document_id: str
     content_hash: str = Field(description="Dedup key per FR-ING-09 / NFR-05")
@@ -71,6 +74,24 @@ class SourceDocument(BaseModel):
 
 class ComponentInstance(BaseModel):
     """One supplier's offering in one category, as a set of canonical fields."""
+
+    # Pydantic defaults to `extra="ignore"`, and every canonical-store model was
+    # on it - so a mistyped *optional* field was silently dropped. (Required
+    # fields were protected only incidentally, by their own missing-field error.)
+    #
+    # The cost here is not cosmetic: `ComponentInstance(nameplate_w=550)` leaves
+    # `nameplate` at `None`, and `ordering_key()` maps that to `float("-inf")`.
+    # A typo discards the bin discriminator that exists precisely because "one
+    # datasheet routinely covers several SKUs".
+    #
+    # Same class as issue #16 one level up. #16 closed the condition
+    # *vocabulary*, so `Condition(basis="not_a_real_basis")` is refused; the
+    # field *name* stayed open-world, so `Condition(bassis="stc")` was accepted
+    # and produced an unstated condition that compared against everything.
+    # `config.py`'s `extra="ignore"` is deliberate and right - unknown
+    # environment variables must not break startup - and no schema model
+    # documented such a reason.
+    model_config = ConfigDict(extra="forbid")
 
     supplier: str
     model: str

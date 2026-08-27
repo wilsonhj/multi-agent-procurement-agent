@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from pydantic import BaseModel, computed_field
 
 from procurement_agent.schema import (
     CanonicalField,
@@ -492,3 +493,38 @@ _FIXED_POSITION_DOMAIN: tuple[object, ...] = (
 )
 
 _VALUE_DOMAIN: tuple[object, ...] = _POLYMORPHIC_VALUE_DOMAIN + _FIXED_POSITION_DOMAIN
+
+
+def test_a_computed_field_is_deliberately_outside_the_encoding() -> None:
+    """`_encode_model` walks `model_fields`, which excludes computed fields.
+
+    No model has a `@computed_field` today and nothing pinned the choice either
+    way, which is the whole reason to write it down: the next author to add one
+    gets a value that renders in `model_dump()` and is **absent from the
+    digest**, with no test objecting.
+
+    That is the same `model_dump()`-versus-`encode_value` seam that has already
+    shipped one defect - `_stored_values()` used `model_dump(mode="json")` and
+    collapsed `Decimal("22.00")` against the string `"22.00"`, so two stores
+    that render differently tied in the sort.
+
+    The exclusion is *correct*: a computed field is derived from stored fields,
+    so hashing it would put a function's output inside an artifact meant to be a
+    function of the data. But it is correct by argument, not by accident, and it
+    only stays correct while someone knows that.
+    """
+
+    class WithComputed(BaseModel):
+        stated: int
+
+        @computed_field  # type: ignore[prop-decorator]
+        @property
+        def derived(self) -> int:
+            return self.stated * 100
+
+    model = WithComputed(stated=7)
+
+    assert model.model_dump() == {"stated": 7, "derived": 700}
+    assert encode_value(model) == {"stated": 7}
+    assert "derived" in type(model).model_computed_fields
+    assert "derived" not in type(model).model_fields

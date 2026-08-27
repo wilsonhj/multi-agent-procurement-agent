@@ -17,9 +17,11 @@ from procurement_agent.schema import (
     ConflictQueueEntry,
     ConflictStatus,
     DeclaredBand,
+    DocumentType,
     Resolution,
     ResolutionAction,
     Severity,
+    SourceDocument,
     SourceRef,
     SourceTier,
     ToleranceKind,
@@ -465,3 +467,39 @@ def test_evolve_refuses_an_unknown_field() -> None:
     key."""
     with pytest.raises(ValueError, match="unknown field"):
         _band_field().evolve(conflict_stauts=ConflictStatus.RESOLVED)
+
+
+def test_the_component_models_refuse_an_unknown_field() -> None:
+    """A mistyped optional field must not vanish.
+
+    Pydantic's default is `extra='ignore'`, and every canonical-store model was
+    on it. The cost is not cosmetic: `ComponentInstance(nameplate_w=550)` leaves
+    `nameplate` as `None`, which `ordering_key()` maps to `float('-inf')` - so a
+    typo silently discards the bin discriminator that exists because "one
+    datasheet routinely covers several SKUs".
+
+    This is the same class as issue #16 one level up: #16 closed the condition
+    *vocabulary*, so an invalid `basis` value is refused, while the field *name*
+    stayed open-world. `config.py`'s `extra="ignore"` is deliberate and correct -
+    unknown environment variables must not break startup - and no schema model
+    documents such a reason.
+
+    `schema/field.py`'s models are covered by their own suite; these are the two
+    that live here.
+    """
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ComponentInstance(
+            supplier="Adani",
+            model="ASB-M10-144-550",
+            component_category=ComponentCategory.PV_MODULES,
+            nameplate_w=550.0,  # type: ignore[call-arg]
+        )
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SourceDocument(
+            document_id="d",
+            content_hash="h",
+            source_uri="file:///x.pdf",
+            document_type=DocumentType.SPEC_SHEET,
+            ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+            access_restrictedd=True,  # type: ignore[call-arg]
+        )

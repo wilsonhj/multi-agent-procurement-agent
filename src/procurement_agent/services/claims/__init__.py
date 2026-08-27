@@ -53,7 +53,13 @@ class FieldClaim(BaseModel):
     concurrently with anything else.
     """
 
-    model_config = ConfigDict(frozen=True)
+    #: `extra="forbid"` because pydantic's default silently drops a *mistyped
+    #: optional* field - required ones are protected only incidentally, by their
+    #: own missing-field error. Append-only makes that sharp here: a claim
+    #: written with `verbatim_valeu` can be superseded but never corrected, and
+    #: the B.9 gold set is labelled against what was stored. The full argument is
+    #: on `ComponentInstance`; this is the same decision one layer down.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     document_id: str
     field_name: str = Field(description="The frozen contract's `key` for this parameter")

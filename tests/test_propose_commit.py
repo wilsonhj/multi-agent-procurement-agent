@@ -474,6 +474,36 @@ def test_a_claim_cannot_be_revised_in_place() -> None:
         _claim(650.0).value = 700.0
 
 
+def test_a_claim_refuses_a_field_name_it_does_not_have() -> None:
+    """Pydantic's default is `extra="ignore"`, so a *mistyped optional* field was
+    dropped in silence - required fields are protected only incidentally, by
+    their own missing-field error.
+
+    Append-only makes that sharp here in a way it is not elsewhere: a claim
+    written with `verbatim_valeu` cannot be corrected, only superseded, and the
+    B.9 gold set is labelled against whatever was stored. Same class as issue
+    #16 one level up, which closed the condition *vocabulary* while leaving the
+    field *name* open-world. The full argument lives on `ComponentInstance`.
+
+    Both halves are asserted: the typo is refused, and the correctly-spelled
+    field it was a typo of is still accepted - a rejection that came from the
+    field being unknown to the model rather than from `extra="forbid"` would
+    prove nothing.
+    """
+    with pytest.raises(ValidationError, match="verbatim_valeu"):
+        FieldClaim(
+            document_id="doc-a",
+            field_name="nameplate_power",
+            extractor_version="extract@1",
+            value=650.0,
+            verbatim_valeu="650 W",  # type: ignore[call-arg]
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="doc-a"),
+            confidence=0.9,
+        )
+    assert _claim(650.0, verbatim="650 W").verbatim_value == "650 W"
+
+
 # --- the structural property ----------------------------------------------------
 
 

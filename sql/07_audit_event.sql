@@ -185,10 +185,46 @@ CREATE TABLE audit.event (
     --   3. two rows in one stream sharing a `hash`, i.e. a chain loop
     --
     -- Each is silent, and each produces a chain that can never be verified.
+    --
     -- Decision 9 leans on this chain as "the only mechanism that survives the
     -- superuser bypass -- a superuser can edit a row but cannot make the chain
-    -- re-verify", so a chain that was never walkable in the first place gives
-    -- that argument nothing to stand on.
+    -- re-verify". **That claim is too broad, and this file no longer makes it.**
+    -- src/procurement_agent/audit/verify.py, which is the module that has to be
+    -- honest about it, states the guarantee that actually holds, and the wording
+    -- below is deliberately the same so the two cannot drift:
+    --
+    --     An edit that is not re-sealed is detected.
+    --
+    -- That is worth having, and it is not tamper-proofing. The digest is unkeyed
+    -- and the algorithm is public, so anyone who can edit a row can also
+    -- recompute its digest; and because **nothing outside the chain pins the
+    -- tip**, recomputing forward from the edited row to the end is always
+    -- available. What that leaves undetectable is any *suffix rewritten in place
+    -- and re-sealed*: measured against a live chain, a tail rewrite, a suffix
+    -- rewrite and a full rewrite were all accepted (ok=True, 5 events), while
+    -- the same edit left un-re-sealed was rejected at `seq 4: hash_mismatch`.
+    -- A truncated tail is the special case where the rewritten suffix is empty,
+    -- and it is not the cheapest one: re-attributing the last event costs one row
+    -- edited and one digest recomputed -- no re-chaining, no DELETE, no TRUNCATE.
+    -- So the GRANT above (no UPDATE, no DELETE, no TRUNCATE, to any role) and the
+    -- tripwires at the foot of this file, which do cover truncation, do not cover
+    -- this. The event it matters most for is the last `resolution` of every
+    -- stream, which D-13 calls "the highest-repudiation-risk record in the
+    -- system: the name of the human who shipped a workbook past unresolved
+    -- conflicts" -- and which is by construction at the tip, where the rewrite is
+    -- cheapest.
+    --
+    -- This is inherent to an unkeyed hash chain with no external witness, so it
+    -- is a limit of the design rather than a defect to fix here. Decision 9's
+    -- position stands as the mitigation -- privilege separation is the boundary
+    -- and the chain is tamper-*evidence* layered on top -- and the durable answer
+    -- is shipping this log to a write-once sink or otherwise witnessing the tip,
+    -- which the tripwire comment below already names for truncation and which in
+    -- fact covers the whole family.
+    --
+    -- None of which lets the three defects above off: a chain that was never
+    -- walkable in the first place gives even the narrow guarantee nothing to
+    -- stand on, because the un-re-sealed edit it detects is detected *by walking*.
     --
     -- UNIQUE (stream, hash) makes a digest identify at most one event per
     -- stream, which is what lets the self-reference below be a foreign key at
@@ -287,6 +323,29 @@ CREATE POLICY audit_event_write_insert ON audit.event
     FOR INSERT
     WITH CHECK (true);
 
+-- procurement_app cannot switch its own confidentiality off. See the equivalent
+-- policy in 02_document.sql for the measured attack matrix, why this is a new
+-- RESTRICTIVE policy rather than an edit to the permissive ones, and why
+-- `WITH CHECK (true)` is spelled out.
+--
+-- Keyed on public.document_is_restricted(document_id), matching
+-- audit_event_confidentiality_select above. `document_id` is NOT NULL on this
+-- table and `stream = 'doc:' || document_id` is a CHECK, so an event's subject
+-- document is never ambiguous and the derivation is exact.
+--
+-- **This still does not weaken Decision 9.** The immutability boundary is the
+-- GRANT (no UPDATE, no DELETE, no TRUNCATE) plus the tripwires below, none of
+-- which this touches -- procurement_app is granted neither verb here, so the
+-- `USING` side has no write to narrow. Nor can it hide an event from the H.5
+-- verification CLI: that runs as an operator identity, which is not
+-- procurement_app, so this policy does not apply to it at all. A chain walk that
+-- silently skipped rows would fail to verify rather than pass quietly, which is
+-- the property Decision 9 actually leans on.
+CREATE POLICY audit_event_app_never_restricted ON audit.event
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT public.document_is_restricted(document_id))
+    WITH CHECK (true);
+
 CREATE POLICY audit_event_ingest_select ON audit.event
     FOR SELECT TO procurement_ingest USING (true);
 
@@ -322,6 +381,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE audit_owner IN SCHEMA audit
 -- threat model is shipping this log OUT -- logical replication to a
 -- write-once sink -- which is out of scope for this DDL and is not attempted
 -- here.
+--
+-- That answer is not specific to TRUNCATE, which is the narrow reading these
+-- two triggers invite. Witnessing the tip externally is what covers the entire
+-- undetectable family named on audit_event_hash_unique above -- any suffix
+-- rewritten in place and re-sealed, of which a truncated tail is only the case
+-- where the rewritten suffix is empty, and the most expensive one at that.
 -- ---------------------------------------------------------------------------
 
 CREATE FUNCTION audit.reject_mutation() RETURNS trigger

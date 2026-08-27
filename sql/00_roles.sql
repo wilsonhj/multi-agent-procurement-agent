@@ -199,14 +199,32 @@ ALTER ROLE procurement_ingest LOGIN   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPL
 --     GRANT procurement_ingest TO procurement_app;   -- however this happened
 --
 -- survives a clean re-run of this file with every attribute check still
--- passing, and hands the application role the ingest boundary for the cost of
--- one `SET ROLE`. Measured, not theorised: with that grant in place,
--- `procurement_app` executes `SET ROLE procurement_ingest` and `current_user`
--- comes back `procurement_ingest`; re-running this file leaves the membership
--- in `pg_auth_members` untouched.
+-- passing, and hands the application role the ingest boundary. Measured, not
+-- theorised: with that grant in place, `procurement_app` executes `SET ROLE
+-- procurement_ingest` and `current_user` comes back `procurement_ingest`;
+-- re-running this file leaves the membership in `pg_auth_members` untouched.
+--
+-- **And an earlier version of this comment understated it, by saying the cost
+-- is "one `SET ROLE`".** Measured again: the cost is *nothing*. RLS role
+-- matching uses `has_privs_of_role`, i.e. **inherited** membership, and these
+-- roles are INHERIT by default -- so every permissive `... TO procurement_ingest
+-- USING (true)` read-back policy in 02 through 08 applies to `procurement_app`
+-- the instant the membership exists, with no `SET ROLE` issued at all and
+-- `current_user` still reading `procurement_app`. On a live server the
+-- application role's visible chunk count went from 1 to 2, restricted text
+-- included, without a single statement beyond the SELECT. A defence that looks
+-- for a `SET ROLE` -- in a log, in a proxy, in a code review -- is looking for
+-- something that never happens.
 --
 -- That defeats Decision 9 exactly as `SUPERUSER` would, and it is quieter,
 -- because every role attribute still reads correctly afterwards.
+--
+-- The `<table>_app_never_restricted` policies added in 02 through 08 are the
+-- backstop for the same mis-grant: being `AS RESTRICTIVE` they are AND'd with
+-- the OR of every permissive policy, so the inherited `USING (true)` no longer
+-- wins and the failure mode degrades from fail-open to fail-closed. The REVOKE
+-- below is still the control; that is the layer that holds if it is ever
+-- removed.
 --
 -- REVOKE is unconditional and safe: none of these four roles is ever a
 -- legitimate member of another. If a future deployment needs one, this is the

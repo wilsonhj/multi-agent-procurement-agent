@@ -148,6 +148,23 @@ CREATE POLICY job_write_update ON public.job
     )
     WITH CHECK (true);
 
+-- procurement_app cannot switch its own confidentiality off. See the equivalent
+-- policy in 02_document.sql for the measured attack matrix, why this is a new
+-- RESTRICTIVE policy rather than an edit to the permissive ones, and why
+-- `WITH CHECK (true)` is spelled out.
+--
+-- Keyed on public.document_is_restricted(document_id), matching
+-- job_confidentiality_select above. `document_id` is nullable here
+-- (compose_workbook is a whole-store stage with no single subject) and the
+-- helper returns false for NULL, so whole-store jobs stay visible -- correct,
+-- since such a job's payload names no document. `NOT false` is `true`, so the
+-- restrictive predicate admits them too; it does not accidentally hide the
+-- one stage that has nothing to hide.
+CREATE POLICY job_app_never_restricted ON public.job
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT public.document_is_restricted(document_id))
+    WITH CHECK (true);
+
 CREATE POLICY job_ingest_select ON public.job
     FOR SELECT TO procurement_ingest USING (true);
 CREATE POLICY job_ingest_update ON public.job

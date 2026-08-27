@@ -183,6 +183,31 @@ CREATE POLICY chunk_write_delete ON public.chunk
         OR current_setting('app.allow_restricted', true) = 'true'
     );
 
+-- procurement_app cannot switch its own confidentiality off. Every policy above
+-- admits `current_setting('app.allow_restricted', true) = 'true'`, and the
+-- application role sets that GUC itself -- including from the connection string,
+-- before any statement is issued. Permissive policies are OR'd, so no addition
+-- to the set above can narrow it; `AS RESTRICTIVE` is AND'd, which is why this
+-- is a new policy rather than an edit. The full argument, the measured attack
+-- matrix, and why `WITH CHECK (true)` is spelled out rather than defaulted are
+-- on the equivalent policy in 02_document.sql -- read that one first.
+--
+-- This table's predicate is its own `access_restricted` column rather than a
+-- derivation helper, matching chunk_confidentiality_select above: a chunk may be
+-- *more* restricted than its parent, so the flag is stored here, maintained by
+-- the inheritance trigger at the foot of this file.
+--
+-- The trigger and this policy compose in the safe direction. The trigger raises
+-- `access_restricted` on the NEW row before the check runs, and `WITH CHECK
+-- (true)` accepts the raised value, so procurement_app indexing a restricted
+-- document still writes the chunk -- and then cannot read it back. Reverse the
+-- `WITH CHECK` to the defaulted `USING` and that insert fails instead, which is
+-- again the safe action becoming the failing one.
+CREATE POLICY chunk_app_never_restricted ON public.chunk
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT access_restricted)
+    WITH CHECK (true);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.chunk TO procurement_app;
 
 -- The indexing principal (00_roles.sql, procurement_ingest); see the long

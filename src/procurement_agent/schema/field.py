@@ -141,6 +141,33 @@ class Resolution(BaseModel):
     value_after: object | None = None
 
 
+class DeclaredBandUnitError(ValueError):
+    """A declared band was asked to resolve against a nominal in another unit.
+
+    A `ValueError` so a pydantic validator could raise it, and a named subclass
+    so a caller can tell "these two numbers are not in the same scale" apart from
+    every other way arithmetic can fail. `IncomparableCandidatesError` is the
+    same idea one layer up: refusing to answer is a different outcome from
+    answering "they agree".
+    """
+
+
+def _comparable_unit(value: str | None) -> str | None:
+    """A unit folded for equality, the way `conflict_hitl._normalise_text` folds
+    one: NFKC, case, and internal whitespace.
+
+    Spelling only. `w` and `W` are one unit; `W` and `Wp` are not, and neither
+    are `W` and `kW`. Deciding that two differently-spelled units name one
+    quantity is a technical claim, and the one place this repo makes such a claim
+    - `%/degC` against `%/K` - it makes it from three documents that state it,
+    in a named table, in the module that compares candidate units. Guessing here
+    would be the "conversion resolves a mismatch" move FR-ING-08 forbids.
+    """
+    if value is None:
+        return None
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split()) or None
+
+
 class DeclaredBand(BaseModel):
     """A tolerance the source itself prints, stored as written.
 
@@ -203,7 +230,44 @@ class DeclaredBand(BaseModel):
             raise ValueError(f"a relative declared band is in percentage points, not {self.unit!r}")
         return self
 
-    def resolve(self, nominal: float) -> tuple[float, float]:
+    def _require_same_unit(self, nominal_unit: str | None) -> None:
+        """Refuse to add an offset in one unit onto a number in another.
+
+        Only for an absolute band: `low`/`high` are a quantity, so `nominal +
+        self.high` is meaningful exactly when both are in the same unit. A
+        relative band is a percentage of whatever it is applied to and is
+        therefore scale-free - 3% of 620 W and 3% of 0.620 kW are one band
+        written twice - so the check would be wrong on that branch, not merely
+        unnecessary.
+
+        `unit` was validated at construction and read by nobody, which is FN-3.
+        A `0 ~ +5 W` band against a nominal in kW gave `resolve(0.650) ==
+        (0.65, 5.65)`, so 0.650 kW and 5.0 kW - a 7.7x disagreement, the 1000x
+        extraction-error class D-2 calls out - had intersecting guaranteed ranges
+        and raised nothing.
+
+        Refusing rather than converting. There is no unit algebra here, and
+        adding one would be the "a mismatch is resolved by normalising" move
+        FR-ING-08 forbids; `values_conflict` already treats a unit mismatch
+        between two candidates as a conflict in its own right for the same
+        reason. Where the band's unit comes from is not left open either:
+        `_check_shape` refuses an absolute band without one on the grounds that
+        "the canonical field knows its unit", so the extractor has the right
+        answer to write.
+        """
+        if self.kind is not ToleranceKind.ABSOLUTE:
+            return
+        if _comparable_unit(self.unit) != _comparable_unit(nominal_unit):
+            raise DeclaredBandUnitError(
+                f"a declared band in {self.unit!r} cannot be resolved against a "
+                f"nominal in {nominal_unit!r}: `low`/`high` are offsets in the "
+                "band's own unit, so adding them across a scale change silently "
+                "widens or narrows the guarantee. Record the band in the "
+                "canonical field's unit at extraction, where the source text and "
+                "its unit are both in hand."
+            )
+
+    def resolve(self, nominal: float, *, nominal_unit: str | None) -> tuple[float, float]:
         """The guaranteed range around `nominal`, in the parameter's own unit.
 
         This is the only place a relative band is multiplied out, per the
@@ -211,11 +275,17 @@ class DeclaredBand(BaseModel):
         605 W and 625 W rows of a Jinko sheet that print one identical tolerance,
         and it is circular when the disputed field *is* the nominal.
 
+        `nominal_unit` is required, and required even for a relative band that
+        ignores it: the caller always knows it - it is `CanonicalField.unit` -
+        and a default would put the FN-3 hole back one call site away. See
+        `_require_same_unit`.
+
         Returned lowest-first. A relative band on a negative nominal - a Pmax
         temperature coefficient of `-0.29 %/degC` is the real case - maps `low` to
         the *upper* bound, so returning `(low_offset, high_offset)` unswapped
         would hand the caller an inverted interval that intersects nothing.
         """
+        self._require_same_unit(nominal_unit)
         if self.kind is ToleranceKind.RELATIVE:
             bounds = (nominal + nominal * self.low / 100.0, nominal + nominal * self.high / 100.0)
         else:
@@ -230,7 +300,15 @@ class DeclaredBand(BaseModel):
             )
         return (min(bounds), max(bounds))
 
-    def agrees(self, nominal: float, other: DeclaredBand | None, other_nominal: float) -> bool:
+    def agrees(
+        self,
+        nominal: float,
+        other: DeclaredBand | None,
+        other_nominal: float,
+        *,
+        nominal_unit: str | None,
+        other_unit: str | None,
+    ) -> bool:
         """Whether two nominals can denote the same physical part.
 
         True when their guaranteed ranges intersect. Closed intervals on purpose:
@@ -244,11 +322,25 @@ class DeclaredBand(BaseModel):
         the strict reading - it can raise a conflict a shared band would have
         absorbed, which is one extra queue item, where the permissive reading
         silently merges two different SKUs.
+
+        Both units are taken rather than one, even though `values_conflict` has
+        already equated the two candidates' units before it gets here. That is
+        the caller's invariant, not this method's, and the whole of FN-3 is that
+        a unit nobody reads is a unit nobody enforces - so the two intervals are
+        each checked against the band that produced them, and the resulting
+        bounds are only intersected once both are known to be in one scale.
         """
-        low, high = self.resolve(nominal)
-        other_low, other_high = (
-            other.resolve(other_nominal) if other is not None else (other_nominal, other_nominal)
-        )
+        low, high = self.resolve(nominal, nominal_unit=nominal_unit)
+        if other is None:
+            other_low, other_high = other_nominal, other_nominal
+        else:
+            other_low, other_high = other.resolve(other_nominal, nominal_unit=other_unit)
+        if _comparable_unit(nominal_unit) != _comparable_unit(other_unit):
+            raise DeclaredBandUnitError(
+                f"two guaranteed ranges in {nominal_unit!r} and {other_unit!r} do "
+                "not intersect in any unit either of them names; a unit mismatch "
+                "is never resolved by comparison (FR-ING-08)."
+            )
         return low <= other_high and other_low <= high
 
 

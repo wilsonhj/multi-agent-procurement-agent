@@ -707,10 +707,20 @@ def _compare_numbers(
             )
         reference = band_a if band_a is not None else band_b
         assert reference is not None
+        # The units come from the candidates, which is the half of FN-3 that
+        # `DeclaredBand` cannot do for itself: `unit` was validated at
+        # construction and then read by nobody, because nothing ever handed
+        # `resolve` a nominal's unit to check it against. A `0 ~ +5 W` band
+        # against a value in kW resolved to `(0.65, 5.65)` and absorbed a 7.7x
+        # disagreement. `values_conflict` has already equated `a.unit` and
+        # `b.unit` above, so a raise from here means the *band's* unit disagrees
+        # with the field's - a data defect worth surfacing, not a verdict.
         agrees = (
-            band_a.agrees(number_a, band_b, number_b)
+            band_a.agrees(number_a, band_b, number_b, nominal_unit=a.unit, other_unit=b.unit)
             if band_a is not None
-            else reference.agrees(number_b, band_a, number_a)
+            else reference.agrees(
+                number_b, band_a, number_a, nominal_unit=b.unit, other_unit=a.unit
+            )
         )
         return ConflictVerdict(
             conflicts=not agrees,

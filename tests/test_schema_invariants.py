@@ -436,7 +436,7 @@ def test_evolve_preserves_a_model_typed_value() -> None:
     """
     evolved = _band_field().evolve(confidence=0.8)
     assert isinstance(evolved.value, DeclaredBand)
-    assert evolved.value.resolve(650.0) == (650.0, 655.0)
+    assert evolved.value.resolve(650.0, nominal_unit="W") == (650.0, 655.0)
 
 
 def test_evolve_still_revalidates() -> None:

@@ -221,7 +221,18 @@ def test_the_alias_is_not_a_licence_to_normalise_other_units() -> None:
     "units that look similar are the same": `W` against `kW` is a 1000x
     extraction error and D-2 is explicit that a unit mismatch is never resolved
     by tolerance. Kelvin *alone* is a temperature, not an interval — a value in
-    `K` is not a value in `%/K`."""
+    `K` is not a value in `%/K`, and `300 K` is not `300 degC`.
+
+    That last pair is the one that matters most, and it is the case a folding
+    rule reaches by accident: an implementation that rewrites `k` to `degc`
+    wherever it occurs, rather than looking up two whole spellings, makes `K`
+    and `degC` one unit - and the +273.15 those two really are apart is the
+    exact error the alias exists to keep out of this codebase. Verified against
+    that mutation: without this assertion it survives the whole suite."""
+    ambient = tolerance_for("rated_ac_power_temp")
+    assert values_conflict(
+        _c(300.0, unit="K"), _c(300.0, unit="degC", doc="doc-b"), tolerance=ambient
+    ).conflicts
     assert values_conflict(
         _c(-0.29, unit="%/degC"), _c(-0.29, unit="K", doc="doc-b"), tolerance=GAMMA
     ).conflicts

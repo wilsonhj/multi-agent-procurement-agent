@@ -23,12 +23,14 @@ from .enums import (
     WorkbookTab,
 )
 from .field import (
+    CONDITION_DIMENSION_NAMES,
     CanonicalField,
     Condition,
     ConditionDimensions,
     ConflictCandidate,
     ConflictQueueEntry,
     DeclaredBand,
+    DeclaredBandUnitError,
     Resolution,
     SourceRef,
     VocabularyError,
@@ -36,6 +38,7 @@ from .field import (
 
 __all__ = [
     "CATEGORY_TO_TAB",
+    "CONDITION_DIMENSION_NAMES",
     "CanonicalField",
     "CellFlag",
     "ComponentCategory",
@@ -47,6 +50,7 @@ __all__ = [
     "ConflictQueueEntry",
     "ConflictStatus",
     "DeclaredBand",
+    "DeclaredBandUnitError",
     "DocumentType",
     "EfficiencyWeighting",
     "MeasurementBasis",

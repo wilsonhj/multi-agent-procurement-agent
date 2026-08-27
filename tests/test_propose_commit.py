@@ -103,7 +103,7 @@ def test_the_sungrow_trio_raises_no_conflict() -> None:
     the only path that reaches it."""
     candidates = [c.as_candidate() for c in _sungrow()]
     assert not any(c.condition.is_unstated() for c in candidates)
-    assert comparison_pairs(candidates) == []
+    assert comparison_pairs(candidates, field_name="rated_ac_power") == []
 
 
 def test_three_ambients_are_three_claims_not_a_contradiction() -> None:

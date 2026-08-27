@@ -18,8 +18,9 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -45,6 +46,21 @@ from .enums import (
     ToleranceKind,
 )
 
+#: Every model in this module sets it. A key nobody declared is a key nobody
+#: reads, and the two ways that has already cost this repo are the same shape:
+#: issue #16 closed the condition *vocabulary*, so `basis="not_a_basis"` raises -
+#: while `Condition(ambient_temperature_c=30.0)` was still accepted one level up,
+#: because that is what pydantic's default `extra="ignore"` does. The real field
+#: is `temperature_c`, the plan's own prose calls it "reference ambient", and the
+#: result was an `is_unstated()` condition that reported `comparable_with` True
+#: against a genuine 40 degC reading. D-1's silent merge, reached by misspelling
+#: rather than by omission.
+#:
+#: `model_validate` is the route that matters most: a constructor typo is a bug
+#: someone is about to hit, while a stray key in a row read back from the store
+#: is schema drift nobody sees.
+_FORBID_UNDECLARED_KEYS: Literal["forbid"] = "forbid"
+
 
 class SourceRef(BaseModel):
     """Where a value came from. NFR-01 permits no unsourced values.
@@ -53,7 +69,7 @@ class SourceRef(BaseModel):
     A web reference carries url, page_title and retrieved_at (FR-WEB-02).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     document_id: str | None = None
     page: int | None = None
@@ -131,7 +147,7 @@ class SourceRef(BaseModel):
 class Resolution(BaseModel):
     """A human decision on a queued conflict. Logged immutably per FR-HITL-06."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     action: ResolutionAction
     resolved_by: str
@@ -139,6 +155,33 @@ class Resolution(BaseModel):
     rationale: str
     value_before: object | None = None
     value_after: object | None = None
+
+
+class DeclaredBandUnitError(ValueError):
+    """A declared band was asked to resolve against a nominal in another unit.
+
+    A `ValueError` so a pydantic validator could raise it, and a named subclass
+    so a caller can tell "these two numbers are not in the same scale" apart from
+    every other way arithmetic can fail. `IncomparableCandidatesError` is the
+    same idea one layer up: refusing to answer is a different outcome from
+    answering "they agree".
+    """
+
+
+def _comparable_unit(value: str | None) -> str | None:
+    """A unit folded for equality, the way `conflict_hitl._normalise_text` folds
+    one: NFKC, case, and internal whitespace.
+
+    Spelling only. `w` and `W` are one unit; `W` and `Wp` are not, and neither
+    are `W` and `kW`. Deciding that two differently-spelled units name one
+    quantity is a technical claim, and the one place this repo makes such a claim
+    - `%/degC` against `%/K` - it makes it from three documents that state it,
+    in a named table, in the module that compares candidate units. Guessing here
+    would be the "conversion resolves a mismatch" move FR-ING-08 forbids.
+    """
+    if value is None:
+        return None
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split()) or None
 
 
 class DeclaredBand(BaseModel):
@@ -159,7 +202,7 @@ class DeclaredBand(BaseModel):
     home for the same object would be a second thing to keep in sync.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     low: float = Field(description="Lower offset from nominal. `0` for a one-sided `0 ~ +5 W`.")
     high: float = Field(description="Upper offset from nominal.")
@@ -203,7 +246,44 @@ class DeclaredBand(BaseModel):
             raise ValueError(f"a relative declared band is in percentage points, not {self.unit!r}")
         return self
 
-    def resolve(self, nominal: float) -> tuple[float, float]:
+    def _require_same_unit(self, nominal_unit: str | None) -> None:
+        """Refuse to add an offset in one unit onto a number in another.
+
+        Only for an absolute band: `low`/`high` are a quantity, so `nominal +
+        self.high` is meaningful exactly when both are in the same unit. A
+        relative band is a percentage of whatever it is applied to and is
+        therefore scale-free - 3% of 620 W and 3% of 0.620 kW are one band
+        written twice - so the check would be wrong on that branch, not merely
+        unnecessary.
+
+        `unit` was validated at construction and read by nobody, which is FN-3.
+        A `0 ~ +5 W` band against a nominal in kW gave `resolve(0.650) ==
+        (0.65, 5.65)`, so 0.650 kW and 5.0 kW - a 7.7x disagreement, the 1000x
+        extraction-error class D-2 calls out - had intersecting guaranteed ranges
+        and raised nothing.
+
+        Refusing rather than converting. There is no unit algebra here, and
+        adding one would be the "a mismatch is resolved by normalising" move
+        FR-ING-08 forbids; `values_conflict` already treats a unit mismatch
+        between two candidates as a conflict in its own right for the same
+        reason. Where the band's unit comes from is not left open either:
+        `_check_shape` refuses an absolute band without one on the grounds that
+        "the canonical field knows its unit", so the extractor has the right
+        answer to write.
+        """
+        if self.kind is not ToleranceKind.ABSOLUTE:
+            return
+        if _comparable_unit(self.unit) != _comparable_unit(nominal_unit):
+            raise DeclaredBandUnitError(
+                f"a declared band in {self.unit!r} cannot be resolved against a "
+                f"nominal in {nominal_unit!r}: `low`/`high` are offsets in the "
+                "band's own unit, so adding them across a scale change silently "
+                "widens or narrows the guarantee. Record the band in the "
+                "canonical field's unit at extraction, where the source text and "
+                "its unit are both in hand."
+            )
+
+    def resolve(self, nominal: float, *, nominal_unit: str | None) -> tuple[float, float]:
         """The guaranteed range around `nominal`, in the parameter's own unit.
 
         This is the only place a relative band is multiplied out, per the
@@ -211,11 +291,17 @@ class DeclaredBand(BaseModel):
         605 W and 625 W rows of a Jinko sheet that print one identical tolerance,
         and it is circular when the disputed field *is* the nominal.
 
+        `nominal_unit` is required, and required even for a relative band that
+        ignores it: the caller always knows it - it is `CanonicalField.unit` -
+        and a default would put the FN-3 hole back one call site away. See
+        `_require_same_unit`.
+
         Returned lowest-first. A relative band on a negative nominal - a Pmax
         temperature coefficient of `-0.29 %/degC` is the real case - maps `low` to
         the *upper* bound, so returning `(low_offset, high_offset)` unswapped
         would hand the caller an inverted interval that intersects nothing.
         """
+        self._require_same_unit(nominal_unit)
         if self.kind is ToleranceKind.RELATIVE:
             bounds = (nominal + nominal * self.low / 100.0, nominal + nominal * self.high / 100.0)
         else:
@@ -230,7 +316,15 @@ class DeclaredBand(BaseModel):
             )
         return (min(bounds), max(bounds))
 
-    def agrees(self, nominal: float, other: DeclaredBand | None, other_nominal: float) -> bool:
+    def agrees(
+        self,
+        nominal: float,
+        other: DeclaredBand | None,
+        other_nominal: float,
+        *,
+        nominal_unit: str | None,
+        other_unit: str | None,
+    ) -> bool:
         """Whether two nominals can denote the same physical part.
 
         True when their guaranteed ranges intersect. Closed intervals on purpose:
@@ -244,11 +338,25 @@ class DeclaredBand(BaseModel):
         the strict reading - it can raise a conflict a shared band would have
         absorbed, which is one extra queue item, where the permissive reading
         silently merges two different SKUs.
+
+        Both units are taken rather than one, even though `values_conflict` has
+        already equated the two candidates' units before it gets here. That is
+        the caller's invariant, not this method's, and the whole of FN-3 is that
+        a unit nobody reads is a unit nobody enforces - so the two intervals are
+        each checked against the band that produced them, and the resulting
+        bounds are only intersected once both are known to be in one scale.
         """
-        low, high = self.resolve(nominal)
-        other_low, other_high = (
-            other.resolve(other_nominal) if other is not None else (other_nominal, other_nominal)
-        )
+        low, high = self.resolve(nominal, nominal_unit=nominal_unit)
+        if other is None:
+            other_low, other_high = other_nominal, other_nominal
+        else:
+            other_low, other_high = other.resolve(other_nominal, nominal_unit=other_unit)
+        if _comparable_unit(nominal_unit) != _comparable_unit(other_unit):
+            raise DeclaredBandUnitError(
+                f"two guaranteed ranges in {nominal_unit!r} and {other_unit!r} do "
+                "not intersect in any unit either of them names; a unit mismatch "
+                "is never resolved by comparison (FR-ING-08)."
+            )
         return low <= other_high and other_low <= high
 
 
@@ -262,9 +370,15 @@ class ConditionDimensions(BaseModel):
     Not intended as a field annotation anywhere: annotate with `Condition`. A
     field typed as this class accepts a `Condition` but serialises through the
     parent schema and silently drops `note`.
+
+    `extra="forbid"` is set here and inherited by `Condition`, rather than
+    restated there: pydantic merges the parent config, so one statement covers
+    both and there is no second copy to drift. The subclass's own `note` and
+    `derived` are declared fields, so forbidding *undeclared* keys does not
+    touch them.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     basis: MeasurementBasis | None = Field(
         default=None,
@@ -362,6 +476,22 @@ class ConditionDimensions(BaseModel):
         because nothing surfaces a comparison that never happened.
         """
         return _normalise_token(value)
+
+
+#: Every dimension that can gate a comparison, derived from the model rather than
+#: written out.
+#:
+#: Membership of `ConditionDimensions` *is* the definition of what gates
+#: comparison (see its docstring), so a new dimension joins this set by being
+#: declared and a new annotation stays out of it by living on `Condition`. A
+#: hand-kept list here would be a second copy of that definition, and the one
+#: that drifts.
+#:
+#: This is the *unqualified* question - "do these two conditions contradict
+#: anywhere" - and it is the right argument only for a caller that has no field
+#: in hand. The per-field answer is `schema.registry.condition_dimensions_for`;
+#: passing this set where a field's own set belongs is FN-2 reinstated.
+CONDITION_DIMENSION_NAMES: frozenset[str] = frozenset(ConditionDimensions.model_fields)
 
 
 #: Printed spellings that denote a vocabulary member rather than a new value.
@@ -490,11 +620,40 @@ class Condition(ConditionDimensions):
         """
         return tuple(getattr(self, name) for name in ConditionDimensions.model_fields)
 
-    def comparable_with(self, other: Condition) -> bool:
-        """Whether these two specific values may be compared.
+    def comparable_with(self, other: Condition, *, dimensions: frozenset[str]) -> bool:
+        """Whether these two specific values may be compared, on `dimensions`.
 
-        Any dimension set on both sides must agree; a dimension absent on one side
-        is unknown rather than contradictory.
+        Any of the named dimensions set on both sides must agree; a dimension
+        absent on one side is unknown rather than contradictory.
+
+        **`dimensions` is required, and it scopes the gate to the parameter in
+        hand.** Every dimension used to gate every field, which meant a dimension
+        that says nothing about the field silently refused a real disagreement:
+        two sources naming different countries of origin produced no comparison
+        at all because one sheet was IEEE and the other IEC. That is FN-2, and
+        the direction tasks.md E.3a makes a spec violation - nothing surfaces a
+        comparison that never happened.
+
+        The rule is the contract's own, not an invention here. Its `note`
+        paragraph fixes it: *"A dimension that changes what a number means
+        belongs on `ConditionDimensions`; only an annotation belongs in `note`"*.
+        For a field no Conditions row governs, no dimension changes what it
+        means, so the honest gate is empty. Which dimensions govern which key is
+        `schema.registry.condition_dimensions_for`, hand-assigned from the
+        Conditions table and checked against it in both directions by
+        `tests/test_condition_gate_scope.py`.
+
+        Scoping the *call* rather than the type is deliberate. The frozen
+        contract has already refused a per-family `Condition` - "Splitting it per
+        family would give `Condition` a different shape per category, which the
+        comparison logic cannot carry - this is a known limit, not an oversight"
+        - so the shape is untouched and the caller says what it is asking about.
+        `CONDITION_DIMENSION_NAMES` is the unqualified question, for a caller
+        that genuinely wants "do these contradict anywhere".
+
+        No default, for the reason `ConflictQueueEntry.severity` carries none: a
+        default of "every dimension" is exactly the defect, and a forgotten
+        argument would reinstate it at a call site with nothing to show for it.
 
         **This relation is deliberately not transitive, so it must never be used to
         partition a candidate set.** `@30 degC` and `@40 degC` are both comparable
@@ -506,11 +665,75 @@ class Condition(ConditionDimensions):
         first-fit bucketing over a non-transitive relation gives a different
         conflict queue per document order. See issue #12.
         """
-        for name in ConditionDimensions.model_fields:
+        unknown = dimensions - CONDITION_DIMENSION_NAMES
+        if unknown:
+            # `note` and `derived` are the two that would otherwise pass silently:
+            # they are attributes of `Condition`, so `getattr` reads them, and the
+            # contract says in as many words that `note` "does not gate
+            # comparison". A misspelt dimension is the same hazard - `bassis`
+            # would read as "nothing to check here" and suppress without a trace,
+            # which is the failure direction that cannot be reviewed.
+            raise ValueError(
+                f"{sorted(unknown)} names nothing that gates comparison; the "
+                f"dimensions are {sorted(CONDITION_DIMENSION_NAMES)}. `note` and "
+                "`derived` are excluded by the contract: free text is provenance "
+                "for a reviewer, and how a dimension came to be filled does not "
+                "change what it says."
+            )
+        for name in dimensions:
             mine, theirs = getattr(self, name), getattr(other, name)
             if mine is not None and theirs is not None and mine != theirs:
                 return False
         return True
+
+
+def _reject_non_finite_value(value: object) -> object:
+    """Refuse a value the canonical encoder will refuse, at the point it is stored.
+
+    `CanonicalField.value` is `object | None`, which is what the contract's type
+    column requires - a value is a float, an int, a `DeclaredBand`, a `list[str]`
+    or a `dict[int, float]` depending on the row - so pydantic has no schema to
+    check finiteness against. Meanwhile `encoding.encode_value` refuses a
+    non-finite float with an error message that says, in as many words, "The
+    schema rejects these at construction". It did not.
+
+    The gap is not cosmetic. A store could hold a row `project_store` cannot
+    project, and the failure then surfaces at composition time - far from the
+    extractor that wrote it, with the C6 digest as the symptom. NaN is the worst
+    of the three because it is not equal to itself, so every "is this the value
+    we stored" check the pipeline makes answers no.
+
+    **Recursive, because the contract's own types are containers.**
+    `harmonic_spectrum` is `dict[int, float]` and eighteen rows are `list[str]`,
+    so a top-level check would guard the least likely case and miss the declared
+    ones. This walks exactly what `encode_value` walks, which is what makes its
+    claim true rather than nearly true.
+
+    Nested `BaseModel`s are left to their own validators - `DeclaredBand` already
+    rejects a non-finite bound, and re-checking it here would be a second
+    statement of a rule that has a home. A self-referential value is not guarded
+    against for the same reason `encode_value` does not: `json.dumps` cannot
+    represent one either, so it fails at the same boundary by the same route.
+    """
+    if isinstance(value, bool):  # before the numeric branch - bool is an int
+        return value
+    if isinstance(value, float | Decimal) and not math.isfinite(value):
+        raise ValueError(
+            f"non-finite value {value!r}: `encode_value` refuses it (contract C4 / "
+            "D-14), so a field holding one is a stored row the C6 projection "
+            "cannot project. NaN is additionally not equal to itself, so it "
+            "compares unequal to the value it was read back from."
+        )
+    if isinstance(value, str | bytes | bytearray):
+        return value
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_non_finite_value(key)
+            _reject_non_finite_value(item)
+    elif isinstance(value, list | tuple | set | frozenset):
+        for item in value:
+            _reject_non_finite_value(item)
+    return value
 
 
 class CanonicalField(BaseModel):
@@ -569,7 +792,7 @@ class CanonicalField(BaseModel):
     over, because a defence that cannot exist should not be implied to.
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra=_FORBID_UNDECLARED_KEYS)
 
     value: object | None = None
     unit: str | None = Field(default=None, description="Canonical unit per FR-ING-08")
@@ -584,6 +807,14 @@ class CanonicalField(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     conflict_status: ConflictStatus = ConflictStatus.NONE
     resolution: Resolution | None = None
+
+    @field_validator("value")
+    @classmethod
+    def _value_must_be_encodable(cls, value: object) -> object:
+        """See `_reject_non_finite_value`. Applied at the boundary that stores
+        the row, so the encoder's claim that "the schema rejects these at
+        construction" is true rather than aspirational."""
+        return _reject_non_finite_value(value)
 
     @field_validator("confidence")
     @classmethod
@@ -673,11 +904,13 @@ class CanonicalField(BaseModel):
         """
         unknown = set(changes) - set(type(self).model_fields)
         if unknown:
-            # `model_config` does not set `extra="forbid"`, so `model_validate`
-            # would drop these silently and return a field with the change not
-            # applied - `evolve(conflict_stauts=RESOLVED)` succeeding as a no-op.
-            # For an FR-HITL-06 audit path a silent no-op is the worse direction,
-            # and the route this replaces would at least have set the key.
+            # `model_config` now sets `extra="forbid"`, so `model_validate`
+            # would raise on these rather than drop them - which it did not when
+            # this check was written, and `evolve(conflict_stauts=RESOLVED)`
+            # succeeded as a silent no-op on an FR-HITL-06 audit path. Kept
+            # anyway, and not as belt-and-braces: this message names the field
+            # *and lists the known ones*, which is the diagnosis a caller who has
+            # just misspelt one needs. The raise was never the point.
             raise ValueError(
                 f"{type(self).__name__}.evolve() got unknown field(s): "
                 f"{sorted(unknown)}. Known fields: {sorted(type(self).model_fields)}"
@@ -820,7 +1053,7 @@ class CanonicalField(BaseModel):
 class ConflictCandidate(BaseModel):
     """One competing value for a field, as presented in the queue (FR-HITL-03)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     value: object | None
     unit: str | None
@@ -839,6 +1072,16 @@ class ConflictCandidate(BaseModel):
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("value")
+    @classmethod
+    def _value_must_be_encodable(cls, value: object) -> object:
+        """The same check `CanonicalField.value` carries, applied here for the
+        reason `_fold_negative_zero` gives just below: the defect is the *type*,
+        not the file. A candidate's value goes through `_canonical` on every
+        `comparison_pairs` call, so a non-finite one raises from the sort path
+        rather than from the store - later, and further from the extractor."""
+        return _reject_non_finite_value(value)
 
     @field_validator("confidence")
     @classmethod
@@ -875,7 +1118,7 @@ class ConflictQueueEntry(BaseModel):
     9 and does not exist yet.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     entry_id: str
     field_name: str

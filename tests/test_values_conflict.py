@@ -172,6 +172,95 @@ def test_the_rounding_floor_protects_the_coarser_source() -> None:
     assert values_conflict(coarse, _c(-0.33, unit="%/degC", doc="doc-b"), tolerance=GAMMA).conflicts
 
 
+def test_percent_per_kelvin_is_the_same_unit_as_percent_per_degree_celsius() -> None:
+    """FN-5. A temperature *coefficient* is per-degree-*interval*, and one degree
+    Celsius is one kelvin as an interval — so `%/degC`, `%/K` and `%/°C` are
+    three spellings of one unit needing **no conversion**.
+
+    Three documents say so: the frozen contract's Conditions table
+    ("`%/degC` ≡ `%/K`"), tasks.md B.3 (⚠️-marked), and clarifications.md under
+    the heading "The unit conversion that must NOT happen".
+
+    `_normalise_text` is NFKC, case and whitespace only, so `'%/degc' != '%/k'`
+    and **every** temperature-coefficient comparison between a K-quoting source
+    and a degC-quoting one came back a `UNIT_NORMALIZATION` conflict. All three
+    coefficients are on contract and every PV datasheet carries them, so this is
+    a per-module, per-pair queue item on a field that never disagreed.
+
+    ⚠️ Aliased, never converted. A generic unit library applies the +273.15
+    offset and silently destroys the value — `-0.29 %/K` becoming `272.86` is a
+    number that passes every plausibility gate B.5 states except the sign.
+    """
+    for kelvin in ("%/K", "%/k", "% / K"):
+        verdict = values_conflict(
+            _c(-0.29, unit="%/degC"),
+            _c(-0.29, unit=kelvin, doc="doc-b"),
+            tolerance=GAMMA,
+            field_name="temp_coeff_pmax",
+        )
+        assert not verdict.conflicts, kelvin
+        assert verdict.conflict_class is not ConflictClass.UNIT_NORMALIZATION, kelvin
+
+
+def test_the_degree_sign_spelling_is_the_same_unit_too() -> None:
+    """`%/°C` is what a datasheet actually prints, and `℃` (U+2103) is what OCR
+    leaves behind. The second folds to the first under NFKC already; the first
+    has to reach `%/degC` through the alias, or a sheet printing the symbol and
+    one printing the word are a unit conflict."""
+    for printed in ("%/°C", "%/℃", "%/degC", "%/K"):
+        assert not values_conflict(
+            _c(-0.29, unit="%/degC"),
+            _c(-0.29, unit=printed, doc="doc-b"),
+            tolerance=GAMMA,
+            field_name="temp_coeff_pmax",
+        ).conflicts, printed
+
+
+def test_the_alias_is_not_a_licence_to_normalise_other_units() -> None:
+    """The alias closes one documented equivalence. It must not widen into
+    "units that look similar are the same": `W` against `kW` is a 1000x
+    extraction error and D-2 is explicit that a unit mismatch is never resolved
+    by tolerance. Kelvin *alone* is a temperature, not an interval — a value in
+    `K` is not a value in `%/K`, and `300 K` is not `300 degC`.
+
+    That last pair is the one that matters most, and it is the case a folding
+    rule reaches by accident: an implementation that rewrites `k` to `degc`
+    wherever it occurs, rather than looking up two whole spellings, makes `K`
+    and `degC` one unit - and the +273.15 those two really are apart is the
+    exact error the alias exists to keep out of this codebase. Verified against
+    that mutation: without this assertion it survives the whole suite."""
+    ambient = tolerance_for("rated_ac_power_temp")
+    assert values_conflict(
+        _c(300.0, unit="K"), _c(300.0, unit="degC", doc="doc-b"), tolerance=ambient
+    ).conflicts
+    assert values_conflict(
+        _c(-0.29, unit="%/degC"), _c(-0.29, unit="K", doc="doc-b"), tolerance=GAMMA
+    ).conflicts
+    assert values_conflict(
+        _c(-0.29, unit="%/degC"), _c(-0.29, unit="degC", doc="doc-b"), tolerance=GAMMA
+    ).conflicts
+    assert values_conflict(
+        _c(650.0, unit="W"), _c(650.0, unit="kW", doc="doc-b"), tolerance=NAMEPLATE
+    ).conflicts
+    assert values_conflict(
+        _c(0.35, unit="USD / W"), _c(0.35, unit="USD/kW", doc="doc-b"), tolerance=NAMEPLATE
+    ).conflicts
+
+
+def test_a_real_coefficient_disagreement_still_survives_the_alias() -> None:
+    """The direction the alias must not swallow. Folding the unit removes the
+    unit conflict and *hands the pair to the numeric comparison*, which is the
+    point — two sheets quoting -0.29 and -0.33 %/K still disagree."""
+    verdict = values_conflict(
+        _c(-0.29, unit="%/degC"),
+        _c(-0.33, unit="%/K", doc="doc-b"),
+        tolerance=GAMMA,
+        field_name="temp_coeff_pmax",
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+
+
 def test_an_exact_rule_still_honours_the_rounding_floor() -> None:
     """Otherwise `1500` vs `1500.0` on max system voltage would be a conflict."""
     exact = tolerance_for("max_system_voltage")

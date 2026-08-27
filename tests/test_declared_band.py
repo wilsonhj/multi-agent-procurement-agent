@@ -15,11 +15,14 @@ from procurement_agent.schema import (
     CanonicalField,
     ConflictCandidate,
     DeclaredBand,
+    DeclaredBandUnitError,
     SourceRef,
     SourceTier,
     ToleranceKind,
+    ToleranceRule,
 )
-from procurement_agent.services.conflict_hitl import comparison_pairs
+from procurement_agent.services.conflict_hitl import comparison_pairs, values_conflict
+from procurement_agent.services.conflict_hitl.tolerance import FieldTolerance
 
 #: `Power Tolerance 0 ~ +5` — Trina Vertex N NEG21C.20.
 TRINA = DeclaredBand(low=0.0, high=5.0, kind=ToleranceKind.ABSOLUTE, unit="W")
@@ -34,13 +37,15 @@ def test_a_relative_band_is_not_multiplied_out_at_extraction() -> None:
     family, so resolving early gives 18.15 W at one bin and 18.75 W at another —
     a disagreement between two rows whose source text is character-identical."""
     assert JINKO.high == 3.0
-    assert JINKO.resolve(605.0) != JINKO.resolve(625.0)
-    assert JINKO.resolve(620.0) == pytest.approx((620.0, 638.6))
+    assert JINKO.resolve(605.0, nominal_unit="W") != JINKO.resolve(625.0, nominal_unit="W")
+    assert JINKO.resolve(620.0, nominal_unit="W") == pytest.approx((620.0, 638.6))
 
 
 def test_percent_and_watts_are_not_interchangeable() -> None:
     """3% of 620 W is 18.6 W — nearly four 5 W bin steps. This is the whole issue."""
-    assert JINKO.resolve(620.0)[1] - 620.0 > 3 * (TRINA.resolve(620.0)[1] - 620.0)
+    assert JINKO.resolve(620.0, nominal_unit="W")[1] - 620.0 > 3 * (
+        TRINA.resolve(620.0, nominal_unit="W")[1] - 620.0
+    )
 
 
 def test_a_relative_band_on_a_negative_nominal_is_not_inverted() -> None:
@@ -49,7 +54,7 @@ def test_a_relative_band_on_a_negative_nominal_is_not_inverted() -> None:
     low exceeds its high, which intersects nothing and silently agrees with
     nothing."""
     band = DeclaredBand(low=-3.0, high=3.0, kind=ToleranceKind.RELATIVE)
-    low, high = band.resolve(-0.29)
+    low, high = band.resolve(-0.29, nominal_unit="%/degC")
     assert low < high
     assert low == pytest.approx(-0.2987)
     assert high == pytest.approx(-0.2813)
@@ -58,30 +63,128 @@ def test_a_relative_band_on_a_negative_nominal_is_not_inverted() -> None:
 def test_touching_ranges_agree() -> None:
     """650 W and 655 W modules both declared `0~+5W` guarantee [650,655] and
     [655,660]. A part measuring exactly 655 W satisfies both labels."""
-    assert TRINA.agrees(650.0, TRINA, 655.0)
-    assert not TRINA.agrees(650.0, TRINA, 656.0)
+    assert TRINA.agrees(650.0, TRINA, 655.0, nominal_unit="W", other_unit="W")
+    assert not TRINA.agrees(650.0, TRINA, 656.0, nominal_unit="W", other_unit="W")
 
 
 def test_a_band_wider_than_the_bin_step_overlaps_by_construction() -> None:
     """Canadian Solar's `0~+10W` is two 5 W bin steps, so a nominal 650 and a
     nominal 655 have overlapping guaranteed ranges as printed. Not a defect to
     correct — a fact the comparison has to tolerate."""
-    assert CANADIAN.agrees(650.0, CANADIAN, 655.0)
-    assert CANADIAN.agrees(650.0, CANADIAN, 660.0)
+    assert CANADIAN.agrees(650.0, CANADIAN, 655.0, nominal_unit="W", other_unit="W")
+    assert CANADIAN.agrees(650.0, CANADIAN, 660.0, nominal_unit="W", other_unit="W")
 
 
 def test_a_missing_band_on_the_other_side_is_a_point_not_a_free_pass() -> None:
     """No printed band means no evidence of one. Treating the other nominal as
     exact can raise a conflict a shared band would have absorbed — one extra
     queue item, where the permissive reading silently merges two SKUs."""
-    assert TRINA.agrees(650.0, None, 653.0)
-    assert not TRINA.agrees(650.0, None, 656.0)
+    assert TRINA.agrees(650.0, None, 653.0, nominal_unit="W", other_unit="W")
+    assert not TRINA.agrees(650.0, None, 656.0, nominal_unit="W", other_unit="W")
 
 
 def test_mismatched_conventions_still_compare() -> None:
     """Trina's absolute against Jinko's relative: the point of resolving late."""
-    assert TRINA.agrees(650.0, JINKO, 652.0)
-    assert not TRINA.agrees(650.0, JINKO, 700.0)
+    assert TRINA.agrees(650.0, JINKO, 652.0, nominal_unit="W", other_unit="W")
+    assert not TRINA.agrees(650.0, JINKO, 700.0, nominal_unit="W", other_unit="W")
+
+
+def test_an_absolute_band_refuses_a_nominal_in_another_unit() -> None:
+    """FN-3. `unit` was validated at construction and then read by nobody:
+    `resolve` and `agrees` added `low`/`high` straight onto the nominal, and
+    `_compare_numbers` never looked at it either.
+
+    A `0 ~ +5 W` band against a nominal in kW gave `resolve(0.650) ==
+    (0.65, 5.65)`, so a 0.650 kW value and a 5.0 kW one - a 7.7x disagreement,
+    and exactly the 1000x class of extraction error D-2 calls out - had
+    intersecting guaranteed ranges and raised no conflict at all.
+
+    Refusing is the only honest answer. There is no unit algebra in this repo
+    and inventing one here would be the "conversion resolves a mismatch" move
+    FR-ING-08 forbids, so a band that cannot show it is in the nominal's unit
+    declines to produce a range rather than producing a wrong one.
+    """
+    with pytest.raises(DeclaredBandUnitError):
+        TRINA.resolve(0.650, nominal_unit="kW")
+    with pytest.raises(DeclaredBandUnitError):
+        TRINA.resolve(650.0, nominal_unit=None)
+    assert TRINA.resolve(650.0, nominal_unit="W") == (650.0, 655.0)
+
+
+def test_the_absorbed_disagreement_is_the_case_this_closes() -> None:
+    """The measured defect, as the comparison it silently passed."""
+    with pytest.raises(DeclaredBandUnitError):
+        TRINA.agrees(0.650, TRINA, 5.0, nominal_unit="kW", other_unit="kW")
+    # Both in the band's own unit, the same numbers are the conflict they are.
+    assert not TRINA.agrees(650.0, TRINA, 5000.0, nominal_unit="W", other_unit="W")
+
+
+def test_two_bands_in_different_units_do_not_compare() -> None:
+    """`0 ~ +5 W` against `0 ~ +0.01 kW` are the same guarantee and this cannot
+    say so, which is the point: it declines rather than adding 0.01 to a number
+    in watts."""
+    kilo = DeclaredBand(low=0.0, high=0.01, kind=ToleranceKind.ABSOLUTE, unit="kW")
+    with pytest.raises(DeclaredBandUnitError):
+        TRINA.agrees(650.0, kilo, 650.0, nominal_unit="W", other_unit="W")
+
+
+def test_the_unit_check_folds_spelling_but_not_scale() -> None:
+    """The same fold the rest of the comparison uses - NFKC, case, whitespace -
+    so a sheet writing `w` is not a unit error. Nothing beyond that: `Wp` is not
+    accepted for `W`, because deciding they are one unit is a technical claim,
+    and `test_an_absolute_band_without_a_unit_is_rejected` already says where
+    the band's unit is supposed to come from - the canonical field, which knows
+    its own."""
+    assert TRINA.resolve(650.0, nominal_unit=" w ") == (650.0, 655.0)
+    with pytest.raises(DeclaredBandUnitError):
+        TRINA.resolve(650.0, nominal_unit="Wp")
+
+
+def test_a_relative_band_is_scale_free_and_says_so() -> None:
+    """A percentage of a quantity is a percentage of it in any unit, so `%` needs
+    no unit check - and asserting that is what stops the check being copied onto
+    the branch where it would be wrong. 3% of 0.620 kW and 3% of 620 W are one
+    band, written twice."""
+    watts = JINKO.resolve(620.0, nominal_unit="W")
+    kilowatts = JINKO.resolve(0.620, nominal_unit="kW")
+    assert watts == pytest.approx((620.0, 638.6))
+    assert kilowatts == pytest.approx((0.620, 0.6386))
+    assert JINKO.resolve(620.0, nominal_unit=None) == watts
+
+
+def test_a_declared_band_conflict_reaches_the_comparison_with_its_unit() -> None:
+    """Wiring, not just the method: `_compare_numbers` has to hand the
+    candidates' own units to `agrees`, or the check sits in `DeclaredBand` and
+    nothing ever asks it. This is the second half of FN-3 - the first fix made
+    the method able to refuse, and only this makes it get asked."""
+    tolerance = FieldTolerance(rule=ToleranceRule.DECLARED_BAND)
+
+    def candidate(value: float, unit: str, doc: str) -> ConflictCandidate:
+        return ConflictCandidate(
+            value=value,
+            unit=unit,
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id=doc),
+            confidence=0.9,
+        )
+
+    same = values_conflict(
+        candidate(650.0, "W", "a"),
+        candidate(656.0, "W", "b"),
+        tolerance=tolerance,
+        band_a=TRINA,
+        band_b=TRINA,
+    )
+    assert same.conflicts, "[650,655] and [656,661] are disjoint"
+
+    with pytest.raises(DeclaredBandUnitError):
+        values_conflict(
+            candidate(0.650, "kW", "a"),
+            candidate(5.0, "kW", "b"),
+            tolerance=tolerance,
+            band_a=TRINA,
+            band_b=TRINA,
+        )
 
 
 def test_an_absolute_band_without_a_unit_is_rejected() -> None:
@@ -120,7 +223,7 @@ def test_a_band_is_reflexive() -> None:
     through the store without raising a conflict against its own prior state."""
     for band in (TRINA, JINKO, CANADIAN):
         for nominal in (650.0, -0.29, 0.0):
-            assert band.agrees(nominal, band, nominal)
+            assert band.agrees(nominal, band, nominal, nominal_unit=band.unit, other_unit=band.unit)
 
 
 def test_a_band_survives_a_store_round_trip() -> None:
@@ -128,7 +231,7 @@ def test_a_band_survives_a_store_round_trip() -> None:
     reloads differently moves the conflict queue."""
     revived = DeclaredBand.model_validate_json(JINKO.model_dump_json())
     assert revived == JINKO
-    assert revived.resolve(620.0) == JINKO.resolve(620.0)
+    assert revived.resolve(620.0, nominal_unit="W") == JINKO.resolve(620.0, nominal_unit="W")
 
 
 def test_a_band_is_a_field_value_not_a_second_key_on_the_field() -> None:
@@ -162,8 +265,8 @@ def test_two_bands_order_canonically_as_candidates() -> None:
         )
 
     a, b = candidate(TRINA, "datasheet"), candidate(CANADIAN, "supply-agreement")
-    forward = comparison_pairs([a, b])
-    backward = comparison_pairs([b, a])
+    forward = comparison_pairs([a, b], field_name="power_tolerance")
+    backward = comparison_pairs([b, a], field_name="power_tolerance")
     assert len(forward) == 1
     assert [(x.value, y.value) for x, y in forward] == [(x.value, y.value) for x, y in backward]
 
@@ -175,12 +278,12 @@ def test_resolving_a_band_cannot_manufacture_an_infinite_range() -> None:
     `agrees` then returns True against any value at all."""
     band = DeclaredBand(low=-3.0, high=3.0, kind=ToleranceKind.RELATIVE)
     with pytest.raises(ValueError):
-        band.resolve(1e308)
+        band.resolve(1e308, nominal_unit="W")
     wide = DeclaredBand(low=-1e308, high=1e308, kind=ToleranceKind.ABSOLUTE, unit="W")
     with pytest.raises(ValueError):
-        wide.resolve(1e308)
+        wide.resolve(1e308, nominal_unit="W")
     # 1e300 does *not* overflow that band — checked, so the case above is the
     # boundary rather than a guess at one.
-    assert all(map(math.isfinite, wide.resolve(1e300)))
+    assert all(map(math.isfinite, wide.resolve(1e300, nominal_unit="W")))
     # Ordinary magnitudes are untouched.
-    assert band.resolve(650.0) == pytest.approx((630.5, 669.5))
+    assert band.resolve(650.0, nominal_unit="W") == pytest.approx((630.5, 669.5))

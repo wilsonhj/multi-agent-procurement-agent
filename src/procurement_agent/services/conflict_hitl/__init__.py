@@ -23,6 +23,7 @@ from decimal import Decimal, InvalidOperation
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...schema import (
+    CONDITION_DIMENSION_NAMES,
     CanonicalField,
     ConflictCandidate,
     ConflictClass,
@@ -33,6 +34,7 @@ from ...schema import (
     ToleranceRule,
     encode_value,
 )
+from ...schema.registry import condition_dimensions_for
 from .severity import assign_severity as assign_severity  # re-exported: the D-3 lookup
 from .tolerance import FieldTolerance
 from .tolerance import tolerance_for as tolerance_for  # re-exported: the table's entry point
@@ -149,9 +151,9 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
 
 
 def comparison_pairs(
-    candidates: Sequence[ConflictCandidate],
+    candidates: Sequence[ConflictCandidate], *, field_name: str
 ) -> list[tuple[ConflictCandidate, ConflictCandidate]]:
-    """Every pair of candidates that may be compared like for like.
+    """Every pair of candidates for `field_name` that may be compared like for like.
 
     **Pairs, not groups.** Comparability is genuinely not transitive - `@30 degC`
     and `@40 degC` are each comparable with an unstated condition but not with
@@ -179,17 +181,40 @@ def comparison_pairs(
 
     `Condition.grouping_key()` remains the right tool for *displaying* candidates
     grouped by condition; it is not the right tool for deciding what to compare.
+
+    **`field_name` is required, and it is the third shipped failure here.** The
+    gate used to apply every `ConditionDimensions` field to every key, so a
+    dimension that says nothing about the parameter in hand still refused the
+    comparison: `country_of_origin` China against Vietnam produced *no pair at
+    all* because one sheet was IEEE and the other IEC. That is a CRITICAL,
+    BABA/FEOC-relevant field reaching no queue entry, so the compose gate never
+    fires - the same invisible false negative as the exact-key grouping above,
+    one layer down. FN-2.
+
+    A default would have preserved it. Every call site would keep the
+    field-agnostic gate, silently, and the argument that fixes the defect would
+    be the one nobody passes. `ConflictQueueEntry.severity` carries no default
+    for the same reason: a safety interlock that can be forgotten is not one.
+
+    Which dimensions govern which key is `registry.condition_dimensions_for`,
+    transcribed by hand from the frozen contract's Conditions table and checked
+    against it in both directions. Deriving it from key patterns was measured and
+    rejected - a pattern written for Imp swallows `impedance_percent` and hands
+    Transformer %Z the PV `basis` dimension, which is a *new* suppression
+    introduced by the fix. A key with no row gates on nothing, which is the noise
+    direction rather than the suppressing one.
     """
+    dimensions = condition_dimensions_for(field_name)
     ordered = sorted(candidates, key=_ordering_key)
     return [
         (left, right)
         for left, right in itertools.combinations(ordered, 2)
-        if left.condition.comparable_with(right.condition)
+        if left.condition.comparable_with(right.condition, dimensions=dimensions)
     ]
 
 
 def conflict_groupings(
-    candidates: Sequence[ConflictCandidate],
+    candidates: Sequence[ConflictCandidate], *, field_name: str
 ) -> list[tuple[ConflictCandidate, ConflictCandidate]]:
     """The candidate sets a `ConflictQueueEntry` may be built from: **exactly one
     comparable pair each**.
@@ -226,8 +251,13 @@ def conflict_groupings(
     - **Queue inflation.** n mutually comparable candidates yield C(n,2) entries
       rather than one, against a review budget `Settings.review_budget_fraction`
       explicitly meters.
+
+    `field_name` is passed straight through, and is required here for the reason
+    it is required there: this is the function a `ConflictQueueEntry` is built
+    from, so a field-agnostic gate at this boundary is the one that reaches the
+    queue - or rather, does not.
     """
-    return comparison_pairs(candidates)
+    return comparison_pairs(candidates, field_name=field_name)
 
 
 def comparison_groups(candidates: Sequence[ConflictCandidate]) -> list[list[ConflictCandidate]]:
@@ -469,6 +499,7 @@ def values_conflict(
     b: ConflictCandidate,
     *,
     tolerance: FieldTolerance,
+    field_name: str | None = None,
     band_a: DeclaredBand | None = None,
     band_b: DeclaredBand | None = None,
 ) -> ConflictVerdict:
@@ -500,17 +531,41 @@ def values_conflict(
     - **Missing on one side?** Not a conflict - a gap. It flags MISSING_DATA and
       triggers the FR-WEB-01 search; `RECORD_VS_WEB` needs both sides to hold a
       value.
+
+    `field_name` scopes the condition guard below to the dimensions that actually
+    govern this parameter, so it agrees with the gate `comparison_pairs` applied
+    when it selected the pair. Scoping only that one would have turned a fixed
+    suppression into a crash: `comparison_pairs` would hand over a
+    `country_of_origin` pair tagged with two standards regimes and this guard
+    would refuse it.
+
+    Optional, unlike on `comparison_pairs`, because two callers have no contract
+    field to name - `services.identity` corroborates Voc and Isc, which are not
+    contract keys, and the tests construct ad-hoc tolerances. Omitting it applies
+    **every** dimension, which is today's behaviour and deliberately the strict
+    reading: this guard *raises*, so an over-wide gate here is loud where the
+    same over-wide gate in `comparison_pairs` was silent. The asymmetry between
+    the two defaults is the asymmetry between refusing and dropping.
     """
     if tolerance.rule is ToleranceRule.NEVER_COMPARE:
         raise IncomparableCandidatesError(
             "this field names two different physical quantities; comparing them is "
             "not a wide tolerance, it is not a comparison (D-2)"
         )
-    if not a.condition.comparable_with(b.condition):
+    dimensions = (
+        CONDITION_DIMENSION_NAMES if field_name is None else condition_dimensions_for(field_name)
+    )
+    if not a.condition.comparable_with(b.condition, dimensions=dimensions):
         raise IncomparableCandidatesError(
             f"conditions do not match ({a.condition.grouping_key()} vs "
             f"{b.condition.grouping_key()}); a mismatch is not a conflict, it is "
             "not a comparison (D-1). Use comparison_pairs to select candidates."
+            + (
+                ""
+                if field_name is not None
+                else " No field_name was given, so every dimension gated this "
+                "comparison; pass one if only some of them govern the parameter."
+            )
         )
 
     if a.value is None or b.value is None:

@@ -364,6 +364,22 @@ class ConditionDimensions(BaseModel):
         return _normalise_token(value)
 
 
+#: Every dimension that can gate a comparison, derived from the model rather than
+#: written out.
+#:
+#: Membership of `ConditionDimensions` *is* the definition of what gates
+#: comparison (see its docstring), so a new dimension joins this set by being
+#: declared and a new annotation stays out of it by living on `Condition`. A
+#: hand-kept list here would be a second copy of that definition, and the one
+#: that drifts.
+#:
+#: This is the *unqualified* question - "do these two conditions contradict
+#: anywhere" - and it is the right argument only for a caller that has no field
+#: in hand. The per-field answer is `schema.registry.condition_dimensions_for`;
+#: passing this set where a field's own set belongs is FN-2 reinstated.
+CONDITION_DIMENSION_NAMES: frozenset[str] = frozenset(ConditionDimensions.model_fields)
+
+
 #: Printed spellings that denote a vocabulary member rather than a new value.
 #:
 #: Not convenience. Closing the vocabularies turned every unlisted spelling into
@@ -490,11 +506,40 @@ class Condition(ConditionDimensions):
         """
         return tuple(getattr(self, name) for name in ConditionDimensions.model_fields)
 
-    def comparable_with(self, other: Condition) -> bool:
-        """Whether these two specific values may be compared.
+    def comparable_with(self, other: Condition, *, dimensions: frozenset[str]) -> bool:
+        """Whether these two specific values may be compared, on `dimensions`.
 
-        Any dimension set on both sides must agree; a dimension absent on one side
-        is unknown rather than contradictory.
+        Any of the named dimensions set on both sides must agree; a dimension
+        absent on one side is unknown rather than contradictory.
+
+        **`dimensions` is required, and it scopes the gate to the parameter in
+        hand.** Every dimension used to gate every field, which meant a dimension
+        that says nothing about the field silently refused a real disagreement:
+        two sources naming different countries of origin produced no comparison
+        at all because one sheet was IEEE and the other IEC. That is FN-2, and
+        the direction tasks.md E.3a makes a spec violation - nothing surfaces a
+        comparison that never happened.
+
+        The rule is the contract's own, not an invention here. Its `note`
+        paragraph fixes it: *"A dimension that changes what a number means
+        belongs on `ConditionDimensions`; only an annotation belongs in `note`"*.
+        For a field no Conditions row governs, no dimension changes what it
+        means, so the honest gate is empty. Which dimensions govern which key is
+        `schema.registry.condition_dimensions_for`, hand-assigned from the
+        Conditions table and checked against it in both directions by
+        `tests/test_condition_gate_scope.py`.
+
+        Scoping the *call* rather than the type is deliberate. The frozen
+        contract has already refused a per-family `Condition` - "Splitting it per
+        family would give `Condition` a different shape per category, which the
+        comparison logic cannot carry - this is a known limit, not an oversight"
+        - so the shape is untouched and the caller says what it is asking about.
+        `CONDITION_DIMENSION_NAMES` is the unqualified question, for a caller
+        that genuinely wants "do these contradict anywhere".
+
+        No default, for the reason `ConflictQueueEntry.severity` carries none: a
+        default of "every dimension" is exactly the defect, and a forgotten
+        argument would reinstate it at a call site with nothing to show for it.
 
         **This relation is deliberately not transitive, so it must never be used to
         partition a candidate set.** `@30 degC` and `@40 degC` are both comparable
@@ -506,7 +551,22 @@ class Condition(ConditionDimensions):
         first-fit bucketing over a non-transitive relation gives a different
         conflict queue per document order. See issue #12.
         """
-        for name in ConditionDimensions.model_fields:
+        unknown = dimensions - CONDITION_DIMENSION_NAMES
+        if unknown:
+            # `note` and `derived` are the two that would otherwise pass silently:
+            # they are attributes of `Condition`, so `getattr` reads them, and the
+            # contract says in as many words that `note` "does not gate
+            # comparison". A misspelt dimension is the same hazard - `bassis`
+            # would read as "nothing to check here" and suppress without a trace,
+            # which is the failure direction that cannot be reviewed.
+            raise ValueError(
+                f"{sorted(unknown)} names nothing that gates comparison; the "
+                f"dimensions are {sorted(CONDITION_DIMENSION_NAMES)}. `note` and "
+                "`derived` are excluded by the contract: free text is provenance "
+                "for a reviewer, and how a dimension came to be filled does not "
+                "change what it says."
+            )
+        for name in dimensions:
             mine, theirs = getattr(self, name), getattr(other, name)
             if mine is not None and theirs is not None and mine != theirs:
                 return False

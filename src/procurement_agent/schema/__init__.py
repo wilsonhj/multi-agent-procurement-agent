@@ -23,6 +23,7 @@ from .enums import (
     WorkbookTab,
 )
 from .field import (
+    CONDITION_DIMENSION_NAMES,
     CanonicalField,
     Condition,
     ConditionDimensions,
@@ -36,6 +37,7 @@ from .field import (
 
 __all__ = [
     "CATEGORY_TO_TAB",
+    "CONDITION_DIMENSION_NAMES",
     "CanonicalField",
     "CellFlag",
     "ComponentCategory",

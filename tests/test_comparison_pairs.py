@@ -24,6 +24,7 @@ from procurement_agent.schema import (
     SourceTier,
     UnencodableValueError,
 )
+from procurement_agent.schema.registry import condition_dimensions_for
 from procurement_agent.services.conflict_hitl import (
     _canonical,
     _ordering_key,
@@ -46,6 +47,18 @@ def _candidate(
     )
 
 
+#: The field the PV fixtures below model. `comparison_pairs` is scoped to a
+#: parameter (FN-2), so every call has to name one, and naming the *right* one is
+#: what keeps these cases real: `nameplate_power` is gated on `basis`, which is
+#: the dimension the STC/NOCT fixtures carry.
+PV_POWER = "nameplate_power"
+
+#: The Sungrow trio is a derating curve, whose dimension is `temperature_c` -
+#: the gate the contract puts on inverter rated power, not on PV nameplate.
+#: Using `PV_POWER` for those cases would make them pass for the wrong reason,
+#: since `nameplate_power` is not gated on temperature at all.
+INVERTER_POWER = "rated_ac_power"
+
 #: A commercial contract states a number with no test condition; datasheets and
 #: listings always state one. The asymmetry is the normal case, not an edge one.
 AGREEMENT = _candidate(650.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
@@ -60,7 +73,7 @@ def _values(pairs: list[tuple[ConflictCandidate, ConflictCandidate]]) -> list[tu
 def test_the_system_of_record_value_is_not_stranded() -> None:
     """A 7.1% gap between a signed agreement and the datasheet changes module
     count and $/W. Exact-key grouping compared the 650 W agreement with nothing."""
-    values = _values(comparison_pairs([AGREEMENT, DATASHEET, CEC]))
+    values = _values(comparison_pairs([AGREEMENT, DATASHEET, CEC], field_name=PV_POWER))
     assert (650.0, 700.0) in values or (700.0, 650.0) in values
     assert (645.0, 650.0) in values or (650.0, 645.0) in values
 
@@ -72,21 +85,21 @@ def test_a_less_specific_condition_still_compares() -> None:
     system-of-record value stayed invisible."""
     loose = _candidate(650.0, Condition(basis=MeasurementBasis.STC), SourceTier.SYSTEM_OF_RECORD)
     precise = _candidate(700.0, Condition(basis=MeasurementBasis.STC, temperature_c=25.0))
-    assert len(comparison_pairs([loose, precise])) == 1
+    assert len(comparison_pairs([loose, precise], field_name=PV_POWER)) == 1
 
 
 def test_genuinely_different_conditions_never_compare() -> None:
     """The Sungrow case still holds: @30 degC and @40 degC are not a disagreement."""
     eu = _candidate(352.0, Condition(temperature_c=30.0), SourceTier.SYSTEM_OF_RECORD)
     cec = _candidate(320.865, Condition(temperature_c=40.0))
-    assert comparison_pairs([eu, cec]) == []
+    assert comparison_pairs([eu, cec], field_name=INVERTER_POWER) == []
 
 
 def test_output_is_identical_under_every_permutation() -> None:
     """Not just the same set — the same list, since the queue payload is a list
     and FR-OUT-06 makes composition a pure function of the store."""
     outputs = {
-        tuple(_values(comparison_pairs(list(order))))
+        tuple(_values(comparison_pairs(list(order), field_name=PV_POWER)))
         for order in itertools.permutations([AGREEMENT, DATASHEET, CEC])
     }
     assert len(outputs) == 1
@@ -99,7 +112,7 @@ def test_no_pair_is_raised_twice() -> None:
     stated_b = _candidate(690.0, Condition(temperature_c=30.0))
     bare_a = _candidate(650.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
     bare_b = _candidate(655.0, Condition())
-    values = _values(comparison_pairs([stated_a, stated_b, bare_a, bare_b]))
+    values = _values(comparison_pairs([stated_a, stated_b, bare_a, bare_b], field_name=PV_POWER))
     assert len(values) == len(set(values))
     assert sum(1 for pair in values if set(pair) == {650.0, 655.0}) == 1
 
@@ -109,7 +122,7 @@ def test_an_empty_string_condition_does_not_masquerade_as_stated() -> None:
     blank = _candidate(650.0, Condition(basis="   "), SourceTier.SYSTEM_OF_RECORD)  # type: ignore[arg-type]
     assert blank.condition.basis is None
     assert blank.condition.is_unstated()
-    assert len(comparison_pairs([blank, DATASHEET])) == 1
+    assert len(comparison_pairs([blank, DATASHEET], field_name=PV_POWER)) == 1
 
 
 def test_signed_zero_does_not_reorder_groups() -> None:
@@ -154,7 +167,7 @@ def test_derived_serialises_deterministically() -> None:
 def test_fewer_than_two_candidates_is_not_a_comparison(
     candidates: list[ConflictCandidate],
 ) -> None:
-    assert comparison_pairs(candidates) == []
+    assert comparison_pairs(candidates, field_name=PV_POWER) == []
 
 
 def test_groups_are_display_only_and_still_deterministic() -> None:
@@ -188,7 +201,7 @@ def test_output_is_a_golden_ordered_list() -> None:
     other as well as with the unstated agreement - three pairs, not two. Writing
     this expectation is what surfaced that; the permutation test could not.
     """
-    pairs = comparison_pairs([CEC, AGREEMENT, DATASHEET])
+    pairs = comparison_pairs([CEC, AGREEMENT, DATASHEET], field_name=PV_POWER)
     assert [(float(a.value), float(b.value)) for a, b in pairs] == [  # type: ignore[arg-type]
         (645.0, 700.0),
         (645.0, 650.0),
@@ -235,8 +248,8 @@ def test_every_ordering_element_is_load_bearing(element: str, change: dict[str, 
     other = base.model_copy(update=change)
     assert other != base, f"the {element} fixture does not actually differ"
 
-    forward = comparison_pairs([base, other])
-    backward = comparison_pairs([other, base])
+    forward = comparison_pairs([base, other], field_name=PV_POWER)
+    backward = comparison_pairs([other, base], field_name=PV_POWER)
     assert len(forward) == 1 and len(backward) == 1
     assert forward[0][0] == backward[0][0], (
         f"candidates differing only in {element} tie under `_ordering_key`, so the "
@@ -286,8 +299,8 @@ def test_absent_and_empty_do_not_tie_the_ordering_key(
     b = base.model_copy(update=empty)
     assert a != b, f"the {element} fixture does not actually differ"
 
-    forward = comparison_pairs([a, b])
-    backward = comparison_pairs([b, a])
+    forward = comparison_pairs([a, b], field_name=PV_POWER)
+    backward = comparison_pairs([b, a], field_name=PV_POWER)
     assert len(forward) == 1 and len(backward) == 1
     assert forward[0][0] == backward[0][0], (
         f"an absent {element} and an empty one tie under `_ordering_key`, so the "
@@ -310,8 +323,8 @@ def test_candidates_differing_only_in_verbatim_value_still_order_canonically() -
         confidence=0.9,
     )
     b = a.model_copy(update={"verbatim_value": "650Wp"})
-    forward = comparison_pairs([a, b])
-    backward = comparison_pairs([b, a])
+    forward = comparison_pairs([a, b], field_name=PV_POWER)
+    backward = comparison_pairs([b, a], field_name=PV_POWER)
     assert [(x.verbatim_value, y.verbatim_value) for x, y in forward] == [
         (x.verbatim_value, y.verbatim_value) for x, y in backward
     ]
@@ -326,12 +339,14 @@ def test_a_queue_entry_never_holds_two_incomparable_candidates() -> None:
     bare = _candidate(320.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
     cec = _candidate(320.865, Condition(temperature_c=40.0))
 
-    union = {c.condition.temperature_c for pair in comparison_pairs([eu, bare, cec]) for c in pair}
+    dimensions = condition_dimensions_for(INVERTER_POWER)
+    pairs = comparison_pairs([eu, bare, cec], field_name=INVERTER_POWER)
+    union = {c.condition.temperature_c for pair in pairs for c in pair}
     assert union == {None, 30.0, 40.0}, "the naive fold really does mix both temperatures"
 
-    for group in conflict_groupings([eu, bare, cec]):
+    for group in conflict_groupings([eu, bare, cec], field_name=INVERTER_POWER):
         assert len(group) == 2
-        assert group[0].condition.comparable_with(group[1].condition)
+        assert group[0].condition.comparable_with(group[1].condition, dimensions=dimensions)
 
 
 def test_the_bridging_candidate_appears_in_two_entries() -> None:
@@ -341,7 +356,7 @@ def test_the_bridging_candidate_appears_in_two_entries() -> None:
     eu = _candidate(352.0, Condition(temperature_c=30.0), SourceTier.SYSTEM_OF_RECORD)
     bare = _candidate(320.0, Condition(), SourceTier.SYSTEM_OF_RECORD)
     cec = _candidate(320.865, Condition(temperature_c=40.0))
-    groups = conflict_groupings([eu, bare, cec])
+    groups = conflict_groupings([eu, bare, cec], field_name=INVERTER_POWER)
     assert len(groups) == 2
     assert sum(1 for g in groups if any(c.value == 320.0 for c in g)) == 2
 
@@ -545,10 +560,10 @@ def test_a_decimal_and_an_absent_value_order_by_the_encoded_form() -> None:
     """
     priced = _PLAIN.model_copy(update={"value": Decimal("650")})
     absent = _PLAIN.model_copy(update={"value": None})
-    pairs = comparison_pairs([priced, absent])
+    pairs = comparison_pairs([priced, absent], field_name=PV_POWER)
     assert len(pairs) == 1
     assert pairs[0][0].value is None, "the key must follow the encoding, not repr"
-    assert comparison_pairs([absent, priced]) == pairs
+    assert comparison_pairs([absent, priced], field_name=PV_POWER) == pairs
 
 
 #: Six values D-2 and the schema all treat as distinct, four of which print `650`
@@ -584,6 +599,6 @@ def test_a_value_outside_the_encoding_table_is_refused_rather_than_ordered() -> 
     """
     exotic = _PLAIN.model_copy(update={"value": object()})
     with pytest.raises(UnencodableValueError):
-        comparison_pairs([exotic, _PLAIN])
+        comparison_pairs([exotic, _PLAIN], field_name=PV_POWER)
     with pytest.raises(UnencodableValueError):
         _ordering_key(exotic)

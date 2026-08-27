@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .enums import ComponentCategory
 
@@ -44,6 +44,7 @@ __all__ = [
     "OffContractFieldError",
     "Shape",
     "ValueType",
+    "condition_dimensions_for",
     "is_contract_key",
     "keys_for",
     "require_contract_key",
@@ -145,6 +146,16 @@ class FieldSpec(BaseModel):
     enum: frozenset[str] | None = None
     categories: frozenset[ComponentCategory]
     scope: FieldScope
+    condition_dimensions: frozenset[str] = Field(
+        default=frozenset(),
+        description=(
+            "The `ConditionDimensions` names that gate a comparison of this "
+            "parameter, from the frozen contract's Conditions table. Empty means "
+            "no row governs the key, so nothing gates it - see "
+            "`condition_dimensions_for` for why that is the safe default and "
+            "`Condition.comparable_with` for what consumes it."
+        ),
+    )
 
     @property
     def contract_type(self) -> str:
@@ -211,6 +222,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="Wp",
         categories=frozenset({_C.PV_MODULES}),
+        # "PV power, efficiency, all electrical". Trina prints STC 695 W and
+        # NOCT 531 W side by side; a naive table grab returns 531, and the
+        # BNPI/bifacial-gain table reads 30% higher again.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -234,6 +249,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.PV_MODULES}),
+        # The same row: an efficiency is measured under a basis.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -266,6 +283,9 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.PV_MODULES}),
+        # `bnpi` and `bstc` are basis members precisely because bifacial gain
+        # is quoted against them (IEC TS 60904-1-2).
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -281,6 +301,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="Wp",
         categories=frozenset({_C.PV_MODULES}),
+        # One of the contract's own "ad-hoc encodings" of a condition, kept as
+        # a key. Still a PV power, so the row still governs it: a `bstc` figure
+        # filed here is not comparable with an `stc` one.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -289,6 +313,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="Wp",
         categories=frozenset({_C.PV_MODULES}),
+        # As `stc_rating`.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -377,6 +403,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="kVA",
         categories=frozenset({_C.INVERTERS_PCS}),
+        # "Inverter rated power". `352 kVA @30 degC / 320 @40 / 295 @50` are
+        # all "rated"; comparing two points of a derating curve invents a
+        # conflict out of two correct numbers. D-1's opening case.
+        condition_dimensions=frozenset({"temperature_c"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -408,6 +438,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="V",
         categories=frozenset({_C.INVERTERS_PCS}),
+        # "Inverter MPPT window", whose `basis` vocabulary is `full_range` /
+        # `full_power`. `500-1500 V` and `860-1330 V` are different fields,
+        # not a discrepancy.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -416,6 +450,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="V",
         categories=frozenset({_C.INVERTERS_PCS}),
+        # As `mppt_voltage_min`.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -424,6 +460,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.INVERTERS_PCS}),
+        # "Inverter efficiency". 99.02% max, 98.5% CEC and 98.8% European are
+        # one product. There is no `european_efficiency` key, so a Euro figure
+        # has to land in one of these two and only `weighting` keeps it apart.
+        condition_dimensions=frozenset({"weighting"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -432,6 +472,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.INVERTERS_PCS}),
+        # As `max_efficiency`.
+        condition_dimensions=frozenset({"weighting"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -651,6 +693,9 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="MVA",
         categories=frozenset({_C.TRANSFORMERS}),
+        # "Transformer MVA". IEEE lists base-first, IEC top-first, so "take the
+        # first number" is right for one regime and wrong for the other.
+        condition_dimensions=frozenset({"standards_regime"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -667,6 +712,9 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         map_key_type=ValueType.STR,
         unit="MVA",
         categories=frozenset({_C.TRANSFORMERS}),
+        # The same row's "plus cooling class per rating" - this key *is* the
+        # per-cooling map, so the regime still selects which stage is canonical.
+        condition_dimensions=frozenset({"standards_regime"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -698,6 +746,13 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.TRANSFORMERS}),
+        # "Transformer %Z", all three of its dimensions. %Z scales linearly
+        # with the MVA base - 1.25-1.67x between regimes, against a +/-7.5%
+        # tolerance - and nominal-tap and +5%-tap impedance are not the same
+        # measurement. All three were promoted out of `note` under issue #16,
+        # and a promotion that reaches no key leaves the merge it was meant
+        # to stop.
+        condition_dimensions=frozenset({"standards_regime", "base_mva", "tap_position_pct"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -721,6 +776,12 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="kW",
         categories=frozenset({_C.TRANSFORMERS}),
+        # "Transformer losses": IEEE states load loss at `20 + rise`
+        # (75/85/95 degC), IEC at 75 regardless. `no_load_loss` is
+        # deliberately NOT given this dimension - the same row says "No-load
+        # loss is **not** temperature-corrected", so gating it would suppress
+        # a real disagreement between two figures that are comparable.
+        condition_dimensions=frozenset({"reference_temperature_c"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -879,6 +940,9 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="MWh",
         categories=frozenset({_C.BESS}),
+        # "BESS energy". BOL and EOL differ ~26% on real projects, and AC vs
+        # DC straddles the PCS.
+        condition_dimensions=frozenset({"side", "basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -887,6 +951,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="MWh",
         categories=frozenset({_C.BESS}),
+        # As `usable_energy_per_container`.
+        condition_dimensions=frozenset({"side", "basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -910,6 +976,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         value_type=ValueType.FLOAT,
         unit="%",
         categories=frozenset({_C.BESS}),
+        # "BESS RTE". Four distinct boundaries are all called "round-trip
+        # efficiency", worth 2-7 pp, and RTE is duration-dependent even at one
+        # boundary.
+        condition_dimensions=frozenset({"side", "duration_h", "rte_boundary"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -917,6 +987,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         shape=Shape.SCALAR,
         value_type=ValueType.INT,
         categories=frozenset({_C.BESS}),
+        # "BESS cycle life": the `soh_60` / `soh_70` / `soh_80` threshold the
+        # count is quoted to. Frequently omitted, which makes the number
+        # uncomparable - but "absent is unknown", so an omission still compares.
+        condition_dimensions=frozenset({"basis"}),
         scope=FieldScope.CATEGORY,
     ),
     FieldSpec(
@@ -1224,6 +1298,51 @@ _BY_CATEGORY = _index()
 #: key at all" - which is all a per-key table such as `FIELD_TOLERANCES` can ask,
 #: since D-2 assigns a tolerance to a parameter rather than to a tab.
 CONTRACT_KEYS: frozenset[str] = frozenset(spec.key for spec in FIELD_SPECS)
+
+
+#: `key -> the dimensions that gate it`, folded once from the specs.
+#:
+#: Built here rather than looked up per call because `comparison_pairs` asks
+#: C(n,2) times per field, and because folding is where a disagreement between
+#: two specs for one key has to be caught: `insulation_type` is deliberately
+#: declared twice, and a union would silently widen the gate of the tab whose row
+#: says less. Widening the gate is the suppressing direction, so it raises.
+def _condition_dimensions() -> dict[str, frozenset[str]]:
+    folded: dict[str, frozenset[str]] = {}
+    for spec in FIELD_SPECS:
+        if spec.key in folded and folded[spec.key] != spec.condition_dimensions:
+            raise ValueError(
+                f"{spec.key!r} has two specs whose condition dimensions differ "
+                f"({sorted(folded[spec.key])} vs {sorted(spec.condition_dimensions)}). "
+                "One key gets one gate, because `comparison_pairs` is given a field "
+                "name and not a category; reconcile the two rows, or the tab whose "
+                "row says less would quietly inherit the other's suppression."
+            )
+        folded[spec.key] = spec.condition_dimensions
+    return folded
+
+
+_CONDITION_DIMENSIONS = _condition_dimensions()
+
+
+def condition_dimensions_for(key: str) -> frozenset[str]:
+    """The `ConditionDimensions` names that gate a comparison of `key`.
+
+    **Total, and empty for anything the contract does not govern.** An unknown
+    key gates on nothing rather than raising or gating on everything, and the
+    direction is the point: an over-wide gate refuses a comparison, and nothing
+    surfaces a comparison that never happened, so the failure cannot be reviewed.
+    An under-wide gate raises a false conflict, which is one queue item a
+    reviewer dismisses. tasks.md E.3a makes the first a spec violation where the
+    second is only a cost. `tolerance_for` falls back for the same reason.
+
+    Keyed on the bare `key` rather than `(key, category)` even though the
+    registry is indexed both ways, because `comparison_pairs` is given a field
+    name and there is no category at that boundary. Only `insulation_type` has
+    two specs and both gate on nothing; `_condition_dimensions` raises if that
+    ever stops being true rather than picking one.
+    """
+    return _CONDITION_DIMENSIONS.get(key, frozenset())
 
 
 def keys_for(category: ComponentCategory) -> frozenset[str]:

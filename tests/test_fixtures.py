@@ -193,7 +193,7 @@ def test_the_sungrow_trio_still_raises_no_conflict() -> None:
     ]
     candidates = [c.as_candidate() for c in claims]
     assert not any(c.condition.is_unstated() for c in candidates)
-    assert comparison_pairs(candidates) == []
+    assert comparison_pairs(candidates, field_name="rated_ac_power") == []
 
 
 def test_the_trina_pair_still_disagrees_beyond_tolerance() -> None:
@@ -213,11 +213,13 @@ def test_the_trina_pair_still_disagrees_beyond_tolerance() -> None:
     }
 
     candidates = [c.as_candidate() for c in claims]
-    pairs = comparison_pairs(candidates)
+    pairs = comparison_pairs(candidates, field_name="nameplate_power")
     assert len(pairs) == 1
 
     left, right = pairs[0]
-    verdict = values_conflict(left, right, tolerance=tolerance_for("nameplate_power"))
+    verdict = values_conflict(
+        left, right, tolerance=tolerance_for("nameplate_power"), field_name="nameplate_power"
+    )
     assert verdict.conflicts
     assert verdict.conflict_class is ConflictClass.RECORD_VS_WEB
     assert {left.value, right.value} == {650.0, 655.0}

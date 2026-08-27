@@ -162,8 +162,8 @@ def test_two_bands_order_canonically_as_candidates() -> None:
         )
 
     a, b = candidate(TRINA, "datasheet"), candidate(CANADIAN, "supply-agreement")
-    forward = comparison_pairs([a, b])
-    backward = comparison_pairs([b, a])
+    forward = comparison_pairs([a, b], field_name="power_tolerance")
+    backward = comparison_pairs([b, a], field_name="power_tolerance")
     assert len(forward) == 1
     assert [(x.value, y.value) for x, y in forward] == [(x.value, y.value) for x, y in backward]
 

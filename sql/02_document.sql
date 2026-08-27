@@ -123,6 +123,86 @@ CREATE POLICY document_write_update ON public.document
     )
     WITH CHECK (true);
 
+-- ---------------------------------------------------------------------------
+-- **procurement_app cannot switch its own confidentiality off.**
+--
+-- Every policy above admits an entitled session with
+-- `current_setting('app.allow_restricted', true) = 'true'`. Measured on a live
+-- pgvector/pgvector:0.8.6-pg16 with 00-08 applied unchanged, procurement_app
+-- sets that GUC itself, on all seven content tables at once:
+--
+--     as procurement_app:                            1 row visible per table
+--     SET app.allow_restricted = 'true';             2 rows -- incl. the
+--                                                    CONFIDENTIAL pricing chunk
+--
+-- and three further vectors reach the identical result -- `set_config(...)`,
+-- `SET LOCAL` inside a transaction, and, worst,
+--
+--     psql "user=procurement_app dbname=procurement \
+--           options='-c app.allow_restricted=true'" -c "SELECT ..."
+--
+-- which arrives **fully declassified with no statement issued at all**. So
+-- anyone holding the application DSN had full disclosure, and an application-side
+-- "RESET on pool checkout" guard cannot cover it: the value is already in place
+-- before the pool's first statement runs. The GUC is an entitlement assertion
+-- the application makes about its caller; it was never a boundary the
+-- application is on the far side of, and until this policy existed nothing in
+-- the schema said so.
+--
+-- **Why a new RESTRICTIVE policy and not an edit to the ones above.**
+--
+--   * Deleting the `OR current_setting(...)` clause breaks ingest. The chunk
+--     inheritance trigger's parent lookup dies with
+--     `chunk.document_id doc-secret has no document row`, because
+--     public.document_is_restricted() reaches visibility through exactly that
+--     clause. Repairing it needs a fresh `TO procurement_owner USING (true)`
+--     policy -- a wider hole than the one being closed.
+--   * Adding a stricter-looking *permissive* policy changes nothing. Permissive
+--     policies are OR'd, so a new one joins the eleven already here with `OR`
+--     and can only ever widen the result. This was measured the hard way.
+--
+--   `AS RESTRICTIVE` is AND'd with the OR of every permissive policy. One such
+--   policy per table therefore closes the escape without touching a single
+--   existing policy, without a new column, and without disturbing ingest.
+--
+-- **Scoped `TO procurement_app`, and that scoping is load-bearing.** The other
+-- three roles must keep their entitled reads: procurement_ingest writes
+-- restricted rows and reads them back through RETURNING (00_roles.sql), and both
+-- owner roles evaluate these policies too under FORCE ROW LEVEL SECURITY --
+-- including inside public.document_is_restricted(), which runs SECURITY DEFINER
+-- as procurement_owner. Widening this policy to PUBLIC would make that helper's
+-- own lookup return zero rows, whereupon its `coalesce(..., true)` reports every
+-- document restricted and the entire store disappears for everyone. Fail-closed,
+-- but total.
+--
+-- **A definer function is only a control if RLS still applies to its owner.**
+-- The obvious alternative fix -- route reads through a SECURITY DEFINER
+-- accessor and revoke the tables -- is not a control at all unless the function's
+-- owner is itself subject to RLS. Measured here: the same accessor owned by
+-- procurement_owner returns the filtered set (FORCE ROW LEVEL SECURITY applies
+-- to owners), while owned by a superuser it silently returns **everything**,
+-- restrictive policy and all, with no error and nothing in its text to warn a
+-- reader. That is why public.document_is_restricted() and
+-- public.conflict_is_restricted() are owned by procurement_owner and audit_owner
+-- respectively rather than by the bootstrap identity that creates them, and why
+-- 00_roles.sql asserts NOSUPERUSER/NOBYPASSRLS on every one of these four roles
+-- on every apply.
+--
+-- **`WITH CHECK (true)` is spelled out, not defaulted.** PostgreSQL reuses the
+-- `USING` expression as the `WITH CHECK` when the latter is omitted, which would
+-- make `INSERT ... access_restricted = true` fail for procurement_app while the
+-- same insert with `false` succeeded -- measured. That is precisely the
+-- "the schema penalised the safe action" defect 00_roles.sql documents at length
+-- and solved by creating procurement_ingest; re-creating it one table over would
+-- be a regression, not a hardening. Restriction therefore stays a ratchet for
+-- this role: `USING` denies it any restricted row to read, update or delete,
+-- while `WITH CHECK (true)` leaves it free to *raise* restriction, never lower
+-- it. The write path is unchanged; only the read/target side is closed.
+CREATE POLICY document_app_never_restricted ON public.document
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT access_restricted)
+    WITH CHECK (true);
+
 -- document is append-only in spirit (document_id is content-addressed
 -- identity) but not literally immutable the way claim/resolution/audit.event
 -- are: no reduction logic anywhere depends on a document row never changing,

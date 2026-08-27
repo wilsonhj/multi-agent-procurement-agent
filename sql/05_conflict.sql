@@ -196,6 +196,29 @@ CREATE POLICY conflict_write_update ON public.conflict
     )
     WITH CHECK (true);
 
+-- procurement_app cannot switch its own confidentiality off. See the equivalent
+-- policy in 02_document.sql for the measured attack matrix, why this is a new
+-- RESTRICTIVE policy rather than an edit to the permissive ones, and why
+-- `WITH CHECK (true)` is spelled out.
+--
+-- Keyed on public.conflict_is_restricted(entry_id), the same derivation
+-- conflict_confidentiality_select uses, because this table has no document_id
+-- and cannot have one -- an INTER_DOCUMENT conflict is about several documents,
+-- and its explanation quotes all of them.
+--
+-- No recursion, and the reason is worth stating because it is not obvious.
+-- conflict_is_restricted() reads conflict_candidate and claim, and claim now
+-- carries a RESTRICTIVE policy of its own (04_claim.sql). That policy is scoped
+-- `TO procurement_app`, while the function runs SECURITY DEFINER as
+-- procurement_owner, so it does not apply inside the function and the walk still
+-- sees every candidate. Scope either policy to PUBLIC and this inverts: the walk
+-- finds nothing, reports every conflict unrestricted, and fails *open* in the
+-- one function whose job is to fail closed.
+CREATE POLICY conflict_app_never_restricted ON public.conflict
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT public.conflict_is_restricted(entry_id))
+    WITH CHECK (true);
+
 CREATE POLICY conflict_ingest_select ON public.conflict
     FOR SELECT TO procurement_ingest USING (true);
 CREATE POLICY conflict_ingest_update ON public.conflict

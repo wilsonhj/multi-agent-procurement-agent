@@ -28,6 +28,7 @@ from procurement_agent.schema import (
     Severity,
     SourceRef,
     SourceTier,
+    ToleranceRule,
 )
 from procurement_agent.services.confidence import TIER_A_EXCLUSIONS
 from procurement_agent.services.conflict_hitl import severity as severity_module
@@ -36,11 +37,13 @@ from procurement_agent.services.conflict_hitl.severity import (
     DEFAULT_CRITICALITY,
     TIER_A_FIELDS,
     _gross_divergence,
+    _reconciles,
     _unit_mismatch_reconciles,
     assign_severity,
     criticality_for,
     looks_tier_a,
 )
+from procurement_agent.services.conflict_hitl.tolerance import FieldTolerance, tolerance_for
 
 
 def _c(
@@ -501,14 +504,18 @@ def test_unit_mismatch_that_does_not_reconcile_keeps_full_severity() -> None:
     assert result is Severity.MEDIUM
 
 
-def test_unit_mismatch_reconciles_for_an_exact_tolerance_field_via_the_epsilon_fallback() -> None:
+def test_unit_mismatch_reconciles_for_an_exact_tolerance_field() -> None:
     """`max_system_voltage`'s D-2 rule is EXACT - discrete 1000/1500 V, no D-2
     magnitude - which is also true of *every* Tier A and CRITICAL field: none of
     pricing, warranty-term counts, domestic content, BABA/FEOC or certifications
     has a D-2 numeric row, so all of them fall back to EXACT too. Pinned on a
     non-floored EXACT field so this reconciliation path is verified on its own,
     not masked by a floor that would hold the result at the same value whether
-    or not the discount actually fired. 1500 V and 1.5 kV are the same value."""
+    or not the discount actually fired. 1500 V and 1.5 kV are the same value.
+
+    Named a "fallback" while `_band` had first refusal; the epsilon test is now
+    the only test `_reconciles` runs, for EXACT and banded rows alike.
+    """
     pair = [_c(1500.0, unit="V", doc="doc-a"), _c(1.5, unit="kV", doc="doc-b")]
     result = assign_severity("max_system_voltage", ConflictClass.UNIT_NORMALIZATION, pair, pair)
     assert result is Severity.INFORMATIONAL  # LOW(1) - 2, clamped to 0
@@ -529,6 +536,119 @@ def test_unit_mismatch_reconciles_requires_every_pair_not_just_one() -> None:
     assert _unit_mismatch_reconciles(
         "nameplate_power", ConflictClass.UNIT_NORMALIZATION, reconciling
     )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value_a", "unit_a", "value_b", "unit_b", "apart"),
+    [
+        # ABSOLUTE: nameplate_power's D-2 band is +/-1 Wp; 0.5 W inside it.
+        ("nameplate_power", 650.0, "W", 0.6505, "kW", "0.5 W"),
+        # RELATIVE: rated_ac_power's band is 1% of the compared value; 0.9% inside it.
+        ("rated_ac_power", 100.0, "kVA", 100900.0, "VA", "0.9%"),
+        # ONE_SIDED: no_load_loss's band is 15%; 14.85% inside it.
+        ("no_load_loss", 100.0, "kW", 114850.0, "W", "14.85%"),
+    ],
+)
+def test_a_disagreement_inside_the_d2_band_is_not_a_unit_reconciliation(
+    field_name: str, value_a: float, unit_a: str, value_b: float, unit_b: str, apart: str
+) -> None:
+    """`_reconciles` asks whether this is the **same number** printed in a
+    different unit - its own docstring says so, and adds "not whether two
+    independent measurements are close enough to agree". It did exactly the
+    latter for every non-EXACT rule: `_band` handed back the field's full D-2
+    *disagreement* tolerance, so the `math.isclose` representation-noise test
+    the docstring describes was unreachable for any banded row.
+
+    A pair that is **both** a unit error and a real disagreement then took the
+    full -2 "just fix the normaliser" discount. `no_load_loss` at 100 kW against
+    114850 W is 14.85% apart and scored INFORMATIONAL; the identical pair classed
+    INTER_DOCUMENT scores HIGH. The module's own docstring calls understating
+    "the unsafe direction here".
+
+    Bounded today and deliberately pinned as such by
+    `test_the_only_high_or_critical_banded_fields_are_floored` below: every
+    banded field except the two Tier A degradation rows is already MEDIUM, so
+    this mis-graded the review queue rather than unblocking composition. It
+    would unblock it the moment the compose-gate threshold drops or a HIGH field
+    gains a D-2 band.
+    """
+    pair = [_c(value_a, unit=unit_a, doc="doc-a"), _c(value_b, unit=unit_b, doc="doc-b")]
+    assert not _unit_mismatch_reconciles(field_name, ConflictClass.UNIT_NORMALIZATION, pair), (
+        f"{field_name}: values {apart} apart are not one number in two units"
+    )
+    assert (
+        assign_severity(field_name, ConflictClass.UNIT_NORMALIZATION, pair, pair) is Severity.MEDIUM
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value_a", "unit_a", "value_b", "unit_b"),
+    [
+        ("nameplate_power", 650.0, "W", 0.65, "kW"),
+        ("rated_ac_power", 100.0, "kVA", 100000.0, "VA"),
+        ("no_load_loss", 100.0, "kW", 100000.0, "W"),
+    ],
+)
+def test_a_banded_field_still_reconciles_a_genuine_unit_only_mismatch(
+    field_name: str, value_a: float, unit_a: str, value_b: float, unit_b: str
+) -> None:
+    """The narrowing above must not become "banded fields never reconcile".
+
+    Every pair here *is* one number printed in two units, so the -2 still fires
+    and each field drops MEDIUM(2) - 2 to INFORMATIONAL. Without this the fix
+    would be indistinguishable from deleting the modifier for the 19 banded
+    contract keys, which is the mirror defect: overstating a pure extraction
+    artefact holds the workbook for a normaliser bug.
+    """
+    pair = [_c(value_a, unit=unit_a, doc="doc-a"), _c(value_b, unit=unit_b, doc="doc-b")]
+    assert _unit_mismatch_reconciles(field_name, ConflictClass.UNIT_NORMALIZATION, pair)
+    assert (
+        assign_severity(field_name, ConflictClass.UNIT_NORMALIZATION, pair, pair)
+        is Severity.INFORMATIONAL
+    )
+
+
+def test_a_never_compare_field_never_reconciles() -> None:
+    """`NEVER_COMPARE` marks a field whose name is shared by genuinely different
+    physical quantities, so "these convert to the same number" is the
+    coincidence the rule exists to distrust, not evidence of one reading.
+
+    White-box on `_reconciles` because `NEVER_COMPARABLE` is empty today -
+    deliberately, and kept as a live extension point with its own test in
+    `tolerance.py`. The band comparison used to refuse these rows as a side
+    effect of their carrying no magnitude; narrowing the test to representation
+    noise removes that side effect, so the refusal has to be stated. Without it
+    the fix would hand a -2 discount to exactly the fields the table says must
+    never be compared.
+    """
+    never = FieldTolerance(rule=ToleranceRule.NEVER_COMPARE, basis="test")
+    pair = (_c(100.0, unit="kVA", doc="doc-a"), _c(100000.0, unit="VA", doc="doc-b"))
+    assert _reconciles(*pair, tolerance_for("rated_ac_power")), (
+        "the same pair reconciles under an ordinary rule, so the refusal below "
+        "is the NEVER_COMPARE guard and not the unit table declining"
+    )
+    assert not _reconciles(*pair, never)
+
+
+def test_the_only_high_or_critical_banded_fields_are_floored() -> None:
+    """The bound that made the defect above a mis-grading rather than a hole in
+    the compose gate, asserted rather than asserted-in-prose.
+
+    A HIGH or CRITICAL field carrying a numeric D-2 band is the configuration
+    where a wrongly-granted -2 reaches composition, because only there can the
+    discount cross `config.compose_gate_threshold`. Today exactly two such
+    fields exist and both are Tier A, so the HIGH floor catches them anyway.
+    This test fails when that stops being true - a new banded row on a HIGH
+    field, or a Tier A reclassification - which is the moment the narrowing
+    above stops being a queue-quality fix and starts being a gate fix.
+    """
+    banded_high = {
+        field
+        for field, base in CRITICALITY.items()
+        if base >= Severity.HIGH and tolerance_for(field).magnitude is not None
+    }
+    assert banded_high == {"degradation_year_1", "degradation_annual"}
+    assert banded_high <= TIER_A_FIELDS
 
 
 def test_a_bool_is_not_read_as_a_number() -> None:

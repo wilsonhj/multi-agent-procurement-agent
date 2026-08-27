@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from procurement_agent.schema import (
     CanonicalField,
@@ -421,11 +422,38 @@ def test_two_nan_decimals_no_longer_share_one_encoding() -> None:
     Driven through the polymorphic slot rather than through `encode_value`
     directly, because `CanonicalField.value` is where a `Decimal` actually
     arrives and where injectivity is required.
+
+    **The slot now refuses it outright**, which is what `encode_value`'s error
+    message always claimed ("The schema rejects these at construction") and did
+    not do. So the case is asserted at both layers: the store cannot take the
+    value, and the encoder is still the backstop for a field that reached the
+    state by a route that skips field validation - `model_construct` is the one
+    the class docstring enumerates, and it is exactly how a row read back from
+    a store arrives.
     """
     assert Decimal("NaN") != Decimal("NaN")
-    assert _field(value=Decimal("NaN")) != _field(value=Decimal("NaN"))
+    with pytest.raises(ValidationError):
+        _field(value=Decimal("NaN"))
+
+    def bypassed() -> CanonicalField:
+        return CanonicalField.model_construct(
+            value=Decimal("NaN"),
+            unit="W",
+            condition=Condition(),
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="doc-1"),
+            confidence=0.9,
+            conflict_status=ConflictStatus.NONE,
+            resolution=None,
+        )
+
+    # Two calls, so the two `Decimal("NaN")`s are distinct objects: dict equality
+    # takes an identity fast path, so comparing one field against a rebuild of
+    # its own `__dict__` would report equal for a reason that has nothing to do
+    # with NaN.
+    assert bypassed() != bypassed()
     with pytest.raises(UnencodableValueError, match="non-finite"):
-        encode_value(_field(value=Decimal("NaN")))
+        encode_value(bypassed())
 
 
 def test_finite_decimals_still_encode_and_keep_their_printed_precision() -> None:

@@ -18,8 +18,9 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -45,6 +46,21 @@ from .enums import (
     ToleranceKind,
 )
 
+#: Every model in this module sets it. A key nobody declared is a key nobody
+#: reads, and the two ways that has already cost this repo are the same shape:
+#: issue #16 closed the condition *vocabulary*, so `basis="not_a_basis"` raises -
+#: while `Condition(ambient_temperature_c=30.0)` was still accepted one level up,
+#: because that is what pydantic's default `extra="ignore"` does. The real field
+#: is `temperature_c`, the plan's own prose calls it "reference ambient", and the
+#: result was an `is_unstated()` condition that reported `comparable_with` True
+#: against a genuine 40 degC reading. D-1's silent merge, reached by misspelling
+#: rather than by omission.
+#:
+#: `model_validate` is the route that matters most: a constructor typo is a bug
+#: someone is about to hit, while a stray key in a row read back from the store
+#: is schema drift nobody sees.
+_FORBID_UNDECLARED_KEYS: Literal["forbid"] = "forbid"
+
 
 class SourceRef(BaseModel):
     """Where a value came from. NFR-01 permits no unsourced values.
@@ -53,7 +69,7 @@ class SourceRef(BaseModel):
     A web reference carries url, page_title and retrieved_at (FR-WEB-02).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     document_id: str | None = None
     page: int | None = None
@@ -131,7 +147,7 @@ class SourceRef(BaseModel):
 class Resolution(BaseModel):
     """A human decision on a queued conflict. Logged immutably per FR-HITL-06."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     action: ResolutionAction
     resolved_by: str
@@ -186,7 +202,7 @@ class DeclaredBand(BaseModel):
     home for the same object would be a second thing to keep in sync.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     low: float = Field(description="Lower offset from nominal. `0` for a one-sided `0 ~ +5 W`.")
     high: float = Field(description="Upper offset from nominal.")
@@ -354,9 +370,15 @@ class ConditionDimensions(BaseModel):
     Not intended as a field annotation anywhere: annotate with `Condition`. A
     field typed as this class accepts a `Condition` but serialises through the
     parent schema and silently drops `note`.
+
+    `extra="forbid"` is set here and inherited by `Condition`, rather than
+    restated there: pydantic merges the parent config, so one statement covers
+    both and there is no second copy to drift. The subclass's own `note` and
+    `derived` are declared fields, so forbidding *undeclared* keys does not
+    touch them.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     basis: MeasurementBasis | None = Field(
         default=None,
@@ -665,6 +687,55 @@ class Condition(ConditionDimensions):
         return True
 
 
+def _reject_non_finite_value(value: object) -> object:
+    """Refuse a value the canonical encoder will refuse, at the point it is stored.
+
+    `CanonicalField.value` is `object | None`, which is what the contract's type
+    column requires - a value is a float, an int, a `DeclaredBand`, a `list[str]`
+    or a `dict[int, float]` depending on the row - so pydantic has no schema to
+    check finiteness against. Meanwhile `encoding.encode_value` refuses a
+    non-finite float with an error message that says, in as many words, "The
+    schema rejects these at construction". It did not.
+
+    The gap is not cosmetic. A store could hold a row `project_store` cannot
+    project, and the failure then surfaces at composition time - far from the
+    extractor that wrote it, with the C6 digest as the symptom. NaN is the worst
+    of the three because it is not equal to itself, so every "is this the value
+    we stored" check the pipeline makes answers no.
+
+    **Recursive, because the contract's own types are containers.**
+    `harmonic_spectrum` is `dict[int, float]` and eighteen rows are `list[str]`,
+    so a top-level check would guard the least likely case and miss the declared
+    ones. This walks exactly what `encode_value` walks, which is what makes its
+    claim true rather than nearly true.
+
+    Nested `BaseModel`s are left to their own validators - `DeclaredBand` already
+    rejects a non-finite bound, and re-checking it here would be a second
+    statement of a rule that has a home. A self-referential value is not guarded
+    against for the same reason `encode_value` does not: `json.dumps` cannot
+    represent one either, so it fails at the same boundary by the same route.
+    """
+    if isinstance(value, bool):  # before the numeric branch - bool is an int
+        return value
+    if isinstance(value, float | Decimal) and not math.isfinite(value):
+        raise ValueError(
+            f"non-finite value {value!r}: `encode_value` refuses it (contract C4 / "
+            "D-14), so a field holding one is a stored row the C6 projection "
+            "cannot project. NaN is additionally not equal to itself, so it "
+            "compares unequal to the value it was read back from."
+        )
+    if isinstance(value, str | bytes | bytearray):
+        return value
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_non_finite_value(key)
+            _reject_non_finite_value(item)
+    elif isinstance(value, list | tuple | set | frozenset):
+        for item in value:
+            _reject_non_finite_value(item)
+    return value
+
+
 class CanonicalField(BaseModel):
     """One extracted parameter, with provenance, conditions and conflict state.
 
@@ -721,7 +792,7 @@ class CanonicalField(BaseModel):
     over, because a defence that cannot exist should not be implied to.
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra=_FORBID_UNDECLARED_KEYS)
 
     value: object | None = None
     unit: str | None = Field(default=None, description="Canonical unit per FR-ING-08")
@@ -736,6 +807,14 @@ class CanonicalField(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     conflict_status: ConflictStatus = ConflictStatus.NONE
     resolution: Resolution | None = None
+
+    @field_validator("value")
+    @classmethod
+    def _value_must_be_encodable(cls, value: object) -> object:
+        """See `_reject_non_finite_value`. Applied at the boundary that stores
+        the row, so the encoder's claim that "the schema rejects these at
+        construction" is true rather than aspirational."""
+        return _reject_non_finite_value(value)
 
     @field_validator("confidence")
     @classmethod
@@ -825,11 +904,13 @@ class CanonicalField(BaseModel):
         """
         unknown = set(changes) - set(type(self).model_fields)
         if unknown:
-            # `model_config` does not set `extra="forbid"`, so `model_validate`
-            # would drop these silently and return a field with the change not
-            # applied - `evolve(conflict_stauts=RESOLVED)` succeeding as a no-op.
-            # For an FR-HITL-06 audit path a silent no-op is the worse direction,
-            # and the route this replaces would at least have set the key.
+            # `model_config` now sets `extra="forbid"`, so `model_validate`
+            # would raise on these rather than drop them - which it did not when
+            # this check was written, and `evolve(conflict_stauts=RESOLVED)`
+            # succeeded as a silent no-op on an FR-HITL-06 audit path. Kept
+            # anyway, and not as belt-and-braces: this message names the field
+            # *and lists the known ones*, which is the diagnosis a caller who has
+            # just misspelt one needs. The raise was never the point.
             raise ValueError(
                 f"{type(self).__name__}.evolve() got unknown field(s): "
                 f"{sorted(unknown)}. Known fields: {sorted(type(self).model_fields)}"
@@ -972,7 +1053,7 @@ class CanonicalField(BaseModel):
 class ConflictCandidate(BaseModel):
     """One competing value for a field, as presented in the queue (FR-HITL-03)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     value: object | None
     unit: str | None
@@ -991,6 +1072,16 @@ class ConflictCandidate(BaseModel):
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("value")
+    @classmethod
+    def _value_must_be_encodable(cls, value: object) -> object:
+        """The same check `CanonicalField.value` carries, applied here for the
+        reason `_fold_negative_zero` gives just below: the defect is the *type*,
+        not the file. A candidate's value goes through `_canonical` on every
+        `comparison_pairs` call, so a non-finite one raises from the sort path
+        rather than from the store - later, and further from the extractor."""
+        return _reject_non_finite_value(value)
 
     @field_validator("confidence")
     @classmethod
@@ -1027,7 +1118,7 @@ class ConflictQueueEntry(BaseModel):
     9 and does not exist yet.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra=_FORBID_UNDECLARED_KEYS)
 
     entry_id: str
     field_name: str

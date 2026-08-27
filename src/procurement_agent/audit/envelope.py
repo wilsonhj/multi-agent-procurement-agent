@@ -21,6 +21,26 @@ hashes differently: one nests an object, the other nests a quoted string. The
 consequence of getting it backwards is the worst outcome available here -
 chains that verify under this implementation and fail under every correct one.
 
+**So the digest is not injective over stored bytes, and something outside it has
+to be.** Embedding the parse means the exact bytes of `payload_canonical` are
+not covered: `{"a":1}`, `{"a":1.0}`, `{"a":1E0}`, `{"a": 1 }` and `{"a":1,"a":2}`
+are five distinct stored strings with one digest. This is not academic, because
+`payload jsonb` is `GENERATED ALWAYS AS (payload_canonical::jsonb)` and jsonb
+preserves the numeric literal text it is given - so rewriting `"value":400` to
+`"value":400.0` changes what every human and every SQL query reads while the
+digest still matches.
+
+What closes it is `verify._check_payload`'s `payload_not_canonical` check, which
+recomputes the JCS form and compares the bytes. **D-13 does not require that
+check, and the integrity claim does not hold without it** - an implementation
+written against the decision alone accepts all five. It is named here, in the
+module that creates the gap, so the two are not read separately.
+
+Changing the preimage to embed the canonical *string* would close it at the
+source and is deliberately not done: `v` exists precisely because altering the
+hashed field set re-bases every chain ever written, and that is the irreversible
+window D-13 names.
+
 **Two canonicalisation schemes live in this codebase, and this is the boundary
 between them** (D-13 asks for the restatement to sit in WP-H rather than in the
 decision record). C4, here, uses JCS because an audit chain has to be verifiable

@@ -2,23 +2,51 @@
 
 Decision 9 leans on this chain as "the only mechanism that survives the
 superuser bypass - a superuser can edit a row but cannot make the chain
-re-verify". That claim is only worth something if something actually
-re-verifies, and only checks it can perform from the stored columns count: the
-verifier gets the same row a superuser would leave behind, and has to notice.
+re-verify". **That claim is too broad, and this module does not make it.** What
+is actually guaranteed is narrower:
+
+    An edit that is not re-sealed is detected. Every field D-13 section 2 puts
+    inside the preimage is recomputed from the stored columns, so changing any
+    of them - or the links between rows - and leaving the digests alone produces
+    a report that names the row.
+
+That is worth having, and it is not tamper-proofing. The digest is unkeyed and
+the algorithm is public, so anyone who can edit a row can also recompute its
+digest; and because **nothing outside the chain pins the tip**, recomputing
+forward from the edited row to the end is always available. See "what it cannot
+detect" below.
 
 **Verification is a pure function of the rows** (`verify_events`), with the
 database reduced to a `SELECT`. That keeps every property testable without a
 server, and it means the CLI is a transport rather than a place where checks can
-hide.
+hide. `verify_events` never raises: a row it cannot hash becomes a defect, since
+unwinding the walk would discard the findings already made on every other row -
+and on every stream after this one.
 
-**What it cannot detect, stated plainly.** A *truncated tail* leaves a chain
-that is internally perfect - no hash chain detects that without an external
-witness of the expected length, and this repo has none. What covers it is the
-GRANT in `sql/07` (no DELETE, no TRUNCATE, to any role) plus the tripwire
-triggers, which is Decision 9's own position: privilege separation is the
-boundary, and the chain is tamper-evidence layered on top. The durable answer to
-a real superuser is shipping this log out to a write-once sink, which `sql/07`
-also says and which is not attempted here.
+**What it cannot detect, stated plainly.** Any *suffix rewritten in place and
+re-sealed*. Edit the rows, recompute their digests forward, and the chain is
+internally perfect again. A truncated tail is the special case where the
+rewritten suffix is empty, and it is not the cheapest one: re-attributing the
+last event costs one row edited and one digest recomputed - no re-chaining, no
+DELETE, no TRUNCATE. So the GRANT in `sql/07` (no DELETE, no TRUNCATE, to any
+role) and the tripwire triggers, which do cover truncation, do not cover this.
+
+The event this most matters for is the last `resolution` of every stream, which
+D-13 calls "the highest-repudiation-risk record in the system: the name of the
+human who shipped a workbook past unresolved conflicts" - and which is by
+construction at the tip, where the rewrite is cheapest.
+
+This is inherent to an unkeyed hash chain with no external witness, so it is a
+limit of the design and not a defect in `verify_events`; the tests assert it
+rather than argue it. Decision 9's position stands as the mitigation -
+privilege separation is the boundary and the chain is tamper-*evidence* layered
+on top - and the durable answer is shipping this log to a write-once sink or
+otherwise witnessing the tip, which `sql/07` also says and which is not
+attempted here. That remedy covers the whole family, not truncation alone.
+
+⚠️ `sql/07_audit_event.sql` still carries the unqualified "cannot make the chain
+re-verify" wording; it needs the same correction, and this module is not the
+owner of that file.
 
 **Confidentiality.** `sql/07`'s RLS policy hides restricted documents from
 `procurement_app`, so a verification run must connect as an identity entitled to
@@ -38,7 +66,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from .canonical import JsonObject, canonical_text
+from .canonical import CanonicalisationError, JsonObject, canonical_text
 from .envelope import (
     EVENT_TYPES_V1,
     KNOWN_ENVELOPE_VERSIONS,
@@ -77,6 +105,8 @@ class DefectKind(StrEnum):
     UNKNOWN_EVENT_TYPE = "unknown_event_type"
     PAYLOAD_NOT_JSON = "payload_not_json"
     PAYLOAD_NOT_CANONICAL = "payload_not_canonical"
+    PAYLOAD_NOT_REPRESENTABLE = "payload_not_representable"
+    DIGEST_NOT_RECOMPUTABLE = "digest_not_recomputable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +167,14 @@ def verify_events(stream: str, rows: Sequence[StoredEvent]) -> ChainReport:
     walks every stream it finds, and a stream reported as failing because
     nothing has been written to it yet is how an operator learns to ignore this
     tool.
+
+    **This function does not raise for any `StoredEvent` it can be handed**, and
+    that is a property rather than politeness. A row whose hashed fields have no
+    JCS form used to unwind the walk, which meant one such row destroyed the
+    tamper evidence on every other row in the report and stopped every later
+    stream being verified at all - a strictly better outcome for a tamperer than
+    being caught. Both remaining ways to reach it are reported per row instead:
+    `payload_not_representable` and `digest_not_recomputable`.
     """
     defects: list[ChainDefect] = []
     previous: StoredEvent | None = None
@@ -166,17 +204,28 @@ def verify_events(stream: str, rows: Sequence[StoredEvent]) -> ChainReport:
 def _check_payload(row: StoredEvent, defects: list[ChainDefect]) -> JsonObject | None:
     """Parse `payload_canonical`, and check it deserves the name.
 
-    Returns `None` when the text will not parse, which is the one defect that
-    makes the digest uncheckable - the walk carries on to the next row rather
-    than aborting.
+    Returns `None` when the payload cannot be used to recompute a digest - it
+    will not parse, or it parses to something with no JCS form. Both are
+    reported and the walk carries on to the next row rather than aborting; see
+    `_check_digest` for why that is an integrity property and not a nicety.
 
-    **The canonicality check closes a gap D-13 leaves open.** The preimage
-    embeds the *parsed* payload object, so any JSON text with the same parse
-    produces the same digest: the exact bytes of `payload_canonical` are not
-    covered by the hash, despite the column being named for being canonical.
-    That is not a forgery risk by itself - the value is unchanged - but a column
-    that has quietly stopped being canonical is one some later reader will hash
-    directly, and by then the drift is historical and unfixable.
+    **The canonicality check is required for the integrity claim, not an extra.**
+    The preimage embeds the *parsed* payload object, so any JSON text with the
+    same parse produces the same digest: the exact bytes of `payload_canonical`
+    are not covered by the hash, despite the column being named for being
+    canonical. `{"a":1}`, `{"a":1.0}`, `{"a":1E0}`, `{"a": 1 }` and `{"a":1,"a":2}`
+    are five distinct stored strings under one digest.
+
+    That is a forgery risk, and calling it cosmetic was wrong. `payload jsonb` is
+    `GENERATED ALWAYS AS (payload_canonical::jsonb)` and jsonb preserves the
+    numeric literal text it is given, so an attacker who rewrites `"value":400`
+    to `"value":400.0` leaves a row that reads `400.0` to every human and every
+    SQL query while the digest still covers `400`. **D-13 does not mandate this
+    check**, so an implementation written against the decision alone would accept
+    all five; `tests/test_audit_verify.py` pins each one so removing it cannot be
+    a quiet change. The digest alone does not distinguish them and - because
+    changing the preimage would re-base every chain ever written - it is not
+    going to start.
     """
     try:
         parsed = json.loads(row.payload_canonical)
@@ -205,7 +254,26 @@ def _check_payload(row: StoredEvent, defects: list[ChainDefect]) -> JsonObject |
         return None
 
     payload: JsonObject = parsed
-    if canonical_text(payload) != row.payload_canonical:
+    try:
+        canonical = canonical_text(payload)
+    except CanonicalisationError as exc:
+        # Parses fine, has no JCS form. The generated column does *not* make this
+        # unreachable the way it makes a parse failure unreachable: Postgres
+        # numerics are arbitrary precision, so `{"value":10000000000000000000}`
+        # is valid `jsonb` and JCS refuses it at 2**53-1.
+        defects.append(
+            ChainDefect(
+                DefectKind.PAYLOAD_NOT_REPRESENTABLE,
+                row.seq,
+                row.event_id,
+                f"payload_canonical parses but has no JCS form ({exc}), so this row's digest "
+                "could not be recomputed and this row is unverified. `payload jsonb` accepts "
+                "values JCS refuses, so this is reachable through the DDL",
+            )
+        )
+        return None
+
+    if canonical != row.payload_canonical:
         defects.append(
             ChainDefect(
                 DefectKind.PAYLOAD_NOT_CANONICAL,
@@ -271,20 +339,55 @@ def _check_digest(stream: str, row: StoredEvent, payload: JsonObject) -> list[Ch
     identify a row's version is to find the one whose preimage reproduces its
     digest - which is sound precisely because `v` is inside the hash. See
     `envelope.KNOWN_ENVELOPE_VERSIONS`.
+
+    ⚠️ **Accept-if-any-known-version is a downgrade surface the moment this
+    tuple gains a second entry.** With one version the loop cannot do anything
+    but check that one. With two, a row re-sealed under the *older, narrower*
+    field set verifies as happily as one written under the current envelope -
+    and combined with the unpinned tail described in this module's docstring,
+    that is a forger's tool rather than a compatibility feature. Whatever adds
+    the second version has to decide what stops a row moving backwards through
+    it; version-in-the-digest proves which version was used, not that it was
+    the version that should have been used.
+
+    **Never raises.** Three hashed fields have domains narrower than the columns
+    that hold them - `payload` (checked upstream), `recorded_at`, which must name
+    an instant, and `seq bigint`, which reaches 2**63-1 where JCS stops at
+    2**53-1. Letting any of those unwind the walk would destroy the findings on
+    every *other* row in the report, which is a worse outcome than the unverified
+    row itself.
     """
-    for version in KNOWN_ENVELOPE_VERSIONS:
-        preimage = build_preimage(
-            version=version,
-            stream=stream,
-            seq=row.seq,
-            event_type=row.event_type,
-            actor=row.actor,
-            recorded_at=format_recorded_at(row.recorded_at),
-            prev_hash=row.prev_hash,
-            payload=payload,
-        )
-        if digest_of(preimage) == row.hash:
-            return []
+    try:
+        recorded_at = format_recorded_at(row.recorded_at)
+        for version in KNOWN_ENVELOPE_VERSIONS:
+            preimage = build_preimage(
+                version=version,
+                stream=stream,
+                seq=row.seq,
+                event_type=row.event_type,
+                actor=row.actor,
+                recorded_at=recorded_at,
+                prev_hash=row.prev_hash,
+                payload=payload,
+            )
+            if digest_of(preimage) == row.hash:
+                return []
+    except ValueError as exc:
+        # `format_recorded_at` raises `ValueError` on a naive datetime, and
+        # `CanonicalisationError` - a `ValueError` subclass - covers every value
+        # with no JCS form. Both mean the same thing here: the preimage this row
+        # would have to reproduce cannot be built, so the row is unverifiable
+        # rather than forged, and saying which is the whole job.
+        return [
+            ChainDefect(
+                DefectKind.DIGEST_NOT_RECOMPUTABLE,
+                row.seq,
+                row.event_id,
+                f"this row's hashed fields cannot be rebuilt into a preimage ({exc}), so its "
+                "digest was not checked; the column domains are wider than D-13's, so a "
+                "value the DDL accepts can land here",
+            )
+        ]
 
     return [
         ChainDefect(

@@ -210,8 +210,8 @@ def write_workbook(
                 cell_flags = flags_for(field, confidence_threshold=confidence_threshold)
                 provenance = _provenance_text(field)
                 row = [
-                    component.supplier,
-                    component.model,
+                    _safe_excel_text(component.supplier),
+                    _safe_excel_text(component.model),
                     field_name,
                     _display(field.condition),
                     _display(field.value),
@@ -261,6 +261,20 @@ def _display(value: object) -> str:
     return json.dumps(
         encode_value(value), sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
+
+
+def _safe_excel_text(value: str) -> str:
+    """Keep untrusted text from becoming a spreadsheet formula.
+
+    Supplier and model names originate outside the application.  Excel and
+    LibreOffice interpret cells beginning with ``=``, ``+``, ``-`` or ``@`` as
+    formulas, and tab/newline prefixes are also used to bypass shallow checks.
+    A leading apostrophe forces text semantics while preserving the visible
+    content in spreadsheet applications.
+    """
+    if value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return "'" + value
+    return value
 
 
 def _field_sort_key(field: CanonicalField) -> tuple[str, str, str]:
@@ -317,8 +331,8 @@ def _write_open_items(sheet: Worksheet, components: list[ComponentInstance]) -> 
                 if CellFlag.UNRESOLVED_CONFLICT in flags_for(field, confidence_threshold=0.0):
                     sheet.append(
                         [
-                            component.supplier,
-                            component.model,
+                            _safe_excel_text(component.supplier),
+                            _safe_excel_text(component.model),
                             field_name,
                             field.conflict_status.value,
                             _provenance_text(field),
@@ -331,8 +345,8 @@ def _write_provenance(sheet: Worksheet, components: list[ComponentInstance]) -> 
     _style_header(sheet[1])
     rows = {
         (
-            component.supplier,
-            component.model,
+            _safe_excel_text(component.supplier),
+            _safe_excel_text(component.model),
             field_name,
             field.source_tier.value,
             _provenance_text(field),
@@ -362,8 +376,8 @@ def _write_cross_cutting(sheet: Worksheet, components: list[ComponentInstance], 
             for field in component.fields[field_name]:
                 sheet.append(
                     [
-                        component.supplier,
-                        component.model,
+                        _safe_excel_text(component.supplier),
+                        _safe_excel_text(component.model),
                         field_name,
                         _display(field.value),
                         _provenance_text(field),

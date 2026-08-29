@@ -23,6 +23,7 @@ from procurement_agent.services.vertical_slice import (
     InMemoryClaimStore,
     SanitizedCSVError,
     VerticalSliceResult,
+    acknowledge_persisted,
     persist_vertical_slice,
     review_conflict,
     run_sanitized_pv_csv,
@@ -142,6 +143,17 @@ class _AuditConnection:
         self.commits += 1
 
 
+def _acknowledged(result: VerticalSliceResult) -> tuple[VerticalSliceResult, _AuditConnection]:
+    conn = _AuditConnection()
+    _, events = persist_vertical_slice(
+        conn,
+        result,
+        write=lambda connection, _: connection.execute("INSERT VERTICAL SLICE"),
+    )
+    # The fake's successful return stands in for the caller committing here.
+    return acknowledge_persisted(result, events), conn
+
+
 def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() -> None:
     result = _run()
     conn = _AuditConnection()
@@ -151,10 +163,10 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
         connection.execute("INSERT VERTICAL SLICE")
         return "stored"
 
-    stored, persisted, events = persist_vertical_slice(conn, result, write=write)
+    stored, events = persist_vertical_slice(conn, result, write=write)
 
     assert stored == "stored"
-    assert persisted.audit_events == ()
+    assert result.audit_events
     assert len(events) == len(result.audit_events) == 5
     assert [(event.document_id, event.seq) for event in events] == [
         ("syn-pv-datasheet", 0),
@@ -166,16 +178,13 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
     assert conn.calls[0] == "INSERT VERTICAL SLICE"
     assert conn.commits == 0
 
+    persisted = acknowledge_persisted(result, events)
+    assert persisted.audit_events == ()
+
 
 def test_a_review_after_persistence_emits_only_its_new_resolution_intent() -> None:
     result = _run()
-    conn = _AuditConnection()
-
-    _, persisted, _ = persist_vertical_slice(
-        conn,
-        result,
-        write=lambda connection, _: connection.execute("INSERT VERTICAL SLICE"),
-    )
+    persisted, conn = _acknowledged(result)
     conflict = persisted.conflicts[0]
     resolution = Resolution(
         action=ResolutionAction.SELECT_VALUE,
@@ -188,16 +197,17 @@ def test_a_review_after_persistence_emits_only_its_new_resolution_intent() -> No
     reviewed = review_conflict(persisted, entry_id=conflict.entry_id, resolution=resolution)
 
     assert [intent.event_type for intent in reviewed.audit_events] == ["resolution"]
-    _, repersisted, events = persist_vertical_slice(
+    _, events = persist_vertical_slice(
         conn,
         reviewed,
         write=lambda connection, _: connection.execute("INSERT RESOLUTION"),
     )
 
-    assert repersisted.audit_events == ()
+    assert reviewed.audit_events
     assert [(event.document_id, event.seq, event.event_type) for event in events] == [
         ("syn-pv-purchase-order", 2, "resolution")
     ]
+    assert acknowledge_persisted(reviewed, events).audit_events == ()
 
 
 def test_vertical_slice_refuses_autocommit_before_business_write() -> None:
@@ -217,7 +227,7 @@ def test_vertical_slice_refuses_autocommit_before_business_write() -> None:
 
 
 def test_review_selects_existing_candidate_without_rewriting_input() -> None:
-    original = _run()
+    original, _ = _acknowledged(_run())
     conflict = original.conflicts[0]
     resolution = Resolution(
         action=ResolutionAction.SELECT_VALUE,
@@ -240,12 +250,13 @@ def test_review_selects_existing_candidate_without_rewriting_input() -> None:
     assert field.source_ref.document_id == "syn-pv-purchase-order"
     assert reviewed.audit_events[-1].event_type == "resolution"
 
+    persisted_review, _ = _acknowledged(reviewed)
     with pytest.raises(ValueError, match="already has an immutable resolution"):
-        review_conflict(reviewed, entry_id=conflict.entry_id, resolution=resolution)
+        review_conflict(persisted_review, entry_id=conflict.entry_id, resolution=resolution)
 
 
 def test_review_refuses_unsourced_override() -> None:
-    result = _run()
+    result, _ = _acknowledged(_run())
     resolution = Resolution(
         action=ResolutionAction.ENTER_OVERRIDE,
         resolved_by="procurement.lead",
@@ -315,3 +326,56 @@ def test_document_hash_is_independent_of_row_arrival_order() -> None:
     assert {source.document_id: source.content_hash for source in original.sources} == {
         source.document_id: source.content_hash for source in permuted.sources
     }
+    assert original.claims == permuted.claims
+    assert original.audit_events == permuted.audit_events
+
+
+def test_review_refuses_to_hide_an_unresolved_sibling_pair() -> None:
+    third = (
+        b"syn-pv-third,file:///sanitized/example-solar-pv650-third.pdf,spec_sheet,"
+        b"Example Solar Ltd.,PV-SAN-650,650,nameplate_power,660,Wp,660 Wp,stc,"
+        b"Electrical Data (STC),0.90"
+    )
+    result = run_sanitized_pv_csv(
+        FIXTURE.read_bytes().rstrip() + b"\n" + third + b"\n",
+        ingested_at=INGESTED_AT,
+        detected_at=DETECTED_AT,
+        actor="integration-test",
+    )
+    persisted, _ = _acknowledged(result)
+    target = persisted.conflicts[0]
+    resolution = Resolution(
+        action=ResolutionAction.SELECT_VALUE,
+        resolved_by="procurement.lead",
+        resolved_at=datetime(2026, 8, 1, 10, 0, tzinfo=UTC),
+        rationale="Resolve one pair.",
+        value_before=target.candidates[0].value,
+        value_after=target.candidates[1].value,
+    )
+
+    with pytest.raises(ValueError, match="sibling conflicts"):
+        review_conflict(persisted, entry_id=target.entry_id, resolution=resolution)
+
+    assert persisted.components[0].unresolved_conflicts() == ["nameplate_power"]
+
+
+def test_workbook_escapes_formula_shaped_supplier_and_model_text(tmp_path: Path) -> None:
+    malicious = (
+        FIXTURE.read_text()
+        .replace("Example Solar Ltd.", "=1+1")
+        .replace("PV-SAN-650", "+2+2")
+        .encode()
+    )
+    result = run_sanitized_pv_csv(
+        malicious,
+        ingested_at=INGESTED_AT,
+        detected_at=DETECTED_AT,
+        actor="integration-test",
+    )
+    workbook_path = result.write_workbook(tmp_path / "formula-safe.xlsx", confidence_threshold=0.8)
+    workbook = load_workbook(workbook_path, data_only=False)
+    pv = workbook[WorkbookTab.PV_MODULES.value]
+
+    assert pv["A2"].value == "'=1+1"
+    assert pv["B2"].value == "'+2+2"
+    assert pv["A2"].data_type == pv["B2"].data_type == "s"

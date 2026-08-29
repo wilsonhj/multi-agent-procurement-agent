@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from ..audit import AuditConnection, AuditEvent, JsonObject, append_event
+from ..audit import AuditConnection, AuditEvent, JsonObject, append_event, canonical_text
 from ..schema import (
     ComponentCategory,
     ComponentInstance,
@@ -35,7 +35,7 @@ from ..schema import (
     encode_value,
 )
 from ..schema.registry import Shape, ValueType, spec_for
-from .claims import FieldClaim, project
+from .claims import FieldClaim, canonical_claims, project
 from .conflict_hitl import (
     assign_severity,
     comparison_groups,
@@ -53,6 +53,7 @@ __all__ = [
     "PendingAuditEvent",
     "SanitizedCSVError",
     "VerticalSliceResult",
+    "acknowledge_persisted",
     "persist_vertical_slice",
     "review_conflict",
     "run_sanitized_pv_csv",
@@ -194,13 +195,16 @@ def run_sanitized_pv_csv(
         for document_id, grouped in sorted(source_rows.items())
     )
 
-    claims = tuple(_claim(row) for row in rows)
+    claims = tuple(canonical_claims(_claim(row) for row in rows))
     store = claim_store if claim_store is not None else InMemoryClaimStore()
     store.extend(claims)
     relevant = tuple(
-        claim
-        for claim in store.claims
-        if claim.document_id in source_rows and claim.field_name in {row.field_name for row in rows}
+        canonical_claims(
+            claim
+            for claim in store.claims
+            if claim.document_id in source_rows
+            and claim.field_name in {row.field_name for row in rows}
+        )
     )
 
     by_field: dict[str, list[FieldClaim]] = {}
@@ -253,7 +257,7 @@ def persist_vertical_slice[ResultT](
     result: VerticalSliceResult,
     *,
     write: Callable[[AuditConnection, VerticalSliceResult], ResultT],
-) -> tuple[ResultT, VerticalSliceResult, tuple[AuditEvent, ...]]:
+) -> tuple[ResultT, tuple[AuditEvent, ...]]:
     """Persist the slice and every audit intent in one caller-owned transaction.
 
     The first intent is bound to the business callback through
@@ -285,12 +289,31 @@ def persist_vertical_slice[ResultT](
                 recorded_at=intent.recorded_at,
             )
         )
-    # Audit intents are an outbox, not historical state.  Returning a fresh
-    # result with the outbox cleared makes the safe continuation explicit: a
-    # later review appends only its new resolution intent instead of replaying
-    # document/extraction/conflict events that already committed.
-    persisted = replace(result, audit_events=())
-    return written, persisted, tuple(events)
+    return written, tuple(events)
+
+
+def acknowledge_persisted(
+    result: VerticalSliceResult, events: tuple[AuditEvent, ...]
+) -> VerticalSliceResult:
+    """Clear pending audit intents only after the caller's commit succeeds.
+
+    ``persist_vertical_slice`` cannot do this safely because it deliberately
+    does not own the transaction.  Its caller invokes this acknowledgement only
+    after the surrounding commit returns successfully.  Matching every event
+    back to its intent prevents acknowledging a partial or unrelated append.
+    """
+    if len(events) != len(result.audit_events):
+        raise ValueError("every pending audit intent must have a committed event")
+    for intent, event in zip(result.audit_events, events, strict=True):
+        if (
+            event.document_id != intent.document_id
+            or event.event_type != intent.event_type
+            or event.actor != intent.actor
+            or event.recorded_at != intent.recorded_at
+            or event.payload_canonical != canonical_text(intent.payload)
+        ):
+            raise ValueError("committed audit events do not match the pending intents")
+    return replace(result, audit_events=())
 
 
 def review_conflict(
@@ -302,6 +325,10 @@ def review_conflict(
     Override entry needs a separately sourced value, and silently inventing
     provenance here would violate NFR-01.
     """
+    if result.audit_events:
+        raise ValueError(
+            "persist and acknowledge the current audit intents before starting human review"
+        )
     if resolution.action not in {
         ResolutionAction.SELECT_VALUE,
         ResolutionAction.KEEP_SYSTEM_OF_RECORD,
@@ -316,6 +343,20 @@ def review_conflict(
     target = matches[0]
     if target.resolution is not None:
         raise ValueError(f"conflict {entry_id!r} already has an immutable resolution")
+    unresolved_siblings = [
+        entry
+        for entry in result.conflicts
+        if entry.entry_id != entry_id
+        and entry.resolution is None
+        and entry.supplier == target.supplier
+        and entry.model == target.model
+        and entry.field_name == target.field_name
+    ]
+    if unresolved_siblings:
+        raise ValueError(
+            "the minimal review path cannot resolve one pair while sibling conflicts "
+            "for the same field remain open"
+        )
     eligible = [
         candidate
         for candidate in target.candidates

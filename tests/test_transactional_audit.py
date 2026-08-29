@@ -21,9 +21,16 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, *, autocommit: bool = False, fail_business: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        autocommit: bool = False,
+        fail_business: bool = False,
+        fail_audit: bool = False,
+    ) -> None:
         self._autocommit = autocommit
         self.fail_business = fail_business
+        self.fail_audit = fail_audit
         self.calls: list[tuple[str, Sequence[Any] | None]] = []
         self.commits = 0
 
@@ -36,6 +43,8 @@ class _Connection:
         self.calls.append((normalized, params))
         if normalized == "INSERT BUSINESS ROW" and self.fail_business:
             raise RuntimeError("business insert failed")
+        if normalized.startswith("INSERT INTO audit.event") and self.fail_audit:
+            raise RuntimeError("audit insert failed")
         # The chain has no tip, so this is a genesis event.
         return _Cursor(None)
 
@@ -98,3 +107,14 @@ def test_a_failed_business_write_never_emits_an_audit_event() -> None:
         _call(conn)
 
     assert [query for query, _ in conn.calls] == ["INSERT BUSINESS ROW"]
+
+
+def test_a_failed_audit_append_propagates_without_committing() -> None:
+    conn = _Connection(fail_audit=True)
+
+    with pytest.raises(RuntimeError, match="audit insert failed"):
+        _call(conn)
+
+    assert conn.commits == 0
+    assert conn.calls[0][0] == "INSERT BUSINESS ROW"
+    assert conn.calls[-1][0].startswith("INSERT INTO audit.event")

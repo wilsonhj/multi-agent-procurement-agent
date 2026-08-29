@@ -52,6 +52,7 @@ from procurement_agent.audit import (
     verify_stream,
 )
 from procurement_agent.audit.verify import main as verify_main
+from procurement_agent.services.transactional_audit import write_and_append_event
 
 if TYPE_CHECKING:
     import psycopg
@@ -67,6 +68,7 @@ pytestmark = pytest.mark.skipif(
 SQL_DIR = pathlib.Path(__file__).parent.parent / "sql"
 DOCUMENT_ID = "audit-doc-1"
 STREAM = stream_for_document(DOCUMENT_ID)
+ATOMIC_DOCUMENT_ID = "audit-atomic-doc"
 
 #: Decision 9's own measurement used eight. Kept identical so a regression here
 #: is comparable with the number in `tasks.md` H.4 rather than merely "some".
@@ -334,6 +336,58 @@ def test_a_the_generated_payload_column_matches_what_was_hashed(empty_chain: Non
     assert row is not None
     assert row[0] == event.payload_canonical == '{"a":1.5,"b":2}'
     assert row[1] == {"a": 1.5, "b": 2}
+
+
+def test_a_business_write_and_its_audit_event_roll_back_together(audit_schema: None) -> None:
+    """Decision 9's atomicity claim, measured across an actual rollback.
+
+    Fake-connection tests can prove statement order and absence of an internal
+    commit.  Only a server can prove that the business row and audit row really
+    occupy one transaction and disappear together.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO public.document
+                (document_id, content_hash, source_uri, document_type,
+                 ingested_at, access_restricted)
+            VALUES (%s, %s, %s, 'spec_sheet', now(), false)
+            """,
+            (ATOMIC_DOCUMENT_ID, "hash-audit-atomic", "file:///audit-atomic.pdf"),
+        )
+
+    changed_at = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    with _connect(autocommit=False) as conn:
+
+        def update_document(transaction: Any) -> None:
+            transaction.execute(
+                "UPDATE public.document SET data_vintage = %s WHERE document_id = %s",
+                (changed_at, ATOMIC_DOCUMENT_ID),
+            )
+
+        write_and_append_event(
+            conn,
+            write=update_document,
+            document_id=ATOMIC_DOCUMENT_ID,
+            event_type="extraction",
+            actor="vertical-slice",
+            payload={"field": "nameplate_power", "claim_count": 1},
+            recorded_at=changed_at,
+        )
+        conn.rollback()
+
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT d.data_vintage,
+                   (SELECT count(*) FROM audit.event WHERE document_id = d.document_id)
+              FROM public.document d
+             WHERE d.document_id = %s
+            """,
+            (ATOMIC_DOCUMENT_ID,),
+        ).fetchone()
+
+    assert row == (None, 0)
 
 
 def test_a_a_tampered_row_fails_verification(empty_chain: None) -> None:

@@ -31,7 +31,7 @@ handled with care because of FR-HITL-02.
 
 | Stage | Unit of work | Kind | Verdict |
 |---|---|---|---|
-| `ingest` | one document | fan-out | **The dominant win.** NFR-06 says hundreds of documents; parse and OCR are the expensive steps, averaging 3.1 s/page on CPU with a 16 s p95 tail. `content_hash` is the intended dedup key (NFR-05), but it is an unconstrained field today — NFR-05 is `declared` and AC-5 `open`, so a retry after a partial commit can still duplicate. Transactional hash uniqueness is a prerequisite for calling retries free, not a consequence of the field existing. Process pool — CPU-bound, so threads buy nothing. |
+| `ingest` | one document | fan-out | **The dominant win.** NFR-06 says hundreds of documents; parse and OCR are the expensive steps, averaging 3.1 s/page on CPU with a 16 s p95 tail. The store now enforces `UNIQUE (content_hash)` and the live suite exercises `ON CONFLICT DO NOTHING`, so NFR-05 and AC-5 are `partial`, not open. The missing half is the ingestion service and per-stage idempotency: `ingest()` still raises, so retries of a complete workflow are not yet proven safe. Process pool — CPU-bound, so threads buy nothing. |
 | `extract` | document × category field set | fan-out, some team | Yes. TRS §7 field sets differ enough per category that the extractors are naturally role-shaped. Branches return **claims** keyed by contract C8's immutable claim identity — `ordering_key()` orders workbook rows and cannot distinguish two extractors' competing values for the same component field. |
 | `index` | chunk batch | fan-out | Yes, but the parallelism is already *inside* the payload — embedding and reranking take batches, so the call boundary rarely needs widening. |
 | `retrieve` | one query | fan-out | Low priority. Latency-bound, and NFR-07 allows seconds-to-minutes. |
@@ -99,8 +99,11 @@ Governed by **plan Decision 9**, not by this document. An earlier draft here
 proposed a `BIGSERIAL` sequence "scoped by `run_id`", which is not a thing a
 `BIGSERIAL` does — it is one table-level sequence, it is allocation order rather
 than commit order, and it carries no tamper evidence. Decision 9 specifies
-privilege separation as the boundary, per-document-stream hash chaining, and
-audit insertion in the same transaction as the business write. Follow that.
+privilege separation as the boundary, per-document-stream hash chaining, and audit insertion in
+the same transaction as the business write. The audit writer and
+`services.transactional_audit.write_and_append_event()` implement the low-level lock/order and
+caller-owned transaction boundary. Production stages still need to use that boundary for every
+business write.
 
 ### Deterministic merge
 
@@ -115,7 +118,7 @@ CEC data.
 
 | Stage | Concurrency to add | Prerequisite |
 |---|---|---|
-| 1 | Fan-out on `ingest` | Concurrency caps in `Settings` (land #10) + transactional dedup |
+| 1 | Fan-out on `ingest` | Concurrency caps in `Settings` + the implemented store dedup wired into an idempotent ingestion service |
 | 2 | None beyond batch-internal. Composition stays serial | — |
 | 3 | Fan-out on web gaps and conflict detection, union-aggregated | Tolerance table (D-2) |
 | 4 | The compliance and tax specialist team | Tabs 12–13 field sets |
@@ -131,8 +134,9 @@ for the stage, not a property of it.
 
 1. **A test that fan-out branches cannot write to the canonical store** (#8). The
    contract exists; the enforcement does not.
-2. **Transactional dedup** — a unique constraint and upsert on `content_hash`,
-   plus per-stage idempotency, before retry-is-free holds (NFR-05, AC-5).
+2. **Application-level idempotency** — the unique `content_hash` constraint and documented
+   upsert are implemented and live-tested; `ingest()` and the runner must actually use them,
+   with a stable idempotency key per stage, before retry-is-free holds (NFR-05, AC-5).
 3. **Severity assignment rule.** `Severity` and the compose gate land with #10;
    what assigns a severity to a detected conflict is still a judgement call, and
    `specs/001-procurement-agent/open-decisions.md` §1 proposes the lookup.

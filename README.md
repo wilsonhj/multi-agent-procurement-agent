@@ -11,9 +11,9 @@ other evidence-heavy procurement workflows.
 
 > [!IMPORTANT]
 > This repository is a **pre-alpha implementation**, not a working end-to-end application.
-> The domain model and several policy algorithms are implemented and tested. Document
-> ingestion, extraction adapters, persistence, retrieval, web enrichment, the review UI,
-> orchestration, and workbook writing are not yet operational.
+> The domain model, policy algorithms, and one sanitized-PV CSV vertical slice are implemented
+> and tested. General document ingestion, extraction adapters, PostgreSQL persistence, retrieval,
+> web enrichment, the review UI, and orchestration are not yet operational.
 
 ## Why this project exists
 
@@ -44,13 +44,15 @@ source of truth. If the two disagree, that document is right and this one is sta
 | Per-field conflict tolerance and declared supplier bands | Implemented and tested |
 | Source-of-record overwrite guard | Implemented and tested |
 | Compose-time severity gate | Implemented and tested |
-| Output flag calculation and deterministic XLSX archive normalization | Implemented and tested |
+| Output flags, 13-tab suppliers-as-rows writer, deterministic XLSX normalization | Implemented and tested |
 | Parser, OCR, embedder, vector-store, reranker, and LLM interfaces | Declared as Protocols |
 | Ingestion, indexing, retrieval, web enrichment | Stubs; raise `NotImplementedError` |
-| PostgreSQL schema, audit hash chain, row-level ACL enforcement | SQL implemented; applied and asserted against a live server in CI |
-| Python persistence layer, worker runner | Not implemented; nothing in `src/` opens a connection |
-| Conflict queue service and review UI | Data model only |
-| 13-tab workbook writer | Stub; archive normalizer exists |
+| Sanitized PV CSV → claims → conflicts → review → workbook slice | Implemented and tested; fixture-scale and in-memory |
+| PostgreSQL schema, audit hash chain, row-level ACL enforcement | SQL implemented; schema and Python audit append/verify paths asserted against a live server in CI |
+| Audit library and same-transaction write boundary | Implemented and tested; used by the narrow slice, not the general stages |
+| Python persistence layer, worker runner | Not implemented; only the standalone audit library accepts a caller-supplied connection |
+| Conflict queue and review | Queue construction and minimal in-memory resolution operation; no API/UI |
+| 13-tab workbook writer | Initial deterministic suppliers-as-rows writer implemented; advanced G.3–G.8 features remain |
 | CLI or deployable service | Not implemented |
 
 See [Current state](docs/current-state.md) for the code-to-spec audit and
@@ -77,9 +79,12 @@ public sources ─► gap-only web enrichment ───────────�
                                                   13-tab workbook
 ```
 
-Nothing in that diagram runs end to end yet; it is the target, and the boxes between `ingest`
-and `13-tab workbook` are stubs. Two things in it are real today and worth stating separately,
-because they are the reason the shape is what it is.
+That full diagram does not run end to end yet. A deliberately narrow path does:
+`services.vertical_slice.run_sanitized_pv_csv()` accepts the committed trusted CSV fixture,
+creates immutable claims, reduces canonical fields, constructs a conflict queue entry, supports
+selection of an existing candidate by a reviewer, and writes the deterministic 13-tab workbook.
+It is a contract-integration slice, not a general supplier-document pipeline: PDF/OCR, vendor
+adapters, PostgreSQL repositories, an API/UI, and the runner are still absent.
 
 Human review is deliberately detached from pipeline execution. There is no
 `await_human_resolution` stage and there will not be one: one unresolved conflict on document 7
@@ -93,10 +98,11 @@ The source-of-record rule is the other. `assert_no_autonomous_overwrite()` is im
 tested; the planned store makes it structural rather than a guard.
 
 The runtime uses PostgreSQL as the single durable store for documents, claims, chunks, jobs,
-conflicts, resolutions, and an append-only audit log. **The schema exists and the Python half
-does not**: `sql/00`–`08` define every one of those tables and are applied against a live server
-on each CI run, while nothing in `src/` opens a connection to them. Workers will claim jobs with
-`FOR UPDATE SKIP LOCKED`; no separate workflow framework is planned.
+conflicts, resolutions, and an append-only audit log. `sql/00`–`08` define every one of those
+tables and are applied against a live server on each CI run. The audit package can append and
+verify events through a caller-supplied connection, but there is no general persistence layer
+and no production service uses the schema. Workers will claim jobs with `FOR UPDATE SKIP
+LOCKED`; no separate workflow framework is planned.
 Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
 parsers, OCR, models, and storage adapters without changing the domain core. Those six
 Protocols are declared, and each has an in-memory reference adapter plus a conformance suite; no
@@ -114,10 +120,10 @@ storage model, and important design trade-offs.
 
 A public value can fill an empty field. It cannot replace an ingested value. The current core
 enforces this rule at one chokepoint, `assert_no_autonomous_overwrite`, tested directly in
-[`tests/test_source_of_record_rule.py`](tests/test_source_of_record_rule.py). The planned store
-strengthens it structurally by letting workers append immutable claims while a reducer alone
-projects canonical state — a guard can detect a bad call but cannot prevent a code path from
-bypassing it.
+[`tests/test_source_of_record_rule.py`](tests/test_source_of_record_rule.py). The sanitized slice
+also demonstrates append-only claims and reducer projection in memory. The production store must
+make that split structural — a guard can detect a bad call but cannot prevent another code path
+from bypassing it.
 
 ## Quick start
 
@@ -146,8 +152,8 @@ uv run mypy
 All four, not three: `ruff format --check` is the one that gets dropped from an informal
 retelling, and leaving it off once shipped a file the other three accepted.
 
-The package currently exposes domain models and pure policy helpers; there is no working
-pipeline command yet. This example exercises the system-of-record guard:
+The package exposes domain models, policy helpers, and the fixture-scale vertical slice; there is
+no working pipeline command yet. This example exercises the system-of-record guard:
 
 ```python
 from procurement_agent.schema import CanonicalField, SourceRef, SourceTier
@@ -239,6 +245,7 @@ registered as a reversal rather than implemented. The full gate with rationale i
 ```text
 src/procurement_agent/
 ├── config.py                Settings, PROCUREMENT_ prefix, bounds enforced
+├── audit/                   RFC 8785 envelope, hash-chain append and verification
 ├── schema/                  canonical domain objects and vocabularies
 ├── ports/                   six swappable integration interfaces
 ├── services/
@@ -250,13 +257,15 @@ src/procurement_agent/
 │   ├── confidence/          confidence fusion and the Tier A review gate
 │   ├── identity/            deterministic supplier and model matching
 │   ├── conflict_hitl/       implemented comparison and conflict policy
-│   └── output/              flags, archive normalization, workbook stub
+│   ├── output/              projection, flags, archive normalization, initial writer
+│   ├── transactional_audit.py  same-transaction business/audit boundary
+│   └── vertical_slice.py    sanitized PV CSV integration path
 └── orchestrator/            stage vocabulary and compose-time gate
 
 sql/                         nine numbered DDL files, applied in lexical order,
                              plus a README recording the decisions the specs
-                             did not settle. No Python reaches them yet.
-.github/workflows/ci.yml     four blocking gates, plus a live-PostgreSQL job
+                             did not settle. Only the audit library reaches them.
+.github/workflows/ci.yml     four blocking gates, plus live schema and audit-chain suites
 
 docs/
 ├── current-state.md         what works today; the source of truth for status
@@ -304,9 +313,11 @@ documents.
 ## Build plan
 
 Five stages, each with the threshold that has to be met before the next one starts. No stage
-below is complete; the current position is "before Stage 1", and Phase 0 of
-[tasks.md](specs/001-procurement-agent/tasks.md) gates all of it. Phase 0 is itself part-done —
-three of the eight contracts are frozen — so the gate has moved, but it has not opened.
+below is complete; the fixture-scale PV slice demonstrates parts of Stages 1–3 without meeting
+their corpus, format, or production-store thresholds. Phase 0 of
+[tasks.md](specs/001-procurement-agent/tasks.md) gates all of it. Phase 0 is itself part-done:
+three contracts are done and five are partial. C4 now has its Python audit library and C6 has its
+canonical projection and golden fixture, but neither has its application-facing completion.
 
 | Stage | Scope | Exit threshold |
 |---|---|---|
@@ -340,9 +351,11 @@ a new dependency must clear the license gate above.
 
 The project’s most important near-term milestone is to freeze the remaining shared contracts —
 five of the eight are still unfinished (C1, C3 and C5 are done) — and land one end-to-end,
-fixture-backed path from document ingestion to a reviewable claim. Read the four partials by
-their evidence rather than their marker: C4 and C8 each have a finished SQL half and an
-unstarted Python one, which is the pair most easily mistaken for done.
+fixture-backed path from document ingestion to a reviewable claim. Read the five partials by
+their evidence rather than their marker: C4 has a tested audit library and transaction boundary
+used by the narrow slice but not the unimplemented general stages; C6 has a tested projection
+and initial XLSX writer but not the advanced workbook gates; and C8 has a database job design
+but no Python runner.
 
 ## Security and data handling
 
@@ -358,14 +371,21 @@ requires:
 Three of those five exist in the database schema and are asserted against a live server on every
 CI run: the access labels (row-level security on all seven tables holding document content,
 `FORCE`d so the owner is not exempt), the restricted application role, and the audit hash chain.
+The audit canonicalisation, append, and verification library is also exercised there, including
+concurrent writers.
 The last one is in force today and is not conditional on anything shipping — `.gitignore`
 excludes `docs/source/`, ingested supplier material, and generated workbooks.
 
-**What does not exist is the Python half.** Nothing in `src/` opens a database connection, so no
-application code path is subject to any of it, and `services/retrieval.retrieve` — where the
-access labels would be enforced *at retrieval time*, which is what NFR-03 actually asks for —
-raises `NotImplementedError`. Self-hosted endpoints remain an `.env.example` convention with no
-check. Do not use the current repository with real confidential procurement data.
+**What does not exist is a general application path through that substrate.** The audit package accepts
+a connection supplied by its caller, and `services.transactional_audit` binds a callback and its
+event to that caller-owned transaction. The sanitized-PV slice uses that boundary through a
+caller-supplied persistence callback, but no PostgreSQL repository implementation is included and
+the general stages remain unwired. There is no general persistence/session layer.
+`services/retrieval.retrieve`
+— where the access labels would be enforced *at retrieval time*, which is what NFR-03 actually
+asks for — raises `NotImplementedError`. Self-hosted endpoints remain an `.env.example`
+convention with no check. Do not use the current repository with real confidential procurement
+data.
 
 ## Scope boundaries and regulatory disclaimer
 

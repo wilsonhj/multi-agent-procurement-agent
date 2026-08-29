@@ -22,9 +22,9 @@ an unfrozen contract.
 | **C1** | Postgres schema: `document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event` | Every WP | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08`; both T0.1 checks recorded live-verified in `sql/README.md`, and CI reapplies all nine files each run |
 | **C2** | Claim/extraction record — Pydantic + JSON Schema, including `condition` per D-1 | B, E, G | **partial** — `condition` landed on `FieldClaim` and `CanonicalField`, and the **field registry landed 2026-08-12**: 125 `FieldSpec`s over 124 contract keys in `schema/registry.py`, bidirectionally tested against the frozen markdown, with off-contract keys refused at both points that use a key as a key (`ComponentInstance.fields`, `commit_claims`). `FIELD_TOLERANCES` and the confidence Tier A table now derive from it rather than restating it. Per-category *models* still do not exist — the registry types the keys, it does not generate a model per category |
 | **C3** | Provenance reference — `(document_id, page, span, extractor_version)` | A, B, D, F, G | **done** — all four on `SourceRef`, **`span` under the name `section`**, stamped by `FieldClaim.provenance()` and pinned by `test_source_ref_carries_c3s_four_elements` |
-| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial — decision half now closed.** [D-13](clarifications.md) (adopted 2026-08-07) settles the scheme (RFC 8785 via `rfc8785`), the preimage (one JCS object with `"v": 1`), the digest (SHA-256) and the taxonomy (v1, additive-only). **The library half landed 2026-08-12**: `audit/` supplies canonicalisation (`rfc8785==0.1.4`, conformance-tested against RFC 8785's published vectors), the envelope and preimage, the pre-INSERT advisory lock — load-tested live, 41 silent forks reproduced without it — and a chain-verification CLI. What remains is an **emitter**: no production path writes an event yet, and `audit.run_event`, the A-49 taxonomy fix and `recorded_at`'s stale `DEFAULT` land with the first one. ⚠️ The version marker must exist **before the first event is ever emitted** |
+| **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial — decision and document-event library halves are closed.** [D-13](clarifications.md) settles RFC 8785 via pinned `rfc8785`, a versioned JCS preimage, SHA-256, and the additive v1 taxonomy. `audit/` supplies canonicalisation, envelope/preimage, advisory-lock append, and chain verification; `services.transactional_audit` supplies a live-tested caller-owned transaction boundary. The sanitized-PV slice uses that boundary to append all document-scoped intents with its supplied business write. What remains is integration into the general stages, `audit.run_event` for run-scoped events, the A-49 taxonomy fix, and removal of `recorded_at`'s stale SQL default |
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
-| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | **partial — the hashed artifact of record now exists.** [D-14](clarifications.md) (adopted 2026-08-07, amended 2026-08-12) freezes the bytes, the shape, `encode_value()`, policy-inside-the-hash and the store-derived `generated_on`; `services/output/projection.py` implements all of it and T0.5 ships as `tests/fixtures/workbooks/`. `write_workbook()` still raises, so G.2–G.8 and the gating G.6 desktop-Excel test remain (`services.claims.project` is C8's claims→fields projection, a different thing) |
+| **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | **partial — the hashed artifact and initial renderer exist.** [D-14](clarifications.md) (adopted 2026-08-07, amended 2026-08-12) freezes the bytes, shape, `encode_value()`, policy-inside-the-hash and store-derived `generated_on`; `services/output/projection.py` and `tests/fixtures/workbooks/` implement and pin it. `write_workbook()` now emits the deterministic suppliers-as-rows 13-tab artifact and the sanitized-PV slice tests byte identity. G.3–G.4 and G.6–G.8, the alternate orientation, and the gating desktop test remain (`services.claims.project` is C8's claims→fields projection, a different thing) |
 | **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS enforces the one label the schema has (`access_restricted`). [D-15](clarifications.md) adopts that model **provisionally** and closes T0.4's written-decision criterion, but two facts remain outstanding and they are facts rather than preferences: whether any executed NDA exceeds "need to know", and whether any evaluator is conflicted with a specific bidder. Either yes makes the label `restricted_group` |
 | **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | **partial** — the append-only invariant is enforced in both halves; `job` is the DDL's own proposal and `orchestrator.run` raises `NotImplementedError` |
 
@@ -33,8 +33,8 @@ carefully rather than by their marker. **C8 is the one with a finished SQL half 
 Python half** — `sql/08_job.sql` has the states, the lease and the idempotency key, and WP-I's
 runner is a file nobody has opened yet, so it is the contract most likely to be mistaken for
 finished because `sql/` is the visible artifact. C4 was in that pair until 2026-08-12, when
-WP-H's library landed; what it now waits on is an **emitter**, which is a different kind of gap —
-the code exists and nothing calls it.
+WP-H's library landed. The sanitized-PV slice now calls its transaction boundary; what remains is
+general-stage integration and the separately chained run-event path.
 
 > **C8 invariant — workers propose, they do not commit.** Each extraction writes an **immutable
 > claim row** keyed by `(document_id, field, extractor_version)`; the canonical value is a
@@ -73,9 +73,10 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > where dropping it reproduced 41 silent forks — and H.5's chain-verification CLI. The bar this
 > paragraph set is met: an event can now be computed, so one may be emitted.
 >
-> **What is missing is an emitter.** No production path writes an event, which is why C4 stays
-> partial. `audit.run_event`, the A-49 taxonomy fix and `recorded_at`'s stale `DEFAULT` land with
-> the first one, because none of them can be verified against a caller that does not exist.
+> The sanitized-PV path now emits every document-scoped intent through
+> `persist_vertical_slice()` on the same caller-owned transaction as its supplied business write.
+> C4 stays partial because the general stages do not use it and the separately chained
+> `audit.run_event` path, A-49 taxonomy fix, and removal of `recorded_at`'s stale `DEFAULT` remain.
 
 > ⚠️ **C7 is a single decision constraining two work packages at opposite ends of the pipeline**
 > (labelling at ingest, enforcement at retrieval). This is the most common place this kind of
@@ -102,7 +103,7 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 - **T0.3** Define the per-field tolerance table from D-2 as data, not code. → verify: a table-driven
   test asserts nameplate Pmax at ±1 W does not merge adjacent 5 W bins.
 - **T0.4** ~~Decide the ACL/labelling model (C7)~~ → **written as [D-15](clarifications.md), provisionally adopted 2026-08-07.** The verify criterion is met; the model is contingent on two outstanding facts recorded in that decision.
-- **T0.5** ~~Freeze the canonical workbook projection format (C6)~~ → **frozen as [D-14](clarifications.md), adopted 2026-08-07.** ⚠️ The verify criterion is **not** met: no golden JSON fixture exists yet. `tests/fixtures/` deliberately shipped none until ratification; that gate has now lifted.
+- **T0.5** ~~Freeze the canonical workbook projection format (C6)~~ → **frozen as [D-14](clarifications.md), adopted 2026-08-07, and verified.** `services/output/projection.py` implements the canonical bytes; `tests/fixtures/workbooks/two-supplier-pv-store.json` and its SHA-256 file are the golden fixture and digest. The initial XLSX writer has since landed; its remaining G.3–G.4 and G.6–G.8 work is outside this projection-format gate.
 - **T0.6** Publish fixture sets for every contract (see below).
 
 ### The decoupling technique: frozen fixtures, not running code
@@ -235,7 +236,7 @@ All nine run concurrently once Phase 0 lands.
 - **G.1** Canonical sorted-key JSON projection; floats via `repr()`. **This is the hashed artifact
   of record**, not the xlsx — `%.16g` maps `0.1+0.2` and `0.3` to identical bytes, so a workbook
   hash cannot distinguish two genuinely different stored numbers.
-- **G.2** All 13 tabs (FR-OUT-02). → verify: **AC-3**.
+- **G.2** ~~All 13 tabs (FR-OUT-02).~~ → implemented by the initial writer and pinned by `test_writer_emits_all_tabs_provenance_and_open_item`; **AC-3 remains partial** until all formatting/desktop gates pass.
 - **G.3** Hidden parallel state columns for provenance. → ⚠️ **no blank column between value and
   state blocks**, and `auto_filter.ref` **must span the hidden columns**. Both fail silently on
   first sort. Assert both in the generator.
@@ -244,7 +245,8 @@ All nine run concurrently once Phase 0 lands.
 - **G.5** Deterministic render — `ExcelWriter` direct (bypassing `save_workbook`, which re-stamps
   `modified = now()` *after* you set it), zip normalisation at epoch 1980-01-01 **12:00**.
   → ⚠️ `ZipFile(compresslevel=)` is **silently ignored** with a hand-built `ZipInfo`; set
-  `zi._compresslevel`. → verify: **AC-7**, with `sleep(1.1)` between the two runs.
+  `zi._compresslevel`. → the initial writer now passes a two-generation byte-identity test;
+  **AC-7 remains partial** until the production-store and G.6 desktop gates pass.
 - **G.6** ⚠️ **GATING: open the generated workbook in real desktop Excel and LibreOffice.** The
   determinism recipe was validated only by openpyxl round-trip and OPC structural checks. Test
   `[Content_Types].xml`-first ordering and the 1980 timestamps before this ships. A verified

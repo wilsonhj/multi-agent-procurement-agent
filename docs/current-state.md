@@ -3,7 +3,7 @@
 This audit reflects the `claude/phase-1-integration` branch as verified on 2026-08-29. It
 answers the practical question a new contributor has first: what can the repository do today?
 
-The local verification baseline is **998 passing, 41 skipped, and 4 expected failures**, plus a
+The local verification baseline is **1000 passing, 41 skipped, and 4 expected failures**, plus a
 clean Ruff check, a clean `ruff format --check`, and a clean strict-mypy check across `src/` and
 `tests/`. The skips are intentionally DSN-gated live tests: 32 in
 `tests/test_sql_behaviour.py` and 9 in `tests/test_audit_live.py`. With
@@ -122,10 +122,8 @@ verification defects; the live suite covers real inserts and concurrency. What r
 application integration. `services.transactional_audit.write_and_append_event()` binds a
 business callback and its event to one caller-owned transaction, with rollback atomicity proved
 against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` uses that boundary
-for its business callback and all audit intents on the same uncommitted connection. It returns
-the committed events while leaving the result's pending intents intact; callers must invoke
-`acknowledge_persisted()` only after their transaction commit succeeds to clear those intents.
-The general
+for its business callback and all audit intents on the same connection, owns the commit and
+rollback, and returns a cleared result only after a successful commit. The general
 ingestion, extraction, conflict, review, and composition stages remain unwired.
 
 ### Sanitized PV vertical slice
@@ -135,8 +133,8 @@ parses two source records, creates immutable claims, replays them idempotently i
 reference store, reduces a canonical PV component, constructs an inter-document conflict queue
 entry, supports a minimal human resolution that selects an existing sourced candidate, builds
 the canonical workbook projection, and writes the 13-tab XLSX. It also produces audit intents
-and exposes a persistence boundary that appends them in the same caller-owned transaction as a
-supplied business write.
+and exposes a persistence boundary that atomically commits the business write and audit intents,
+rolling back both on failure.
 
 This does not implement general CSV intake, native PDF/Word/Excel parsing, OCR, a PostgreSQL
 business repository, a reviewer API/UI, or the stage runner. It is a narrow executable proof of

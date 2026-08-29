@@ -102,8 +102,8 @@ than commit order, and it carries no tamper evidence. Decision 9 specifies
 privilege separation as the boundary, per-document-stream hash chaining, and audit insertion in
 the same transaction as the business write. The audit writer and
 `services.transactional_audit.write_and_append_event()` implement the low-level lock/order and
-caller-owned transaction boundary. Production stages still need to use that boundary for every
-business write.
+caller-owned transaction primitive. The sanitized-PV service now owns the surrounding commit and
+rollback; production stages still need to use an equivalent boundary for every business write.
 
 ### Deterministic merge
 

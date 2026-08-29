@@ -379,8 +379,8 @@ excludes `docs/source/`, ingested supplier material, and generated workbooks.
 
 **What does not exist is a general application path through that substrate.** The audit package accepts
 a connection supplied by its caller, and `services.transactional_audit` binds a callback and its
-event to that caller-owned transaction. The sanitized-PV slice uses that boundary through a
-caller-supplied persistence callback, but no PostgreSQL repository implementation is included and
+event to that caller-owned transaction. The sanitized-PV slice wraps that primitive in a
+service-owned atomic commit/rollback boundary through a caller-supplied persistence callback, but no PostgreSQL repository implementation is included and
 the general stages remain unwired. There is no general persistence/session layer.
 `services/retrieval.retrieve`
 — where the access labels would be enforced *at retrieval time*, which is what NFR-03 actually

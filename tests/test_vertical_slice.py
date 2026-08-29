@@ -151,9 +151,10 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
         connection.execute("INSERT VERTICAL SLICE")
         return "stored"
 
-    stored, events = persist_vertical_slice(conn, result, write=write)
+    stored, persisted, events = persist_vertical_slice(conn, result, write=write)
 
     assert stored == "stored"
+    assert persisted.audit_events == ()
     assert len(events) == len(result.audit_events) == 5
     assert [(event.document_id, event.seq) for event in events] == [
         ("syn-pv-datasheet", 0),
@@ -164,6 +165,39 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
     ]
     assert conn.calls[0] == "INSERT VERTICAL SLICE"
     assert conn.commits == 0
+
+
+def test_a_review_after_persistence_emits_only_its_new_resolution_intent() -> None:
+    result = _run()
+    conn = _AuditConnection()
+
+    _, persisted, _ = persist_vertical_slice(
+        conn,
+        result,
+        write=lambda connection, _: connection.execute("INSERT VERTICAL SLICE"),
+    )
+    conflict = persisted.conflicts[0]
+    resolution = Resolution(
+        action=ResolutionAction.SELECT_VALUE,
+        resolved_by="procurement.lead",
+        resolved_at=datetime(2026, 8, 1, 10, 0, tzinfo=UTC),
+        rationale="The signed purchase order supersedes the draft datasheet.",
+        value_before=650.0,
+        value_after=655.0,
+    )
+    reviewed = review_conflict(persisted, entry_id=conflict.entry_id, resolution=resolution)
+
+    assert [intent.event_type for intent in reviewed.audit_events] == ["resolution"]
+    _, repersisted, events = persist_vertical_slice(
+        conn,
+        reviewed,
+        write=lambda connection, _: connection.execute("INSERT RESOLUTION"),
+    )
+
+    assert repersisted.audit_events == ()
+    assert [(event.document_id, event.seq, event.event_type) for event in events] == [
+        ("syn-pv-purchase-order", 2, "resolution")
+    ]
 
 
 def test_vertical_slice_refuses_autocommit_before_business_write() -> None:
@@ -263,3 +297,21 @@ def test_adapter_rejects_an_off_contract_field_before_persistence() -> None:
             persist=persist,
         )
     assert called is False
+
+
+def test_document_hash_is_independent_of_row_arrival_order() -> None:
+    rows = FIXTURE.read_bytes().splitlines()
+    header, *body = rows
+    reordered = b"\n".join([header, *reversed(body), b""])
+
+    original = _run()
+    permuted = run_sanitized_pv_csv(
+        reordered,
+        ingested_at=INGESTED_AT,
+        detected_at=DETECTED_AT,
+        actor="integration-test",
+    )
+
+    assert {source.document_id: source.content_hash for source in original.sources} == {
+        source.document_id: source.content_hash for source in permuted.sources
+    }

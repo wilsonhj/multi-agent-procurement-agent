@@ -253,7 +253,7 @@ def persist_vertical_slice[ResultT](
     result: VerticalSliceResult,
     *,
     write: Callable[[AuditConnection, VerticalSliceResult], ResultT],
-) -> tuple[ResultT, tuple[AuditEvent, ...]]:
+) -> tuple[ResultT, VerticalSliceResult, tuple[AuditEvent, ...]]:
     """Persist the slice and every audit intent in one caller-owned transaction.
 
     The first intent is bound to the business callback through
@@ -285,7 +285,12 @@ def persist_vertical_slice[ResultT](
                 recorded_at=intent.recorded_at,
             )
         )
-    return written, tuple(events)
+    # Audit intents are an outbox, not historical state.  Returning a fresh
+    # result with the outbox cleared makes the safe continuation explicit: a
+    # later review appends only its new resolution intent instead of replaying
+    # document/extraction/conflict events that already committed.
+    persisted = replace(result, audit_events=())
+    return written, persisted, tuple(events)
 
 
 def review_conflict(
@@ -317,11 +322,17 @@ def review_conflict(
         if resolution.action is ResolutionAction.SELECT_VALUE
         or candidate.source_tier is SourceTier.SYSTEM_OF_RECORD
     ]
-    selected = next(
-        (candidate for candidate in eligible if candidate.value == resolution.value_after), None
-    )
-    if selected is None:
+    selected_candidates = [
+        candidate for candidate in eligible if candidate.value == resolution.value_after
+    ]
+    if not selected_candidates:
         raise ValueError("value_after must identify an eligible existing conflict candidate")
+    if len(selected_candidates) > 1:
+        raise ValueError(
+            "value_after matches more than one eligible candidate; this minimal review "
+            "operation cannot choose provenance unambiguously"
+        )
+    selected = selected_candidates[0]
 
     resolved_entry = target.model_copy(update={"resolution": resolution})
     components: list[ComponentInstance] = []
@@ -461,11 +472,12 @@ def _source_document(
         raise SanitizedCSVError(
             f"document_id {document_id!r} must identify exactly one URI and document type"
         )
+    encoded_rows = [_row_content(row) for row in rows]
     canonical_rows = json.dumps(
-        [
-            _row_content(row)
-            for row in sorted(rows, key=lambda item: (item.field_name, item.section))
-        ],
+        sorted(
+            encoded_rows,
+            key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")),
+        ),
         sort_keys=True,
         separators=(",", ":"),
     ).encode()

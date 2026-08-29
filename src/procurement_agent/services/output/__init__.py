@@ -4,15 +4,30 @@ Canonical schema -> multi-tab Excel writer with provenance and conditional
 formatting.
 """
 
-from __future__ import annotations
-
+import json
 import os
 import re
 import tempfile
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
 
-from ...schema import CanonicalField, CellFlag, ComponentInstance, WorkbookTab
+from openpyxl import Workbook
+from openpyxl.cell import Cell
+from openpyxl.cell.cell import MergedCell
+from openpyxl.comments import Comment
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
+
+from ...schema import (
+    CATEGORY_TO_TAB,
+    CanonicalField,
+    CellFlag,
+    ComponentInstance,
+    WorkbookTab,
+    encode_value,
+)
 
 #: plan.md Decision 8c. 1980-01-01 is the ZIP format's epoch floor; noon keeps
 #: every member clear of it under any timezone interpretation.
@@ -156,7 +171,204 @@ def write_workbook(
     Sources tab, or an adjacent column (FR-OUT-03). No unsourced values
     (NFR-01, AC-4).
     """
-    raise NotImplementedError
+    if not suppliers_as_rows:
+        raise NotImplementedError(
+            "the initial deterministic writer implements suppliers_as_rows=True only"
+        )
+    if not 0.0 <= confidence_threshold <= 1.0:
+        raise ValueError("confidence_threshold must be between 0 and 1")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    initial = workbook.active
+    assert initial is not None
+    workbook.remove(initial)
+
+    sheets = {tab: workbook.create_sheet(tab.value) for tab in expected_tabs()}
+    category_headers = [
+        "Supplier",
+        "Model",
+        "Field",
+        "Condition",
+        "Value",
+        "Unit",
+        "Confidence",
+        "Flags",
+        "Provenance",
+    ]
+    for tab in CATEGORY_TO_TAB.values():
+        sheet = sheets[tab]
+        sheet.append(category_headers)
+        _style_header(sheet[1])
+        sheet.freeze_panes = "A2"
+
+    ordered = sorted(components, key=ComponentInstance.ordering_key)
+    for component in ordered:
+        sheet = sheets[CATEGORY_TO_TAB[component.component_category]]
+        for field_name in sorted(component.fields):
+            for field in sorted(component.fields[field_name], key=_field_sort_key):
+                cell_flags = flags_for(field, confidence_threshold=confidence_threshold)
+                provenance = _provenance_text(field)
+                row = [
+                    component.supplier,
+                    component.model,
+                    field_name,
+                    _display(field.condition),
+                    _display(field.value),
+                    field.unit,
+                    field.confidence,
+                    ", ".join(sorted(flag.value for flag in cell_flags)),
+                    provenance,
+                ]
+                sheet.append(row)
+                value_cell = sheet.cell(row=sheet.max_row, column=5)
+                value_cell.comment = Comment(provenance, DETERMINISTIC_APPLICATION)
+                _apply_flag_fill(value_cell, cell_flags)
+
+    _write_summary(sheets[WorkbookTab.EXECUTIVE_SUMMARY], ordered)
+    _write_open_items(sheets[WorkbookTab.CONFLICTS_OPEN_ITEMS], ordered)
+    _write_provenance(sheets[WorkbookTab.SOURCES_PROVENANCE], ordered)
+    _write_cross_cutting(sheets[WorkbookTab.COMPLIANCE_MATRIX], ordered, "compliance")
+    _write_cross_cutting(sheets[WorkbookTab.TAX_INCENTIVES], ordered, "tax")
+
+    for sheet in workbook.worksheets:
+        sheet.auto_filter.ref = sheet.dimensions
+        for index, column in enumerate(sheet.columns, start=1):
+            letter = get_column_letter(index)
+            width = min(60, max(12, *(len(str(cell.value or "")) + 2 for cell in column)))
+            sheet.column_dimensions[letter].width = width
+
+    workbook.save(destination)
+    return normalize_archive(destination)
+
+
+_FLAG_FILLS: dict[CellFlag, PatternFill] = {
+    CellFlag.UNRESOLVED_CONFLICT: PatternFill("solid", fgColor="F4CCCC"),
+    CellFlag.MISSING_DATA: PatternFill("solid", fgColor="D9D9D9"),
+    CellFlag.LOW_CONFIDENCE: PatternFill("solid", fgColor="FFF2CC"),
+    CellFlag.WEB_SUPPLEMENTED: PatternFill("solid", fgColor="CFE2F3"),
+}
+
+
+def _style_header(cells: Iterable[Cell | MergedCell]) -> None:
+    """Apply one deterministic, restrained header style."""
+    for cell in cells:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+
+
+def _display(value: object) -> str:
+    return json.dumps(
+        encode_value(value), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def _field_sort_key(field: CanonicalField) -> tuple[str, str, str]:
+    return (_display(field.condition), _display(field.value), _display(field.source_ref))
+
+
+def _provenance_text(field: CanonicalField) -> str:
+    ref = field.source_ref
+    if ref.document_id is not None:
+        location = ref.document_id
+        if ref.page is not None:
+            location += f" page {ref.page}"
+        if ref.section is not None:
+            location += f" [{ref.section}]"
+    else:
+        location = ref.url or ""
+    extractor = f"; extractor={ref.extractor_version}" if ref.extractor_version else ""
+    return f"{field.source_tier.value}: {location}{extractor}"
+
+
+def _apply_flag_fill(cell: Cell, flags: set[CellFlag]) -> None:
+    # More severe review states win visually; every state remains present in the Flags column.
+    precedence = (
+        CellFlag.UNRESOLVED_CONFLICT,
+        CellFlag.MISSING_DATA,
+        CellFlag.LOW_CONFIDENCE,
+        CellFlag.WEB_SUPPLEMENTED,
+    )
+    for flag in precedence:
+        if flag in flags:
+            cell.fill = _FLAG_FILLS[flag]
+            return
+
+
+def _write_summary(sheet: Worksheet, components: list[ComponentInstance]) -> None:
+    sheet.append(["Metric", "Value"])
+    _style_header(sheet[1])
+    sheet.append(["Component instances", len(components)])
+    sheet.append(["Suppliers", len({component.supplier for component in components})])
+    sheet.append(
+        [
+            "Unresolved fields",
+            sum(len(component.unresolved_conflicts()) for component in components),
+        ]
+    )
+
+
+def _write_open_items(sheet: Worksheet, components: list[ComponentInstance]) -> None:
+    sheet.append(["Supplier", "Model", "Field", "Status", "Provenance"])
+    _style_header(sheet[1])
+    for component in components:
+        for field_name in component.unresolved_conflicts():
+            for field in component.fields[field_name]:
+                if CellFlag.UNRESOLVED_CONFLICT in flags_for(field, confidence_threshold=0.0):
+                    sheet.append(
+                        [
+                            component.supplier,
+                            component.model,
+                            field_name,
+                            field.conflict_status.value,
+                            _provenance_text(field),
+                        ]
+                    )
+
+
+def _write_provenance(sheet: Worksheet, components: list[ComponentInstance]) -> None:
+    sheet.append(["Supplier", "Model", "Field", "Source tier", "Source"])
+    _style_header(sheet[1])
+    rows = {
+        (
+            component.supplier,
+            component.model,
+            field_name,
+            field.source_tier.value,
+            _provenance_text(field),
+        )
+        for component in components
+        for field_name, fields in component.fields.items()
+        for field in fields
+    }
+    for row in sorted(rows):
+        sheet.append(row)
+
+
+def _write_cross_cutting(sheet: Worksheet, components: list[ComponentInstance], topic: str) -> None:
+    sheet.append(["Supplier", "Model", "Field", "Value", "Provenance"])
+    _style_header(sheet[1])
+    tax_keys = {
+        "domestic_content_status",
+        "domestic_content_percentage",
+        "baba_status",
+        "feoc_pfe_status",
+    }
+    for component in components:
+        for field_name in sorted(component.fields):
+            include = field_name in tax_keys if topic == "tax" else field_name not in tax_keys
+            if not include:
+                continue
+            for field in component.fields[field_name]:
+                sheet.append(
+                    [
+                        component.supplier,
+                        component.model,
+                        field_name,
+                        _display(field.value),
+                        _provenance_text(field),
+                    ]
+                )
 
 
 def expected_tabs() -> list[WorkbookTab]:

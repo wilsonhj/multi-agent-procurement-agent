@@ -17,9 +17,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
-from ..audit import AuditConnection, AuditEvent, JsonObject, append_event, canonical_text
+from ..audit import AuditConnection, AuditEvent, JsonObject, append_event
 from ..schema import (
     ComponentCategory,
     ComponentInstance,
@@ -52,8 +52,8 @@ __all__ = [
     "InMemoryClaimStore",
     "PendingAuditEvent",
     "SanitizedCSVError",
+    "VerticalSliceConnection",
     "VerticalSliceResult",
-    "acknowledge_persisted",
     "persist_vertical_slice",
     "review_conflict",
     "run_sanitized_pv_csv",
@@ -102,6 +102,14 @@ class InMemoryClaimStore:
 
     def extend(self, claims: Iterable[FieldClaim]) -> int:
         return sum(self.append(claim) for claim in claims)
+
+
+class VerticalSliceConnection(AuditConnection, Protocol):
+    """A transaction handle the vertical slice can commit or roll back."""
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,67 +261,49 @@ def run_sanitized_pv_csv(
 
 
 def persist_vertical_slice[ResultT](
-    conn: AuditConnection,
+    conn: VerticalSliceConnection,
     result: VerticalSliceResult,
     *,
     write: Callable[[AuditConnection, VerticalSliceResult], ResultT],
-) -> tuple[ResultT, tuple[AuditEvent, ...]]:
-    """Persist the slice and every audit intent in one caller-owned transaction.
+) -> tuple[ResultT, VerticalSliceResult, tuple[AuditEvent, ...]]:
+    """Persist the slice and every audit intent in one owned transaction.
 
     The first intent is bound to the business callback through
     :func:`write_and_append_event`; the rest append on the same connection before
-    control returns.  Neither helper commits.  An exception therefore leaves the
-    caller's transaction context to roll back the business rows and all events.
+    a single commit.  This service boundary owns that commit so it can clear the
+    outbox only after PostgreSQL confirms success.  Any business, audit or commit
+    failure rolls the transaction back and returns no acknowledged state.
     """
     if not result.audit_events:
         raise ValueError("a vertical-slice persistence must carry at least one audit event")
     first, *remaining = result.audit_events
-    written, first_event = write_and_append_event(
-        conn,
-        write=lambda connection: write(connection, result),
-        document_id=first.document_id,
-        event_type=first.event_type,
-        actor=first.actor,
-        payload=first.payload,
-        recorded_at=first.recorded_at,
-    )
-    events = [first_event]
-    for intent in remaining:
-        events.append(
-            append_event(
-                conn,
-                document_id=intent.document_id,
-                event_type=intent.event_type,
-                actor=intent.actor,
-                payload=intent.payload,
-                recorded_at=intent.recorded_at,
-            )
+    try:
+        written, first_event = write_and_append_event(
+            conn,
+            write=lambda connection: write(connection, result),
+            document_id=first.document_id,
+            event_type=first.event_type,
+            actor=first.actor,
+            payload=first.payload,
+            recorded_at=first.recorded_at,
         )
-    return written, tuple(events)
-
-
-def acknowledge_persisted(
-    result: VerticalSliceResult, events: tuple[AuditEvent, ...]
-) -> VerticalSliceResult:
-    """Clear pending audit intents only after the caller's commit succeeds.
-
-    ``persist_vertical_slice`` cannot do this safely because it deliberately
-    does not own the transaction.  Its caller invokes this acknowledgement only
-    after the surrounding commit returns successfully.  Matching every event
-    back to its intent prevents acknowledging a partial or unrelated append.
-    """
-    if len(events) != len(result.audit_events):
-        raise ValueError("every pending audit intent must have a committed event")
-    for intent, event in zip(result.audit_events, events, strict=True):
-        if (
-            event.document_id != intent.document_id
-            or event.event_type != intent.event_type
-            or event.actor != intent.actor
-            or event.recorded_at != intent.recorded_at
-            or event.payload_canonical != canonical_text(intent.payload)
-        ):
-            raise ValueError("committed audit events do not match the pending intents")
-    return replace(result, audit_events=())
+        events = [first_event]
+        for intent in remaining:
+            events.append(
+                append_event(
+                    conn,
+                    document_id=intent.document_id,
+                    event_type=intent.event_type,
+                    actor=intent.actor,
+                    payload=intent.payload,
+                    recorded_at=intent.recorded_at,
+                )
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return written, replace(result, audit_events=()), tuple(events)
 
 
 def review_conflict(

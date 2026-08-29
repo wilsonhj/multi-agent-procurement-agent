@@ -23,7 +23,6 @@ from procurement_agent.services.vertical_slice import (
     InMemoryClaimStore,
     SanitizedCSVError,
     VerticalSliceResult,
-    acknowledge_persisted,
     persist_vertical_slice,
     review_conflict,
     run_sanitized_pv_csv,
@@ -119,11 +118,20 @@ class _Cursor:
 
 
 class _AuditConnection:
-    def __init__(self, *, autocommit: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        autocommit: bool = False,
+        fail_audit: bool = False,
+        fail_commit: bool = False,
+    ) -> None:
         self._autocommit = autocommit
+        self.fail_audit = fail_audit
+        self.fail_commit = fail_commit
         self.calls: list[str] = []
         self.tips: dict[str, tuple[int, bytes]] = {}
         self.commits = 0
+        self.rollbacks = 0
 
     @property
     def autocommit(self) -> bool:
@@ -136,22 +144,28 @@ class _AuditConnection:
         if statement.startswith("SELECT seq, hash FROM audit.event"):
             return _Cursor(self.tips.get(str(arguments[0])))
         if statement.startswith("INSERT INTO audit.event"):
+            if self.fail_audit:
+                raise RuntimeError("audit insert failed")
             self.tips[str(arguments[0])] = (int(arguments[2]), bytes(arguments[4]))
         return _Cursor()
 
     def commit(self) -> None:
+        if self.fail_commit:
+            raise RuntimeError("commit failed")
         self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def _acknowledged(result: VerticalSliceResult) -> tuple[VerticalSliceResult, _AuditConnection]:
     conn = _AuditConnection()
-    _, events = persist_vertical_slice(
+    _, persisted, _ = persist_vertical_slice(
         conn,
         result,
         write=lambda connection, _: connection.execute("INSERT VERTICAL SLICE"),
     )
-    # The fake's successful return stands in for the caller committing here.
-    return acknowledge_persisted(result, events), conn
+    return persisted, conn
 
 
 def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() -> None:
@@ -163,10 +177,11 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
         connection.execute("INSERT VERTICAL SLICE")
         return "stored"
 
-    stored, events = persist_vertical_slice(conn, result, write=write)
+    stored, persisted, events = persist_vertical_slice(conn, result, write=write)
 
     assert stored == "stored"
     assert result.audit_events
+    assert persisted.audit_events == ()
     assert len(events) == len(result.audit_events) == 5
     assert [(event.document_id, event.seq) for event in events] == [
         ("syn-pv-datasheet", 0),
@@ -176,10 +191,8 @@ def test_persistence_and_all_audit_intents_share_one_uncommitted_connection() ->
         ("syn-pv-datasheet", 2),
     ]
     assert conn.calls[0] == "INSERT VERTICAL SLICE"
-    assert conn.commits == 0
-
-    persisted = acknowledge_persisted(result, events)
-    assert persisted.audit_events == ()
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
 
 
 def test_a_review_after_persistence_emits_only_its_new_resolution_intent() -> None:
@@ -197,17 +210,17 @@ def test_a_review_after_persistence_emits_only_its_new_resolution_intent() -> No
     reviewed = review_conflict(persisted, entry_id=conflict.entry_id, resolution=resolution)
 
     assert [intent.event_type for intent in reviewed.audit_events] == ["resolution"]
-    _, events = persist_vertical_slice(
+    _, repersisted, events = persist_vertical_slice(
         conn,
         reviewed,
         write=lambda connection, _: connection.execute("INSERT RESOLUTION"),
     )
 
     assert reviewed.audit_events
+    assert repersisted.audit_events == ()
     assert [(event.document_id, event.seq, event.event_type) for event in events] == [
         ("syn-pv-purchase-order", 2, "resolution")
     ]
-    assert acknowledge_persisted(reviewed, events).audit_events == ()
 
 
 def test_vertical_slice_refuses_autocommit_before_business_write() -> None:
@@ -224,6 +237,25 @@ def test_vertical_slice_refuses_autocommit_before_business_write() -> None:
 
     assert write_called is False
     assert conn.calls == []
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+
+
+@pytest.mark.parametrize("failure", ["audit", "commit"])
+def test_persistence_failure_rolls_back_without_acknowledging(failure: str) -> None:
+    result = _run()
+    conn = _AuditConnection(fail_audit=failure == "audit", fail_commit=failure == "commit")
+
+    with pytest.raises(RuntimeError, match=f"{failure} .*failed"):
+        persist_vertical_slice(
+            conn,
+            result,
+            write=lambda connection, _: connection.execute("INSERT VERTICAL SLICE"),
+        )
+
+    assert result.audit_events
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
 
 
 def test_review_selects_existing_candidate_without_rewriting_input() -> None:

@@ -3,14 +3,14 @@
 This audit reflects the `claude/phase-1-integration` branch as verified on 2026-08-29. It
 answers the practical question a new contributor has first: what can the repository do today?
 
-The local verification baseline is **996 passing, 41 skipped, and 4 expected failures**, plus a
+The local verification baseline is **998 passing, 41 skipped, and 4 expected failures**, plus a
 clean Ruff check, a clean `ruff format --check`, and a clean strict-mypy check across `src/` and
 `tests/`. The skips are intentionally DSN-gated live tests: 32 in
 `tests/test_sql_behaviour.py` and 9 in `tests/test_audit_live.py`. With
 `PROCUREMENT_TEST_DSN` pointed at a disposable PostgreSQL, CI runs both suites separately and
 fails if either silently skips.
 
-The implementation contains nine completely unimplemented entry points plus one explicit
+The implementation contains ten completely unimplemented entry points plus one explicit
 unsupported workbook orientation (`suppliers_as_rows=False`). Since the previous audit, the
 Python audit library and same-transaction boundary for C4, the canonical projection and initial
 13-tab writer for C6, and a sanitized-PV vertical slice have landed. The general pipeline is
@@ -122,7 +122,10 @@ verification defects; the live suite covers real inserts and concurrency. What r
 application integration. `services.transactional_audit.write_and_append_event()` binds a
 business callback and its event to one caller-owned transaction, with rollback atomicity proved
 against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` uses that boundary
-for its business callback and all audit intents on the same uncommitted connection. The general
+for its business callback and all audit intents on the same uncommitted connection. It returns
+the committed events while leaving the result's pending intents intact; callers must invoke
+`acknowledge_persisted()` only after their transaction commit succeeds to clear those intents.
+The general
 ingestion, extraction, conflict, review, and composition stages remain unwired.
 
 ### Sanitized PV vertical slice

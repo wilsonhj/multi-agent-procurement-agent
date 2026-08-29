@@ -56,7 +56,8 @@ general-stage integration and the separately chained run-event path.
 **C1, C2, C3 and C7 are the expensive ones to change.** C1 and C3 have since landed, which makes
 them *more* expensive rather than retiring the warning — there is now DDL applied to a live
 cluster, a CI suite pinning its behaviour, and a test asserting C3's fourth element survives the
-projection. C2 and C7 are the two still open, and they are where the week is best spent.
+projection. C2 and C7 are the two partials with the most remaining contract work, and they are
+where the remaining contract effort is best spent.
 
 > ⚠️ **C4 must ship before any stage emits events.** Changing the hashed field set later
 > invalidates every existing chain. WP-H ships its library first, even if thin. **The table

@@ -350,8 +350,9 @@ record, audit envelope, or workbook projection require a written contract decisi
 a new dependency must clear the license gate above.
 
 The project’s most important near-term milestone is to freeze the remaining shared contracts —
-five of the eight are still unfinished (C1, C3 and C5 are done) — and land one end-to-end,
-fixture-backed path from document ingestion to a reviewable claim. Read the five partials by
+five of the eight are still unfinished (C1, C3 and C5 are done). A fixture-backed vertical slice
+from trusted CSV input to a reviewable claim and deterministic workbook has landed; the general
+document-ingestion path remains to be built. Read the five partials by
 their evidence rather than their marker: C4 has a tested audit library and transaction boundary
 used by the narrow slice but not the unimplemented general stages; C6 has a tested projection
 and initial XLSX writer but not the advanced workbook gates; and C8 has a database job design

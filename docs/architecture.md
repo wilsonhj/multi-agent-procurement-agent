@@ -194,7 +194,7 @@ level security with a non-owner application role.
 | `services.confidence` | signal fusion into a confidence score, and the Tier A review gate | Implemented; used by `conflict_hitl.severity` |
 | `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; no production caller |
 | `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts, severity assignment | Implemented policy core |
-| `services.output` | flags, canonical workbook rendering, archive normalization | Flags, normalization, and the C6 projection; the xlsx writer still raises |
+| `services.output` | flags, canonical workbook rendering, archive normalization | Flags, normalization, C6 projection, and the initial deterministic suppliers-as-rows xlsx writer |
 | `orchestrator` | jobs, retries, stage state, compose gate | Gate only |
 
 The six external swap points are synchronous structural Protocols:
@@ -336,8 +336,9 @@ state is carried in hidden parallel columns. Visual channels are orthogonal:
 - border communicates conflict.
 
 `normalize_archive()` already removes clock, library-version, compression, member-order, and
-platform variance from an XLSX archive. `write_workbook()` is not implemented. Desktop Excel
-and LibreOffice validation remains a release gate once the writer exists.
+platform variance from an XLSX archive. `write_workbook()` now emits the initial deterministic
+suppliers-as-rows workbook. Desktop Excel and LibreOffice validation remains a release gate for
+the remaining workbook work.
 
 ## Specification authority
 

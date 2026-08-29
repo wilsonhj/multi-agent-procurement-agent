@@ -8,12 +8,13 @@
 > "multi-agent". This document is the third of those: how to divide *building* the remaining work
 > across concurrent workers. No runtime constraint changes.
 
-D-13, D-14 and D-15 were ratified on 2026-08-07 and the licence is settled. **No code has moved
-since** — contracts remain 3 done / 4 partial / 1 untouched, requirements 10 enforced / 23
-partial / 17 declared / 6 open, and ten `NotImplementedError` stubs stand. The decisions *were*
-the binding constraint, so this is progress; it is just not implementation. The gate opened and
-nobody has walked through it. Two work packages were blocked on judgement rather than effort and
-are now free: **WP-H** (audit library, which `tasks.md` says "must land first") and **WP-G**.
+D-13, D-14 and D-15 were ratified on 2026-08-07 and the licence is settled. The status counts
+below describe the plan snapshot at publication; subsequent hardening has landed the audit
+library, the initial workbook writer, the field registry, the port conformance suite, and the
+sanitized-PV vertical slice. The current verification baseline is recorded in
+[`docs/current-state.md`](../../docs/current-state.md). Two work packages were blocked on
+judgement rather than effort and are now free: **WP-H** (audit library, which `tasks.md` says
+"must land first") and **WP-G**.
 
 ## The interface technique, restated
 

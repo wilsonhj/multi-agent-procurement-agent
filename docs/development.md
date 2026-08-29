@@ -233,9 +233,10 @@ first two apply to a new condition dimension, the third to a new field on `Canon
 ### What this recipe does not cover yet
 
 The output-projection step is `tests/fixtures/workbooks/` — C6's projection and its T0.5 golden
-hash, regenerated the same way as every other fixture. `write_workbook()` still raises
-`NotImplementedError`, so there is no *rendered workbook* to update; when G.2 lands, its
-normalised-archive digest belongs here alongside the projection hash. There is likewise no store round-trip step:
+hash, regenerated the same way as every other fixture. The initial `write_workbook()` path now
+renders the deterministic suppliers-as-rows workbook and is covered by the vertical-slice tests;
+the remaining G.3–G.8 workbook work includes the normalised-archive digest and desktop gates.
+There is likewise no store round-trip step:
 C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no
 repository layer, so there is no round trip to exercise. Adding one is the step that turns
 `sql/` from a schema into a store.

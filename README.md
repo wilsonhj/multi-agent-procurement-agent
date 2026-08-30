@@ -12,7 +12,7 @@ other evidence-heavy procurement workflows.
 > [!IMPORTANT]
 > This repository is a **pre-alpha implementation**, not a working end-to-end application.
 > The domain model, policy algorithms, and one sanitized-PV CSV vertical slice are implemented
-> and tested. General document ingestion, extraction adapters, PostgreSQL persistence, retrieval,
+> and tested. General document ingestion, extraction adapters, retrieval,
 > web enrichment, the review UI, and orchestration are not yet operational.
 
 ## Why this project exists
@@ -47,11 +47,11 @@ source of truth. If the two disagree, that document is right and this one is sta
 | Output flags, 13-tab suppliers-as-rows writer, deterministic XLSX normalization | Implemented and tested |
 | Parser, OCR, embedder, vector-store, reranker, and LLM interfaces | Declared as Protocols |
 | Ingestion, indexing, retrieval, web enrichment | Stubs; raise `NotImplementedError` |
-| Sanitized PV CSV → claims → conflicts → review → workbook slice | Implemented and tested; fixture-scale and in-memory |
-| PostgreSQL schema, audit hash chain, row-level ACL enforcement | SQL implemented; schema and Python audit append/verify paths asserted against a live server in CI |
-| Audit library and same-transaction write boundary | Implemented and tested; used by the narrow slice, not the general stages |
-| Python persistence layer, worker runner | Not implemented; only the standalone audit library accepts a caller-supplied connection |
-| Conflict queue and review | Queue construction and minimal in-memory resolution operation; no API/UI |
+| Sanitized PV CSV → claims → conflicts → review → workbook slice | Implemented and tested; fixture-scale with in-memory and PostgreSQL persistence |
+| PostgreSQL schema, audit hash chain, row-level ACL enforcement | SQL implemented; schema, audit append/verify, and the narrow slice's transactional writer asserted against a live server in CI |
+| Audit library and same-transaction write boundary | Implemented and tested; the narrow slice persists documents, claims, conflicts/candidates, resolutions, and audit events transactionally; general stages remain unwired |
+| Python persistence layer, worker runner | Narrow sanitized-PV PostgreSQL writer implemented; no general repository layer or worker runner |
+| Conflict queue and review | Queue construction and minimal resolution operation, with narrow PostgreSQL persistence; no API/UI |
 | 13-tab workbook writer | Initial deterministic suppliers-as-rows writer implemented; advanced G.3–G.8 features remain |
 | CLI or deployable service | Not implemented |
 
@@ -84,7 +84,7 @@ That full diagram does not run end to end yet. A deliberately narrow path does:
 creates immutable claims, reduces canonical fields, constructs a conflict queue entry, supports
 selection of an existing candidate by a reviewer, and writes the deterministic 13-tab workbook.
 It is a contract-integration slice, not a general supplier-document pipeline: PDF/OCR, vendor
-adapters, PostgreSQL repositories, an API/UI, and the runner are still absent.
+adapters, general PostgreSQL repositories, an API/UI, and the runner are still absent.
 
 Human review is deliberately detached from pipeline execution. There is no
 `await_human_resolution` stage and there will not be one: one unresolved conflict on document 7
@@ -100,8 +100,9 @@ tested; the planned store makes it structural rather than a guard.
 The runtime uses PostgreSQL as the single durable store for documents, claims, chunks, jobs,
 conflicts, resolutions, and an append-only audit log. `sql/00`–`08` define every one of those
 tables and are applied against a live server on each CI run. The audit package can append and
-verify events through a caller-supplied connection, but there is no general persistence layer
-and no production service uses the schema. Workers will claim jobs with `FOR UPDATE SKIP
+verify events through a caller-supplied connection. The sanitized-PV writer uses that primitive
+to persist its narrow document/claim/conflict/resolution slice transactionally; there is no
+general persistence layer. Workers will claim jobs with `FOR UPDATE SKIP
 LOCKED`; no separate workflow framework is planned.
 Heavy integrations sit behind six synchronous Protocol interfaces so an installation can choose
 parsers, OCR, models, and storage adapters without changing the domain core. Those six

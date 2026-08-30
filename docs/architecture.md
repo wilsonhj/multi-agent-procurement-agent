@@ -190,9 +190,9 @@ level security with a non-owner application role.
 | `services.indexing` | structure-aware chunks and incremental indexing | Stub |
 | `services.retrieval` | filtered hybrid retrieval and reranking | Stub |
 | `services.web_search` | gap-only public-source lookup and authority ranking | Stub |
-| `services.claims` | append-only claim record, canonical projection, single-reducer commit | Implemented; no production caller |
+| `services.claims` | append-only claim record, canonical projection, single-reducer commit | Implemented; used by the sanitized-PV slice |
 | `services.confidence` | signal fusion into a confidence score, and the Tier A review gate | Implemented; used by `conflict_hitl.severity` |
-| `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; no production caller |
+| `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; used by the sanitized-PV slice |
 | `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts, severity assignment | Implemented policy core |
 | `services.output` | flags, canonical workbook rendering, archive normalization | Flags, normalization, C6 projection, and the initial deterministic suppliers-as-rows xlsx writer |
 | `orchestrator` | jobs, retries, stage state, compose gate | Gate only |
@@ -207,10 +207,10 @@ pools; embedding and reranking adapters batch internally.
 
 ## Persistence and execution
 
-**The schema half of this section is built; the Python half is not.** `sql/00`–`08` define every
-table described below and are applied to a live server on every CI run, while nothing in `src/`
-opens a connection to them. Read each claim here for which half it belongs to — the design is
-target-state, the DDL is not.
+**The schema is built and the narrow Python slice now uses it.** `sql/00`–`08` define every table
+described below and are applied to a live server on every CI run. The sanitized-PV writer persists
+its documents, claims, conflicts/candidates, resolutions, and audit events transactionally; the
+general repository and stage paths remain target-state.
 
 The target deployment uses one PostgreSQL instance, with pgvector, for:
 
@@ -239,9 +239,8 @@ acquired too late to serialise the read of the previous hash, so `pg_advisory_xa
 issued by the caller *before* the `INSERT`. `audit/writer.py`'s `append_event` is that caller: lock
 the stream, read the tip, build the envelope, insert — all in the caller's own transaction. The
 sequence is asserted without a server (`tests/test_audit_writer.py`) and measured with one
-(`tests/test_audit_live.py`). What is still missing is a *production* caller — nothing in
-`services/` or `orchestrator/` invokes `append_event` yet — so the DDL constraints above remain the
-only enforcement any real pipeline run currently has.
+(`tests/test_audit_live.py`). The sanitized-PV persistence service is now a production caller for
+the narrow path; the general services and orchestrator still do not invoke `append_event`.
 
 **A future parallel worker must call `append_event` itself, per transaction — never through a
 shared observer.** Nothing about `append_event` assumes it has a single caller; each write commits

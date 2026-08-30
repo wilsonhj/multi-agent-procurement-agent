@@ -236,10 +236,10 @@ The output-projection step is `tests/fixtures/workbooks/` — C6's projection an
 hash, regenerated the same way as every other fixture. The initial `write_workbook()` path now
 renders the deterministic suppliers-as-rows workbook and is covered by the vertical-slice tests;
 the remaining G.3–G.8 workbook work includes the normalised-archive digest and desktop gates.
-There is likewise no store round-trip step:
-C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no
-repository layer, so there is no round trip to exercise. Adding one is the step that turns
-`sql/` from a schema into a store.
+The narrow sanitized-PV path now has a PostgreSQL store round-trip step: its concrete writer
+persists documents, claims, conflicts/candidates, resolutions, and audit events transactionally.
+There is still no general repository layer or round trip for arbitrary documents and jobs; adding
+one is the step that extends `sql/` from a narrow slice into a general store.
 
 ## Extend conflict policy
 

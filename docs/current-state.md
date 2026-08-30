@@ -3,10 +3,10 @@
 This audit reflects the `claude/phase-1-integration` branch as verified on 2026-08-29. It
 answers the practical question a new contributor has first: what can the repository do today?
 
-The local verification baseline is **1000 passing, 41 skipped, and 4 expected failures**, plus a
+The local verification baseline is **1000 passing, 42 skipped, and 4 expected failures**, plus a
 clean Ruff check, a clean `ruff format --check`, and a clean strict-mypy check across `src/` and
 `tests/`. The skips are intentionally DSN-gated live tests: 32 in
-`tests/test_sql_behaviour.py` and 9 in `tests/test_audit_live.py`. With
+`tests/test_sql_behaviour.py` and 10 in `tests/test_audit_live.py`. With
 `PROCUREMENT_TEST_DSN` pointed at a disposable PostgreSQL, CI runs both suites separately and
 fails if either silently skips.
 
@@ -15,7 +15,8 @@ unsupported workbook orientation (`suppliers_as_rows=False`). Since the previous
 Python audit library and same-transaction boundary for C4, the canonical projection and initial
 13-tab writer for C6, and a sanitized-PV vertical slice have landed. The general pipeline is
 still not operational, but the fixture-scale slice now exercises claims, reduction, conflicts,
-review, audit intents, and deterministic workbook output together.
+review, audit intents, deterministic workbook output, and a PostgreSQL persistence round trip
+together.
 
 ## Executive assessment
 
@@ -110,8 +111,8 @@ Three suites cover this substrate, and the split is the point. `tests/test_sql_s
 asserts the DDL *text* and needs no server. `tests/test_sql_behaviour.py` re-runs the attacks each
 defence descends from against a real PostgreSQL. `tests/test_audit_live.py` separately exercises
 the Python append/verify path and concurrent writers against the same kind of server. The `sql`
-job in `.github/workflows/ci.yml` runs all 32 schema-behaviour tests and all 8 live audit tests;
-those are the 40 tests that skip in a default local run.
+job in `.github/workflows/ci.yml` runs all 32 schema-behaviour tests and all 10 live audit and
+integration tests; those are the 42 tests that skip in a default local run.
 
 ### Audit library
 
@@ -119,7 +120,7 @@ those are the 40 tests that skip in a default local run.
 envelope and SHA-256 preimage, advisory-lock append sequencing, and chain verification with a
 CLI. Unit tests cover canonicalisation, envelope compatibility, writer statement order, and
 verification defects; the live suite covers real inserts and concurrency. What remains is the
-application integration. `services.transactional_audit.write_and_append_event()` binds a
+application integration beyond the narrow slice. `services.transactional_audit.write_and_append_event()` binds a
 business callback and its event to one caller-owned transaction, with rollback atomicity proved
 against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` uses that boundary
 for its business callback and all audit intents on the same connection, owns the commit and
@@ -132,12 +133,12 @@ ingestion, extraction, conflict, review, and composition stages remain unwired.
 parses two source records, creates immutable claims, replays them idempotently in the in-memory
 reference store, reduces a canonical PV component, constructs an inter-document conflict queue
 entry, supports a minimal human resolution that selects an existing sourced candidate, builds
-the canonical workbook projection, and writes the 13-tab XLSX. It also produces audit intents
-and exposes a persistence boundary that atomically commits the business write and audit intents,
-rolling back both on failure.
+the canonical workbook projection, and writes the 13-tab XLSX. Its concrete PostgreSQL writer
+persists documents, claims, conflicts and candidates, resolutions, and audit events in one
+service-owned transaction, rolling back all of them on failure.
 
-This does not implement general CSV intake, native PDF/Word/Excel parsing, OCR, a PostgreSQL
-business repository, a reviewer API/UI, or the stage runner. It is a narrow executable proof of
+This does not implement general CSV intake, native PDF/Word/Excel parsing, OCR, a general
+PostgreSQL repository, a reviewer API/UI, or the stage runner. It is a narrow executable proof of
 the contracts, not a production ingestion route.
 
 ## Declared but not operational
@@ -163,8 +164,8 @@ The tables exist (see [Database schema](#database-schema)). The audit library re
 `audit.event` through a connection supplied by its caller, and the generic transactional-audit
 service binds that event to a callback on the same connection. Its live tests use `psycopg`.
 There is still no general repository layer, connection or session management, or store adapter
-for documents, chunks, claims, conflicts, resolutions, and jobs. No production service reads or
-writes those rows; the vertical slice accepts the business write as a callback.
+for documents, chunks, and jobs. The sanitized-PV writer is the narrow exception: it persists
+documents, claims, conflicts/candidates, resolutions, and audit events transactionally.
 
 `sql/` is also not a migration tool. It is a numbered, forward-only file set applied by `psql` in
 lexical order, with no version tracking: re-running `02`–`08` against a database that already has
@@ -213,7 +214,7 @@ a signature exists, **open** means there is no home in the code yet.
 | AC-4 | Every output cell resolves to a source | The `SourceRef` validator, at model level | enforced |
 | AC-5 | Re-ingesting an unchanged document creates no duplicates | `sql/02_document.sql`'s `UNIQUE (content_hash)`, exercised against a live server by `test_a_duplicate_content_hash_is_refused`. The store half only: `services/ingestion.ingest`, the thing that would re-ingest, raises `NotImplementedError` | partial |
 | AC-6 | Inverter TRD against the IEEE 2800 limit; tax status per supplier | Nothing | open |
-| AC-7 | Two generations from an unchanged store are byte-identical | The sanitized-PV slice writes two byte-identical workbooks and archive normalization remains independently tested. No production store is wired, and the desktop Excel/LibreOffice gate is unrun | partial |
+| AC-7 | Two generations from an unchanged store are byte-identical | The sanitized-PV slice writes two byte-identical workbooks and persists its narrow store transactionally; archive normalization remains independently tested. No general production store is wired, and the desktop Excel/LibreOffice gate is unrun | partial |
 | AC-8 | An uncleared user cannot influence any retrieved result | Forced RLS is live-tested, and `VectorStorePort.search(allowed_document_ids=...)` is exercised against the in-memory reference — including that filtering happens inside top-k. No production retrieval path or vendor adapter exists | partial |
 
 Read that table as three groups, because they fail differently. AC-4 is genuinely covered.
@@ -359,8 +360,8 @@ Build one tested vertical slice:
 
 1. close the remaining factual and shape decisions in C2, C7, and C8;
 2. extend the PV slice from trusted CSV to one sanitized native document and parser adapter;
-3. replace the in-memory/callback boundary with PostgreSQL repositories for documents, claims,
-   conflicts, resolutions, and audit events;
+3. extend the narrow PostgreSQL writer into general repositories for documents, claims, conflicts,
+   resolutions, and audit events;
 4. expose the existing review operation through a minimal authenticated API and durable queue;
 5. put the compose-time severity gate in front of workbook generation;
 6. validate access isolation and transaction rollback through that complete database path; and

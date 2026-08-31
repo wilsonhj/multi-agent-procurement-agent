@@ -122,9 +122,10 @@ CLI. Unit tests cover canonicalisation, envelope compatibility, writer statement
 verification defects; the live suite covers real inserts and concurrency. What remains is the
 application integration beyond the narrow slice. `services.transactional_audit.write_and_append_event()` binds a
 business callback and its event to one caller-owned transaction, with rollback atomicity proved
-against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` uses that boundary
-for its business callback and all audit intents on the same connection, owns the commit and
-rollback, and returns a cleared result only after a successful commit. The general
+against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` applies the same
+transaction discipline to its concrete business writer and all applicable audit intents on one
+connection, owns the commit and rollback, and returns a cleared result only after a successful
+commit. The general
 ingestion, extraction, conflict, review, and composition stages remain unwired.
 
 ### Sanitized PV vertical slice

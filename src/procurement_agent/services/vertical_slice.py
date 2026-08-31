@@ -24,6 +24,7 @@ from ..schema import (
     ComponentCategory,
     ComponentInstance,
     Condition,
+    ConflictCandidate,
     ConflictQueueEntry,
     ConflictStatus,
     DocumentType,
@@ -46,17 +47,18 @@ from .conflict_hitl import (
 from .identity import identity_keys
 from .output import write_workbook
 from .output.projection import ProjectionPolicy, project_store
-from .transactional_audit import write_and_append_event
 
 __all__ = [
     "InMemoryClaimStore",
     "PendingAuditEvent",
     "SanitizedCSVError",
+    "StoredVerticalSlice",
     "VerticalSliceConnection",
     "VerticalSliceResult",
     "persist_vertical_slice",
     "review_conflict",
     "run_sanitized_pv_csv",
+    "write_vertical_slice_rows",
 ]
 
 EXTRACTOR_VERSION = "sanitized-pv-csv@1"
@@ -110,6 +112,17 @@ class VerticalSliceConnection(AuditConnection, Protocol):
     def commit(self) -> None: ...
 
     def rollback(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class StoredVerticalSlice:
+    """Database identities written by :func:`write_vertical_slice_rows`."""
+
+    document_ids: tuple[str, ...]
+    claim_ids: tuple[int, ...]
+    conflict_ids: tuple[str, ...]
+    resolution_ids: tuple[int, ...]
+    audit_events_to_append: tuple[PendingAuditEvent, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,27 +281,26 @@ def persist_vertical_slice[ResultT](
 ) -> tuple[ResultT, VerticalSliceResult, tuple[AuditEvent, ...]]:
     """Persist the slice and every audit intent in one owned transaction.
 
-    The first intent is bound to the business callback through
-    :func:`write_and_append_event`; the rest append on the same connection before
-    a single commit.  This service boundary owns that commit so it can clear the
-    outbox only after PostgreSQL confirms success.  Any business, audit or commit
-    failure rolls the transaction back and returns no acknowledged state.
+    The business callback and every applicable intent run on the same connection
+    before a single commit.  The concrete PostgreSQL writer reports only events
+    whose business rows were newly applied, so exact retries are idempotent on
+    both sides of the transaction.  This service boundary owns the commit and
+    clears the outbox only after PostgreSQL confirms success.  Any business,
+    audit or commit failure rolls back and returns no acknowledged state.
     """
     if not result.audit_events:
         raise ValueError("a vertical-slice persistence must carry at least one audit event")
-    first, *remaining = result.audit_events
     try:
-        written, first_event = write_and_append_event(
-            conn,
-            write=lambda connection: write(connection, result),
-            document_id=first.document_id,
-            event_type=first.event_type,
-            actor=first.actor,
-            payload=first.payload,
-            recorded_at=first.recorded_at,
+        if conn.autocommit:
+            raise ValueError("vertical-slice persistence requires autocommit=False")
+        written = write(conn, result)
+        intents = (
+            written.audit_events_to_append
+            if isinstance(written, StoredVerticalSlice)
+            else result.audit_events
         )
-        events = [first_event]
-        for intent in remaining:
+        events: list[AuditEvent] = []
+        for intent in intents:
             events.append(
                 append_event(
                     conn,
@@ -304,6 +316,378 @@ def persist_vertical_slice[ResultT](
         conn.rollback()
         raise
     return written, replace(result, audit_events=()), tuple(events)
+
+
+def write_vertical_slice_rows(
+    conn: AuditConnection, result: VerticalSliceResult
+) -> StoredVerticalSlice:
+    """Write the narrow slice into the repository's existing PostgreSQL schema.
+
+    This is the concrete business callback for :func:`persist_vertical_slice`.
+    It never commits: the surrounding service commits these rows and the audit
+    chain together.  Documents and claims use their schema-level natural keys,
+    while conflict candidates reference the immutable claim rows they display.
+    A reviewed result additionally appends its immutable resolution and marks
+    the queue item resolved.
+    """
+    if len(result.components) != 1:
+        raise ValueError("the sanitized PV repository writer requires exactly one component")
+    component = result.components[0]
+
+    document_ids: list[str] = []
+    new_document_ids: set[str] = set()
+    for source in result.sources:
+        row = conn.execute(
+            """
+            INSERT INTO public.document
+                (document_id, content_hash, source_uri, document_type,
+                 ingested_at, data_vintage, access_restricted)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (content_hash) DO NOTHING
+            RETURNING document_id
+            """,
+            (
+                source.document_id,
+                source.content_hash,
+                source.source_uri,
+                source.document_type.value,
+                source.ingested_at,
+                source.data_vintage,
+                source.access_restricted,
+            ),
+        ).fetchone()
+        stored_document_id = (
+            str(row[0])
+            if row is not None
+            else _existing_document_id(conn, content_hash=source.content_hash)
+        )
+        if row is not None:
+            new_document_ids.add(stored_document_id)
+        if stored_document_id != source.document_id:
+            raise ValueError(
+                f"content hash {source.content_hash!r} already belongs to document "
+                f"{stored_document_id!r}, not {source.document_id!r}"
+            )
+        document_ids.append(stored_document_id)
+
+    claim_ids: list[int] = []
+    new_claim_document_ids: set[str] = set()
+    candidate_claim_ids: dict[str, int] = {}
+    for claim in result.claims:
+        row = conn.execute(
+            """
+            INSERT INTO public.claim
+                (document_id, component_category, supplier, model, nameplate,
+                 field, extractor_version, value, unit, verbatim_value,
+                 condition, source_tier, source_ref, confidence)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+                    %s::jsonb, %s, %s::jsonb, %s)
+            ON CONFLICT ON CONSTRAINT claim_natural_key DO NOTHING
+            RETURNING claim_id
+            """,
+            (
+                claim.document_id,
+                component.component_category.value,
+                component.supplier,
+                component.model,
+                component.nameplate,
+                claim.field_name,
+                claim.extractor_version,
+                _json(claim.value),
+                claim.unit,
+                claim.verbatim_value,
+                _json(claim.condition),
+                claim.source_tier.value,
+                _json(claim.provenance()),
+                claim.confidence,
+            ),
+        ).fetchone()
+        claim_id = (
+            int(row[0])
+            if row is not None
+            else _existing_claim_id(conn, claim=claim, component=component)
+        )
+        if row is not None:
+            new_claim_document_ids.add(claim.document_id)
+        claim_ids.append(claim_id)
+        candidate_claim_ids[_candidate_key(claim.as_candidate())] = claim_id
+
+    conflict_ids: list[str] = []
+    new_conflict_ids: set[str] = set()
+    resolution_ids: list[int] = []
+    new_resolution_entry_ids: set[str] = set()
+    for conflict in result.conflicts:
+        conflict_row = conn.execute(
+            """
+            INSERT INTO public.conflict
+                (entry_id, field_name, supplier, model, component_category,
+                 conflict_class, severity, explanation, detected_at, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (entry_id) DO NOTHING
+            RETURNING entry_id
+            """,
+            (
+                conflict.entry_id,
+                conflict.field_name,
+                conflict.supplier,
+                conflict.model,
+                conflict.component_category.value,
+                conflict.conflict_class.value,
+                int(conflict.severity),
+                conflict.explanation,
+                conflict.detected_at,
+                "pending",
+            ),
+        ).fetchone()
+        if conflict_row is not None:
+            new_conflict_ids.add(conflict.entry_id)
+        conflict_ids.append(conflict.entry_id)
+        for ordinal, candidate in enumerate(conflict.candidates):
+            candidate_claim_id = candidate_claim_ids.get(_candidate_key(candidate))
+            if candidate_claim_id is None:
+                raise ValueError(
+                    f"conflict {conflict.entry_id!r} contains a candidate with no stored claim"
+                )
+            conn.execute(
+                """
+                INSERT INTO public.conflict_candidate (entry_id, claim_id, ordinal)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (conflict.entry_id, candidate_claim_id, ordinal),
+            )
+
+        resolution = conflict.resolution
+        if resolution is None:
+            continue
+        selected_claim_id = _selected_claim_id(
+            conflict=conflict,
+            candidate_claim_ids=candidate_claim_ids,
+        )
+        existing_resolution_id = _find_existing_resolution_id(
+            conn,
+            conflict=conflict,
+            selected_claim_id=selected_claim_id,
+        )
+        if existing_resolution_id is not None:
+            resolution_ids.append(existing_resolution_id)
+            continue
+        transitioned = conn.execute(
+            """
+            UPDATE public.conflict
+               SET status = 'resolved', lease_owner = NULL, lease_expires_at = NULL
+             WHERE entry_id = %s AND status = 'pending'
+            RETURNING entry_id
+            """,
+            (conflict.entry_id,),
+        ).fetchone()
+        if transitioned is None:
+            existing_resolution_id = _find_existing_resolution_id(
+                conn,
+                conflict=conflict,
+                selected_claim_id=selected_claim_id,
+            )
+            if existing_resolution_id is not None:
+                resolution_ids.append(existing_resolution_id)
+                continue
+            raise ValueError(
+                f"conflict {conflict.entry_id!r} is no longer pending; "
+                "refusing a stale or competing resolution"
+            )
+        row = conn.execute(
+            """
+            INSERT INTO public.resolution
+                (entry_id, action, resolved_by, resolved_at, rationale,
+                 value_before, value_after, selected_claim_id)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+            RETURNING resolution_id
+            """,
+            (
+                conflict.entry_id,
+                resolution.action.value,
+                resolution.resolved_by,
+                resolution.resolved_at,
+                resolution.rationale,
+                _optional_json(resolution.value_before),
+                _optional_json(resolution.value_after),
+                selected_claim_id,
+            ),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("resolution insert returned no database identity")
+        resolution_id = int(row[0])
+        resolution_ids.append(resolution_id)
+        new_resolution_entry_ids.add(conflict.entry_id)
+
+    return StoredVerticalSlice(
+        document_ids=tuple(document_ids),
+        claim_ids=tuple(claim_ids),
+        conflict_ids=tuple(conflict_ids),
+        resolution_ids=tuple(resolution_ids),
+        audit_events_to_append=_new_audit_events(
+            result.audit_events,
+            new_document_ids=new_document_ids,
+            new_claim_document_ids=new_claim_document_ids,
+            new_conflict_ids=new_conflict_ids,
+            new_resolution_entry_ids=new_resolution_entry_ids,
+        ),
+    )
+
+
+def _existing_document_id(conn: AuditConnection, *, content_hash: str) -> str:
+    row = conn.execute(
+        "SELECT document_id FROM public.document WHERE content_hash = %s",
+        (content_hash,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("document insert reported a conflict but no existing row was found")
+    return str(row[0])
+
+
+def _existing_claim_id(
+    conn: AuditConnection, *, claim: FieldClaim, component: ComponentInstance
+) -> int:
+    row = conn.execute(
+        """
+        SELECT claim_id FROM public.claim
+         WHERE document_id = %s AND component_category = %s
+           AND supplier = %s AND model = %s
+           AND nameplate IS NOT DISTINCT FROM %s
+           AND field = %s AND extractor_version = %s
+           AND value = %s::jsonb AND unit IS NOT DISTINCT FROM %s
+           AND verbatim_value IS NOT DISTINCT FROM %s
+           AND condition = %s::jsonb AND source_tier = %s
+           AND source_ref = %s::jsonb AND confidence = %s
+        """,
+        (
+            claim.document_id,
+            component.component_category.value,
+            component.supplier,
+            component.model,
+            component.nameplate,
+            claim.field_name,
+            claim.extractor_version,
+            _json(claim.value),
+            claim.unit,
+            claim.verbatim_value,
+            _json(claim.condition),
+            claim.source_tier.value,
+            _json(claim.provenance()),
+            claim.confidence,
+        ),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"claim key for {claim.document_id!r}/{claim.field_name!r} already exists "
+            "with different immutable content"
+        )
+    return int(row[0])
+
+
+def _find_existing_resolution_id(
+    conn: AuditConnection,
+    *,
+    conflict: ConflictQueueEntry,
+    selected_claim_id: int | None,
+) -> int | None:
+    resolution = conflict.resolution
+    assert resolution is not None
+    row = conn.execute(
+        """
+        SELECT resolution_id FROM public.resolution
+         WHERE entry_id = %s AND action = %s AND resolved_by = %s
+           AND resolved_at = %s AND rationale = %s
+           AND value_before IS NOT DISTINCT FROM %s::jsonb
+           AND value_after IS NOT DISTINCT FROM %s::jsonb
+           AND selected_claim_id IS NOT DISTINCT FROM %s
+         ORDER BY resolution_id LIMIT 1
+        """,
+        (
+            conflict.entry_id,
+            resolution.action.value,
+            resolution.resolved_by,
+            resolution.resolved_at,
+            resolution.rationale,
+            _optional_json(resolution.value_before),
+            _optional_json(resolution.value_after),
+            selected_claim_id,
+        ),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def _new_audit_events(
+    intents: tuple[PendingAuditEvent, ...],
+    *,
+    new_document_ids: set[str],
+    new_claim_document_ids: set[str],
+    new_conflict_ids: set[str],
+    new_resolution_entry_ids: set[str],
+) -> tuple[PendingAuditEvent, ...]:
+    selected: list[PendingAuditEvent] = []
+    for intent in intents:
+        if intent.event_type == "document_ingested":
+            include = intent.document_id in new_document_ids
+        elif intent.event_type == "extraction":
+            include = intent.document_id in new_claim_document_ids
+        elif intent.event_type == "conflict_detected":
+            conflict = intent.payload.get("conflict")
+            include = isinstance(conflict, dict) and conflict.get("entry_id") in new_conflict_ids
+        elif intent.event_type == "resolution":
+            include = intent.payload.get("entry_id") in new_resolution_entry_ids
+        else:
+            include = True
+        if include:
+            selected.append(intent)
+    return tuple(selected)
+
+
+def _selected_claim_id(
+    *,
+    conflict: ConflictQueueEntry,
+    candidate_claim_ids: dict[str, int],
+) -> int | None:
+    resolution = conflict.resolution
+    assert resolution is not None
+    if resolution.action not in {
+        ResolutionAction.SELECT_VALUE,
+        ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+    }:
+        return None
+    matches = [
+        candidate_claim_ids[_candidate_key(candidate)]
+        for candidate in conflict.candidates
+        if candidate.value == resolution.value_after
+        and (
+            resolution.action is ResolutionAction.SELECT_VALUE
+            or candidate.source_tier is SourceTier.SYSTEM_OF_RECORD
+        )
+    ]
+    if len(matches) != 1:
+        raise ValueError("a stored candidate resolution must identify exactly one claim")
+    return matches[0]
+
+
+def _candidate_key(candidate: ConflictCandidate) -> str:
+    return json.dumps(
+        encode_value(candidate),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _json(value: object) -> str:
+    return json.dumps(
+        encode_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _optional_json(value: object | None) -> str | None:
+    return None if value is None else _json(value)
 
 
 def review_conflict(

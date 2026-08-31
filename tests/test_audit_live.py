@@ -52,7 +52,14 @@ from procurement_agent.audit import (
     verify_stream,
 )
 from procurement_agent.audit.verify import main as verify_main
+from procurement_agent.schema import Resolution, ResolutionAction
 from procurement_agent.services.transactional_audit import write_and_append_event
+from procurement_agent.services.vertical_slice import (
+    persist_vertical_slice,
+    review_conflict,
+    run_sanitized_pv_csv,
+    write_vertical_slice_rows,
+)
 
 if TYPE_CHECKING:
     import psycopg
@@ -69,6 +76,7 @@ SQL_DIR = pathlib.Path(__file__).parent.parent / "sql"
 DOCUMENT_ID = "audit-doc-1"
 STREAM = stream_for_document(DOCUMENT_ID)
 ATOMIC_DOCUMENT_ID = "audit-atomic-doc"
+PV_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ingestion" / "sanitized-pv-module.csv"
 
 #: Decision 9's own measurement used eight. Kept identical so a regression here
 #: is comparable with the number in `tasks.md` H.4 rather than merely "some".
@@ -388,6 +396,122 @@ def test_a_business_write_and_its_audit_event_roll_back_together(audit_schema: N
         ).fetchone()
 
     assert row == (None, 0)
+
+
+def test_a_pv_slice_persists_review_and_verified_audit_chains(empty_chain: None) -> None:
+    """The concrete PV path reaches every business table and commits with audit."""
+    ingested_at = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
+    detected_at = datetime(2026, 8, 30, 9, 1, tzinfo=UTC)
+    result = run_sanitized_pv_csv(
+        PV_FIXTURE.read_bytes(),
+        ingested_at=ingested_at,
+        detected_at=detected_at,
+        actor="live-integration-test",
+    )
+
+    with _connect(autocommit=False) as conn:
+        stored, persisted, events = persist_vertical_slice(
+            conn,
+            result,
+            write=write_vertical_slice_rows,
+        )
+
+    assert stored.document_ids == ("syn-pv-datasheet", "syn-pv-purchase-order")
+    assert len(stored.claim_ids) == 3
+    assert len(stored.conflict_ids) == 1
+    assert stored.resolution_ids == ()
+    assert persisted.audit_events == ()
+    assert len(events) == 5
+
+    with _connect(autocommit=False) as conn:
+        replayed_store, replayed, replay_events = persist_vertical_slice(
+            conn,
+            result,
+            write=write_vertical_slice_rows,
+        )
+    assert replayed_store.audit_events_to_append == ()
+    assert replayed.audit_events == ()
+    assert replay_events == ()
+
+    [conflict] = persisted.conflicts
+    reviewed = review_conflict(
+        persisted,
+        entry_id=conflict.entry_id,
+        resolution=Resolution(
+            action=ResolutionAction.SELECT_VALUE,
+            resolved_by="procurement.lead",
+            resolved_at=datetime(2026, 8, 30, 10, 0, tzinfo=UTC),
+            rationale="The signed purchase order supersedes the draft datasheet.",
+            value_before=650.0,
+            value_after=655.0,
+        ),
+    )
+    with _connect(autocommit=False) as conn:
+        reviewed_store, acknowledged, review_events = persist_vertical_slice(
+            conn,
+            reviewed,
+            write=write_vertical_slice_rows,
+        )
+
+    assert len(reviewed_store.resolution_ids) == 1
+    assert acknowledged.audit_events == ()
+    assert [event.event_type for event in review_events] == ["resolution"]
+
+    with _connect(autocommit=False) as conn:
+        replayed_review_store, _, replayed_review_events = persist_vertical_slice(
+            conn,
+            reviewed,
+            write=write_vertical_slice_rows,
+        )
+    assert replayed_review_store.resolution_ids == reviewed_store.resolution_ids
+    assert replayed_review_store.audit_events_to_append == ()
+    assert replayed_review_events == ()
+
+    competing_review = review_conflict(
+        persisted,
+        entry_id=conflict.entry_id,
+        resolution=Resolution(
+            action=ResolutionAction.SELECT_VALUE,
+            resolved_by="another.reviewer",
+            resolved_at=datetime(2026, 8, 30, 10, 1, tzinfo=UTC),
+            rationale="The datasheet should remain authoritative.",
+            value_before=655.0,
+            value_after=650.0,
+        ),
+    )
+    with _connect(autocommit=False) as conn:
+        with pytest.raises(ValueError, match="stale or competing resolution"):
+            persist_vertical_slice(
+                conn,
+                competing_review,
+                write=write_vertical_slice_rows,
+            )
+
+    with _connect() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM public.document
+                WHERE document_id IN ('syn-pv-datasheet', 'syn-pv-purchase-order')),
+              (SELECT count(*) FROM public.claim
+                WHERE document_id IN ('syn-pv-datasheet', 'syn-pv-purchase-order')),
+              (SELECT count(*) FROM public.conflict WHERE entry_id = %s),
+              (SELECT count(*) FROM public.conflict_candidate WHERE entry_id = %s),
+              (SELECT count(*) FROM public.resolution WHERE entry_id = %s),
+              (SELECT count(*) FROM audit.event
+                WHERE document_id IN ('syn-pv-datasheet', 'syn-pv-purchase-order'))
+            """,
+            (conflict.entry_id, conflict.entry_id, conflict.entry_id),
+        ).fetchone()
+        assert counts == (2, 3, 1, 2, 1, 6)
+        status = conn.execute(
+            "SELECT status FROM public.conflict WHERE entry_id = %s",
+            (conflict.entry_id,),
+        ).fetchone()
+        assert status == ("resolved",)
+        for document_id in ("syn-pv-datasheet", "syn-pv-purchase-order"):
+            report = verify_stream(conn, stream_for_document(document_id))
+            assert report.ok, report.defects
 
 
 def test_a_a_tampered_row_fails_verification(empty_chain: None) -> None:

@@ -184,7 +184,7 @@ the point of sequencing it here rather than building it speculatively.
 The substrate is ready: `extractor_version` already gives prompt identity coexisting with
 the append-only store — it is part of the claim key, so a re-optimized prompt appends new
 claims beside the old rather than overwriting them
-(`src/procurement_agent/services/claims/__init__.py:77-81`). The prompts and the labels are
+(`src/procurement_agent/services/claims/__init__.py:66-70`). The prompts and the labels are
 what do not exist.
 
 Constraints any optimizer must respect, restated from decisions already on record:

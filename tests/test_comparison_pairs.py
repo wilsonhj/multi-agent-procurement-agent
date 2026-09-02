@@ -27,14 +27,19 @@ from procurement_agent.services.conflict_hitl import (
 
 
 def _candidate(
-    value: float, condition: Condition, tier: SourceTier = SourceTier.WEB_SUPPLEMENT
+    value: object,
+    condition: Condition | None = None,
+    tier: SourceTier = SourceTier.WEB_SUPPLEMENT,
+    *,
+    unit: str = "W",
+    doc: str | None = None,
 ) -> ConflictCandidate:
     return ConflictCandidate(
         value=value,
-        unit="W",
-        condition=condition,
+        unit=unit,
+        condition=condition or Condition(),
         source_tier=tier,
-        source_ref=SourceRef(document_id=f"doc-{value}"),
+        source_ref=SourceRef(document_id=doc or f"doc-{value}"),
         confidence=0.9,
     )
 
@@ -343,14 +348,7 @@ def test_the_bridging_candidate_appears_in_two_entries() -> None:
 
 
 def _dict_candidate(rating: dict[str, float], doc: str) -> ConflictCandidate:
-    return ConflictCandidate(
-        value=rating,
-        unit="MVA",
-        condition=Condition(),
-        source_tier=SourceTier.SYSTEM_OF_RECORD,
-        source_ref=SourceRef(document_id=doc),
-        confidence=0.9,
-    )
+    return _candidate(rating, tier=SourceTier.SYSTEM_OF_RECORD, unit="MVA", doc=doc)
 
 
 def test_two_equal_dicts_get_one_ordering_key() -> None:
@@ -396,11 +394,11 @@ def test_two_different_dicts_still_order_apart() -> None:
     )
 
 
-def test_a_list_valued_candidate_orders_by_content() -> None:
-    """`certifications` and 17 other contract fields are `list[str]`. Order within
-    a list is preserved - whether two orderings of one list are the same *value*
-    is a D-2 question this key does not get to answer - but two equal lists must
-    still key alike."""
-    left = _dict_candidate({}, "d1").model_copy(update={"value": ["UL 1741", "IEC 61215"]})
-    right = _dict_candidate({}, "d1").model_copy(update={"value": ["UL 1741", "IEC 61215"]})
+def test_a_dict_nested_in_a_list_is_rendered_canonically_too() -> None:
+    """`render_value` walks containers, so the fix reaches a dict inside a list
+    - `repr` did not. Two equal lists in the same order keyed alike under `repr`
+    as well, which is why the first version of this test could not fail."""
+    left = _candidate([{"ONAN": 30.0, "ONAF": 40.0}], unit="MVA", doc="d1")
+    right = _candidate([{"ONAF": 40.0, "ONAN": 30.0}], unit="MVA", doc="d1")
+    assert left.value == right.value
     assert _ordering_key(left) == _ordering_key(right)

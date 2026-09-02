@@ -787,8 +787,8 @@ def test_severity_and_conflict_detection_share_one_numeric_rule() -> None:
     numpy scalar, a different NaN policy), or severity and detection disagree
     silently about whether a candidate is comparable at all.
     """
-    from procurement_agent.services.conflict_hitl import as_number as detection_rule
-    from procurement_agent.services.conflict_hitl.severity import as_number as severity_rule
+    from procurement_agent.services import conflict_hitl
+    from procurement_agent.services.conflict_hitl import tolerance
 
-    assert detection_rule is severity_rule
-    assert detection_rule(True) is None, "bool is excluded, in both callers"
+    assert conflict_hitl.as_number is tolerance.as_number
+    assert "_numeric_value" not in dir(conflict_hitl.severity), "the copy is gone"

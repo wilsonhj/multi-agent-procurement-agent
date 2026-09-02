@@ -480,14 +480,22 @@ def test_a_verdict_explains_itself() -> None:
 # --- the table against the frozen contract ------------------------------------
 
 
-def _contract_keys() -> set[str]:
+def _contract_rows() -> dict[str, str]:
+    """Every `key` in the frozen contract's parameter tables, with its type column."""
     contract = pathlib.Path(__file__).parent.parent / (
         "specs/001-procurement-agent/contracts/canonical-parameters.md"
     )
     text = contract.read_text(encoding="utf-8")
-    keys = {m.group(1) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|", text, re.MULTILINE)}
-    assert len(keys) > 50, "the contract's parameter tables did not parse"
-    return keys
+    rows = {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|([^|]*)\|", text, re.MULTILINE)
+    }
+    assert len(rows) > 50, "the contract's parameter tables did not parse"
+    return rows
+
+
+def _contract_keys() -> set[str]:
+    return set(_contract_rows())
 
 
 def test_every_tolerance_key_is_a_contract_key() -> None:
@@ -751,28 +759,17 @@ def test_a_decimal_value_reports_its_own_precision() -> None:
 # for `certifications` - and the reason called two lists "not comparable".
 
 
-def _list_keys_in_contract() -> set[str]:
-    contract = pathlib.Path(__file__).parent.parent / (
-        "specs/001-procurement-agent/contracts/canonical-parameters.md"
-    )
-    text = contract.read_text(encoding="utf-8")
-    keys = {
-        m.group(1)
-        for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|\s*list\[str\]\s*\|", text, re.MULTILINE)
-    }
-    assert len(keys) >= 10, "the contract's list[str] rows did not parse"
-    return keys
-
-
 def test_every_list_field_in_the_contract_has_a_set_rule() -> None:
     """Bidirectional: every `list[str]` key has a SET_EQUAL row, and every
     SET_EQUAL row is a `list[str]` key. A list-valued key that reaches
-    `DEFAULT_TOLERANCE` is compared by element order, which is the defect."""
-    from procurement_agent.services.conflict_hitl.tolerance import LIST_FIELD_TOLERANCES
-
-    assert set(LIST_FIELD_TOLERANCES) == _list_keys_in_contract()
-    for key, row in LIST_FIELD_TOLERANCES.items():
-        assert row.rule is ToleranceRule.SET_EQUAL, key
+    `DEFAULT_TOLERANCE` is compared by element order, which is the defect.
+    Derived from the table rather than from a named subset, so a SET_EQUAL row
+    added anywhere in `FIELD_TOLERANCES` is checked too."""
+    list_keys = {key for key, kind in _contract_rows().items() if kind == "list[str]"}
+    assert len(list_keys) >= 10, "the contract's list[str] rows did not parse"
+    set_rows = {key for key, row in FIELD_TOLERANCES.items() if row.rule is ToleranceRule.SET_EQUAL}
+    assert set_rows == list_keys
+    for key in list_keys:
         assert tolerance_for(key).rule is ToleranceRule.SET_EQUAL, key
 
 

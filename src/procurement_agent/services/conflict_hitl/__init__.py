@@ -15,8 +15,9 @@ from __future__ import annotations
 import itertools
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from decimal import Decimal, InvalidOperation
+from typing import TypeGuard
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -490,15 +491,14 @@ def values_conflict(
     return _compare_numbers(a, b, number_a, number_b, tolerance, band_a, band_b)
 
 
-def _is_sequence(value: object) -> bool:
+def _is_sequence(value: object) -> TypeGuard[Collection[object]]:
     return isinstance(value, list | tuple | set | frozenset)
 
 
-def _editions_by_base(values: object) -> dict[str, set[str | None]]:
+def _editions_by_base(values: Collection[object]) -> dict[str, set[str | None]]:
     """Each element split into `(standard, edition)` and grouped by standard."""
-    assert _is_sequence(values)
     grouped: dict[str, set[str | None]] = {}
-    for element in values:  # type: ignore[attr-defined]
+    for element in values:
         text = element if isinstance(element, str) else render_value(element)
         base, year = _split_edition(text)
         grouped.setdefault(base, set()).add(year)
@@ -524,8 +524,8 @@ def _compare_sets(a: ConflictCandidate, b: ConflictCandidate) -> ConflictVerdict
             "an extractor emitted a scalar where the contract types a list",
         )
     left, right = _editions_by_base(a.value), _editions_by_base(b.value)
-    only_left = sorted(set(left) - set(right))
-    only_right = sorted(set(right) - set(left))
+    only_left = sorted(left.keys() - right.keys())
+    only_right = sorted(right.keys() - left.keys())
     if only_left or only_right:
         return ConflictVerdict(
             conflicts=True,
@@ -535,6 +535,7 @@ def _compare_sets(a: ConflictCandidate, b: ConflictCandidate) -> ConflictVerdict
             "attestation absence is the finding",
         )
     for base in sorted(left):
+        # Comprehensions rather than `- {None}`: they narrow the type to `set[str]`.
         years_a = {y for y in left[base] if y is not None}
         years_b = {y for y in right[base] if y is not None}
         if years_a and years_b and years_a != years_b:

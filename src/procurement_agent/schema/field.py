@@ -112,19 +112,13 @@ class Resolution(BaseModel):
 def _as_resolution(value: object) -> object:
     """The `Resolution` a caller meant, for comparison only.
 
-    `CanonicalField.__setattr__` and `evolve` both promise that re-assigning an
-    *equal* resolution is allowed, "so an idempotent replay is not an error".
-    They compared the incoming value before pydantic coerced it, so the promise
-    held only for a caller who already had a `Resolution` object: a replay from
-    a stored row - `field.resolution = row["resolution"]`, a dict - compared a
-    `dict` against a `Resolution`, found them unequal, and raised the
-    immutability error at the one boundary the class explicitly designs for
-    (`__setstate__` and `__deepcopy__` exist for exactly that crossing).
-
-    Coercion is attempted, never forced: an input that is not a valid
-    `Resolution` is returned unchanged, so it still compares unequal and still
-    raises. This decides only *whether the value differs*; assignment itself
-    goes on to `validate_assignment`, which is what actually parses it.
+    Coercion is attempted, never forced: a value that is not a valid
+    `Resolution` comes back unchanged, so it still compares unequal. This
+    decides only *whether the value differs* from a recorded decision;
+    assignment itself goes on to `validate_assignment`, which parses it. Needed
+    because a replay from a stored row arrives as a `dict`, and comparing that
+    against a `Resolution` before coercion refused every idempotent replay
+    (A-55).
     """
     if isinstance(value, Resolution) or value is None:
         return value
@@ -132,6 +126,14 @@ def _as_resolution(value: object) -> object:
         return Resolution.model_validate(value)
     except ValidationError:
         return value
+
+
+#: The one refusal both routes raise, so the rule is stated once.
+_RESOLUTION_IS_APPEND_ONLY = (
+    "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: the decision "
+    "log is immutable). A reopened conflict (REQUEST_MORE_WEB_SEARCH) records a NEW "
+    "resolution against the conflict; it does not rewrite this one."
+)
 
 
 class DeclaredBand(BaseModel):
@@ -657,17 +659,8 @@ class CanonicalField(BaseModel):
         # snapshot, so it could swap one reviewer's Resolution for another's and
         # every validator would still pass. Checked here, where the transition is
         # still visible, rather than in the validator, which cannot see it.
-        if (
-            "resolution" in changes
-            and self.resolution is not None
-            and _as_resolution(changes["resolution"]) != self.resolution
-        ):
-            raise ValueError(
-                "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: "
-                "the decision log is immutable). A reopened conflict "
-                "(REQUEST_MORE_WEB_SEARCH) records a NEW resolution against the "
-                "conflict; it does not rewrite this one."
-            )
+        if "resolution" in changes and self._replaces_recorded_resolution(changes["resolution"]):
+            raise ValueError(_RESOLUTION_IS_APPEND_ONLY)
         snapshot = {name: getattr(self, name) for name in type(self).model_fields}
         return type(self).model_validate({**snapshot, **changes})
 
@@ -732,16 +725,9 @@ class CanonicalField(BaseModel):
         self._assert_resolution_matches_status()
 
     def __copy__(self) -> Self:
-        """Revalidate on shallow copy, for the same reason as `__deepcopy__`.
-
-        `copy.copy` is the route the inventory below missed: pydantic implements
-        it by copying `__dict__` exactly as `__deepcopy__` does, so a
-        `__dict__`-poisoned field shallow-copied into a collection carried the
-        forbidden state across while the deep copy of the same object refused
-        it (A-56). The docstring argument for guarding `__deepcopy__` applies
-        here word for word. D-18 records that this closes today's hole and not
-        the class of hole; the structural encoding that would is a C5 change.
-        """
+        """Revalidate on shallow copy: pydantic implements `copy.copy` by
+        copying `__dict__`, exactly as `__deepcopy__` below does, and this was
+        the route that inventory missed (A-56, D-18)."""
         duplicate: Self = super().__copy__()
         duplicate._assert_resolution_matches_status()
         return duplicate
@@ -789,17 +775,21 @@ class CanonicalField(BaseModel):
         """
         if (
             name == "resolution"
-            and getattr(self, "resolution", None) is not None
-            and _as_resolution(value) != self.resolution
+            and self._replaces_recorded_resolution(value)
             and not (value is None and self.conflict_status is ConflictStatus.RESOLVED)
         ):
-            raise ValueError(
-                "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: "
-                "the decision log is immutable). A reopened conflict "
-                "(REQUEST_MORE_WEB_SEARCH) records a NEW resolution against the "
-                "conflict; it does not rewrite this one."
-            )
+            raise ValueError(_RESOLUTION_IS_APPEND_ONLY)
         super().__setattr__(name, value)
+
+    def _replaces_recorded_resolution(self, incoming: object) -> bool:
+        """Whether `incoming` would change a decision already on this field.
+
+        One definition of "the same decision" for both `evolve` and
+        `__setattr__`: an equal `Resolution`, in object or serialised form, is a
+        replay and not a replacement.
+        """
+        recorded = getattr(self, "resolution", None)
+        return recorded is not None and _as_resolution(incoming) != recorded
 
 
 class ConflictCandidate(BaseModel):

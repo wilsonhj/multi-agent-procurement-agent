@@ -62,6 +62,7 @@ def _claim(
     page: int | None = None,
     unit: str | None = "Wp",
     verbatim: str | None = None,
+    resolution: Resolution | None = None,
 ) -> FieldClaim:
     return FieldClaim(
         document_id=doc,
@@ -74,6 +75,7 @@ def _claim(
         source_tier=tier,
         source_ref=SourceRef(document_id=doc, page=page),
         confidence=confidence,
+        resolution=resolution,
     )
 
 
@@ -561,32 +563,25 @@ def test_the_claim_is_the_single_authority_for_it() -> None:
 # claim key whose two claims say the same thing.
 
 
-def test_an_int_and_a_float_of_one_figure_are_one_answer() -> None:
+@pytest.mark.parametrize(
+    "spellings",
+    [
+        pytest.param((650, 650.0), id="int-float"),
+        pytest.param((650, 650.0, Decimal("650")), id="int-float-decimal"),
+        pytest.param((Decimal("650"), Decimal("650.0")), id="decimal-trailing-zero"),
+    ],
+)
+def test_every_spelling_of_one_figure_is_one_answer(spellings: tuple[object, ...]) -> None:
     """`values_conflict` calls 650 vs 650.0 no conflict
-    (`test_nameplate_absorbs_650_versus_650_point_0_and_nothing_more`). The
-    projection reporting OPEN for the same pair puts a reviewer in a queue the
-    conflict detector says is empty."""
-    projected = project([_claim(650, doc="d1"), _claim(650.0, doc="d2")])
-    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
-
-
-def test_a_decimal_is_the_same_answer_as_the_int_and_the_float() -> None:
-    """D-2's EXACT catalog values are naturally `Decimal`, so all three types
-    reach one field."""
-    projected = project(
-        [_claim(650, doc="d1"), _claim(650.0, doc="d2"), _claim(Decimal("650"), doc="d3")]
-    )
-    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
-
-
-def test_a_trailing_zero_is_not_a_second_answer() -> None:
-    """`Decimal("650")` and `Decimal("650.0")` are `==`. The precision difference
-    is real and D-14's *hash* encoder must keep it - it sets D-2's rounding floor
-    - but that floor is read downstream from `verbatim_value`, which `_asserted`
-    deliberately excludes. Here the question is only whether the two claims said
-    the same thing."""
-    projected = project([_claim(Decimal("650"), doc="d1"), _claim(Decimal("650.0"), doc="d2")])
-    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+    (`test_nameplate_absorbs_650_versus_650_point_0_and_nothing_more`); the
+    projection reporting OPEN for the same pair put a reviewer in a queue the
+    conflict detector says is empty. D-2's EXACT catalog values are naturally
+    `Decimal`, so all three types reach one field. The trailing-zero case is the
+    one D-14's *hash* encoder must keep apart - precision sets D-2's rounding
+    floor - but that floor is read downstream from `verbatim_value`, which
+    `_asserted` deliberately excludes."""
+    claims = [_claim(v, doc=f"d{i}") for i, v in enumerate(spellings)]
+    assert [f.conflict_status for f in project(claims)] == [ConflictStatus.NONE]
 
 
 def test_one_extractor_reading_an_int_and_a_float_does_not_lose_the_field() -> None:
@@ -597,7 +592,7 @@ def test_one_extractor_reading_an_int_and_a_float_does_not_lose_the_field() -> N
         _claim(650, doc="d1", version="extract@1"),
         _claim(650.0, doc="d1", version="extract@1"),
     ]
-    assert len(canonical_claims(same_key)) >= 1
+    assert len(canonical_claims(same_key)) == 2, "distinct claims, one answer"
     assert project(same_key)[0].conflict_status is ConflictStatus.NONE
 
 
@@ -674,14 +669,11 @@ def _human(
     tier: SourceTier = SourceTier.SYSTEM_OF_RECORD,
     action: ResolutionAction = ResolutionAction.SELECT_VALUE,
 ) -> FieldClaim:
-    return FieldClaim(
-        document_id=doc,
-        field_name="nameplate_power",
-        extractor_version=f"{HUMAN_PREFIX}{by}",
-        value=value,
-        unit="Wp",
-        source_tier=tier,
-        source_ref=SourceRef(document_id=doc),
+    return _claim(
+        value,
+        doc=doc,
+        tier=tier,
+        version=f"{HUMAN_PREFIX}{by}",
         confidence=1.0,
         resolution=_decision(value, action=action, by=by, at=at),
     )
@@ -792,16 +784,7 @@ def test_a_decision_on_a_machine_claim_is_rejected() -> None:
     """The convention holds in both directions: a Resolution on an
     `extract@1` claim is a person's name on a machine value."""
     with pytest.raises(ValidationError, match="must be a human claim"):
-        FieldClaim(
-            document_id="contract",
-            field_name="nameplate_power",
-            extractor_version="extract@1",
-            value=650.0,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="contract"),
-            confidence=0.9,
-            resolution=_decision(650.0),
-        )
+        _claim(650.0, version="extract@1", resolution=_decision(650.0))
 
 
 @pytest.mark.parametrize(
@@ -818,21 +801,4 @@ def test_a_decision_recorded_against_a_different_value_is_rejected() -> None:
     """`value_after` and the claim's value must agree, or the decision log and
     the value store drift apart on the first human write."""
     with pytest.raises(ValidationError, match="value_after must be the claim's value"):
-        FieldClaim(
-            document_id="contract",
-            field_name="nameplate_power",
-            extractor_version=f"{HUMAN_PREFIX}procurement.lead",
-            value=650.0,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="contract"),
-            confidence=1.0,
-            resolution=_decision(655.0),
-        )
-
-
-def test_the_fixture_shape_now_carries_the_resolution_key() -> None:
-    """The claim fixtures are byte-compared, so adding `resolution` to
-    `FieldClaim` changed their bytes; they were regenerated with the canonical
-    options. Pinned so the next schema change fails here with a sentence rather
-    than in a 90-line JSON diff."""
-    assert "resolution" in FieldClaim.model_fields
+        _claim(650.0, version=f"{HUMAN_PREFIX}procurement.lead", resolution=_decision(655.0))

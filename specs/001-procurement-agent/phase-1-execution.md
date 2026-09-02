@@ -112,7 +112,7 @@ the only placement letting both consumers — `services/output` (Track 3) and
 as RFC 3339 UTC with microseconds always printed, enums via `.value`, frozensets sorted.
 
 > ⚠️ **D-14's `encode_value()` has no `Decimal` rule, and it needs one before this is written.**
-> `conflict_hitl/__init__.py:336` records that "`Decimal("650")` is the natural representation"
+> `conflict_hitl/__init__.py:337` records that "`Decimal("650")` is the natural representation"
 > of D-2's EXACT catalog values, so `Decimal` is genuinely in the value domain. Under `repr()`,
 > `Decimal("650")`, `650` and `650.0` are three distinct keys. A naive encoder collapses them.
 >
@@ -129,7 +129,7 @@ every enum-bearing field, which is what would have caught A-50; plus an injectiv
 
 ### Track 1b — the A-50 convergence · *blocks nobody*
 
-Route `_ordering_key` and `comparison_groups` (`conflict_hitl/__init__.py:185`) through
+Route `_ordering_key` and `comparison_groups` (`conflict_hitl/__init__.py:186`) through
 `encode_value()` instead of `repr()`. This is the A-50 residual. It gates no other track, and
 carries all of this plan's re-baselining risk — which is why it is separated from 1a.
 
@@ -235,10 +235,10 @@ three places contract keys are duplicated as data — the frozen markdown, `FIEL
 
 **Three paths this track must own that are easy to miss.** Rejecting an off-contract key needs
 **two** enforcement points, and neither is in `schema/field.py` — `FieldClaim` lives at
-`services/claims/__init__.py:63`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
+`services/claims/__init__.py:52`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
 the condition types instead. The keys are validated where they are *used as keys*:
 `ComponentInstance.fields` (`schema/component.py:83`, the `dict[str, list[CanonicalField]]`) and
-`commit_claims` (`services/claims/__init__.py:468`). Third, tightening either can break the
+`commit_claims` (`services/claims/__init__.py:472`). Third, tightening either can break the
 **byte-compared** committed fixtures in `tests/fixtures/claims/`, which must be re-validated as
 part of this track rather than discovered by Track 3.
 

@@ -42,8 +42,7 @@ from collections.abc import Sequence
 from ...schema import ConflictCandidate, ConflictClass, Severity, SourceTier, ToleranceRule
 from ..confidence import FIELD_TIERS, CriticalityTier
 from ..confidence import looks_tier_a as looks_tier_a
-from .tolerance import FieldTolerance, tolerance_for
-from .tolerance import as_number as as_number  # re-exported: one numeric rule, not two
+from .tolerance import FieldTolerance, as_number, tolerance_for
 
 # --- the criticality-class lookup ----------------------------------------------
 #

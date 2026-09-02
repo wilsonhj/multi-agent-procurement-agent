@@ -41,18 +41,16 @@ def render_value(value: object, _containers: tuple[int, ...] = ()) -> str:
     """
     if id(value) in _containers:
         return "..."
-    nested = (*_containers, id(value))
     if isinstance(value, dict):
+        nested = (*_containers, id(value))
         entries = sorted(
             (render_value(k, nested), render_value(v, nested)) for k, v in value.items()
         )
         return "{" + ", ".join(f"{key}: {item}" for key, item in entries) + "}"
-    if isinstance(value, list | tuple):
-        return f"{type(value).__name__}[" + ", ".join(render_value(v, nested) for v in value) + "]"
-    if isinstance(value, set | frozenset):
-        return (
-            f"{type(value).__name__}["
-            + ", ".join(sorted(render_value(v, nested) for v in value))
-            + "]"
-        )
+    if isinstance(value, list | tuple | set | frozenset):
+        nested = (*_containers, id(value))
+        items = [render_value(v, nested) for v in value]
+        if isinstance(value, set | frozenset):
+            items.sort()
+        return f"{type(value).__name__}[{', '.join(items)}]"
     return repr(value)

@@ -320,6 +320,18 @@ class ResolutionAction(StrEnum):
     REQUEST_MORE_WEB_SEARCH = "request_more_web_search"
     DEFER = "defer"
 
+    @property
+    def asserts_a_value(self) -> bool:
+        """Whether this action states what the field's value *is* (D-16).
+
+        Three do, and may therefore be recorded as a human claim. The two that
+        do not - REQUEST_MORE_WEB_SEARCH and DEFER - are events against the
+        conflict, recorded in `resolution` and `audit.event` but never in the
+        value store. Spelled as the complement so that a sixth action added
+        here is settling by default and its author has to say otherwise.
+        """
+        return self not in (ResolutionAction.REQUEST_MORE_WEB_SEARCH, ResolutionAction.DEFER)
+
 
 class WorkbookTab(StrEnum):
     """All thirteen tabs, in order (FR-OUT-02). AC-3 checks every one is present."""

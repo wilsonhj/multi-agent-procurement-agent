@@ -468,8 +468,10 @@ can check exactly these choices rather than re-deriving the whole schema.
    one document-level label, per-principal clearance, labelling at ingest failing
    closed. It stays **provisional** because two facts remain outstanding, and they
    are facts rather than preferences: whether any executed NDA exceeds "need to
-   know", and whether any evaluator is conflicted with a specific bidder. Either
-   yes makes the label `restricted_group`. The enforcement mechanism arrived ahead
+   know", and whether any evaluator is conflicted with a specific bidder. The two
+   answers do not lead to the same place: an NDA exceeding "need to know" makes
+   the label `restricted_group`, while a recusal alone wants a per-person
+   deny-list and keeps this boolean. The enforcement mechanism arrived ahead
    of the decision it implements, which is unusual but turned out well. Rather than inventing a labels/tenant model with
    no contract behind it, RLS on all seven content tables — `document`, `chunk`,
    `claim`, `conflict`, `resolution`, `job` and `audit.event` — enforces only the

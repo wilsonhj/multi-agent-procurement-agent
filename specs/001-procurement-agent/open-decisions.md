@@ -10,6 +10,18 @@ reproduced against the running code, whose *fix* requires a contract choice
 rather than a patch. They are filed as A-51, A-53 and A-56 in
 [analysis.md](analysis.md).
 
+> ⚠️ **"Nothing here is adopted" is no longer true of item 1, and the entry was
+> not deleted (noted 2026-09-02).** `services/conflict_hitl/severity.py` implements
+> item 1's lookup - its module docstring cites "open-decisions.md section 1" as its
+> specification, `CRITICALITY` is the table below row for row, and
+> `tests/test_severity.py` parses the frozen contract and fails on any key in
+> either that is missing from the other. Item 7 shows the intended end state: it
+> carries a **RATIFIED** block and stays for the record. Items 1 and 2 have neither
+> been ratified in writing nor folded into `clarifications.md`, so the code is
+> ahead of the decision record - the same shape as C7, where `sql/` enforced the
+> label model months before D-15 wrote it down. A maintainer should ratify or
+> retire them; this note does not do it for them.
+
 Sourcing caveat: egress returned HTTP 403 for standards bodies, `ecfr.gov`, CEC
 and manufacturer domains throughout, so **no standard, regulation or datasheet
 was read verbatim**. External claims rest on search summarisation.

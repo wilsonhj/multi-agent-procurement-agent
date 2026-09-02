@@ -51,6 +51,30 @@ Status values:
 > FR-RAG-02. Counting a test that asserts the opposite of a requirement as coverage of that
 > requirement would be the 2026-07-28 defect wearing a new hat.
 
+> **Audit, 2026-09-02. No status word moved, and two rows now carry a known defect.** The first
+> implementation review of `src/` ([analysis.md Round 7](../specs/001-procurement-agent/analysis.md))
+> found ten defects by running the code. Seven are fixed and none of them changed what a
+> requirement is covered by; the suite went from 481 passing to 500 by adding regression tests for
+> behaviour that was already claimed. **Three are open, and two of those qualify a row below
+> without changing its status word:**
+>
+> - **FR-HITL-06** stays `partial`, and its citation is still accurate — every route it names is
+>   still closed at the object level. What it does not say is that the *reducer* discards a
+>   recorded `Resolution` entirely: `services.claims.project()` never reads or writes the field,
+>   so an idempotent re-run of the complete claim set returns a resolved field to `OPEN` with no
+>   resolution (A-51). The immutability of the object is enforced; the preservation of the
+>   decision through a projection is not implemented at all, and that is a contract gap
+>   ([open-decisions.md](../specs/001-procurement-agent/open-decisions.md) item 8) rather than a
+>   weaker guarantee than claimed.
+> - **FR-HITL-01** and **FR-WEB-04** stay as written for numeric and text fields. For the
+>   contract's 18 `list[str]` fields there is no tolerance rule at all, so two sources listing
+>   identical certifications in a different order raise a `CRITICAL` conflict (A-53).
+>
+> The counts in this table are unchanged: 10 enforced / 23 partial / 17 declared / 6 open. They
+> were also recomputed from the rows on this date and match, which is worth stating because
+> `current-state.md`'s AC-8 row disagreed with this file's for four weeks while both documents'
+> counts stayed right — the disagreement had nowhere to show (A-62).
+
 ### Live-database coverage, and what it is worth
 
 `tests/test_sql_behaviour.py` runs its assertions against a real PostgreSQL. It is `skipif` on

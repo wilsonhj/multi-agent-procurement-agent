@@ -38,11 +38,14 @@ CREATE TABLE public.document (
     -- retrieval time, not only at the API edge.
     access_restricted boolean NOT NULL DEFAULT false,
 
-    -- NFR-05 / AC-5, and the exact gap docs/agent-topology.md:34 names:
+    -- NFR-05 / AC-5, and the exact gap docs/agent-topology.md:34 named before
+    -- this constraint closed it:
     -- "content_hash is the intended dedup key ... but it is an unconstrained
     -- field today ... a retry after a partial commit can still duplicate.
     -- Transactional hash uniqueness is a prerequisite for calling retries free,
-    -- not a consequence of the field existing." This UNIQUE constraint is that
+    -- not a consequence of the field existing." That cell was rewritten on
+    -- 2026-09-02, four weeks late (A-64): the file fixing the defect cited the
+    -- document still describing it. This UNIQUE constraint is that
     -- prerequisite: the ingest worker's retry path becomes
     -- `INSERT ... ON CONFLICT (content_hash) DO NOTHING`, safe because the
     -- database refuses the duplicate rather than application logic merely

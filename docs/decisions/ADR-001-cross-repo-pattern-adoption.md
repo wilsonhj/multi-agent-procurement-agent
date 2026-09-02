@@ -3,6 +3,20 @@
 **Status:** Proposed · **Date:** 2026-08-06 · **CI:** not run on this branch (zero Actions
 runs, empty status-check rollup) — a docs-only diff, but not a green build
 
+> **Still `Proposed`, and that is now load-bearing rather than pending paperwork
+> (noted 2026-09-02).** [phase-1-execution.md](../../specs/001-procurement-agent/phase-1-execution.md)
+> Track 4 is scheduled to *implement* Decision 2 — "a capability-declaring conformance matrix
+> plus one in-memory reference adapter per port" — and assigns it to Team 4. A track cannot
+> implement a proposal. Either the ADR is ratified, or Track 4 is building against a document
+> nobody has agreed to. **Nothing else in the repository cites this file**: it is not in the
+> README's map, not in either statement of specification authority, and not referenced from
+> `current-state.md`, `architecture.md` or `tasks.md`. That is a governance gap for a maintainer
+> to close, not an editorial one, so it is recorded here rather than resolved.
+>
+> Its **Context** section is also dated: it describes D-13 as "proposed and not ratified", which
+> was true on 2026-08-06 and stopped being true the next day — D-13, D-14 and D-15 were all
+> adopted on 2026-08-07. The corrected sentence is marked inline below.
+
 This is the first ADR, so the relationship to the existing record needs stating once.
 [plan.md](../../specs/001-procurement-agent/plan.md) Decisions 1–10 remain the architectural
 record; nothing here amends them, and a reversal of any of them belongs in the plan's own
@@ -33,14 +47,17 @@ The gaps, verified against the working tree:
   container health check, a different concern). No module in `src/` imports `logging`.
 - **Ports with no adapters and no tests.** The six port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
-  at all (`docs/current-state.md:333`). `docs/development.md:157-163` records the hazard in
+  at all (`docs/current-state.md:402`). `docs/development.md:157-163` records the hazard in
   its own words: no adapter layout convention exists, so the first adapter "decides the
   layout for everyone after it".
 - **Observability is the emptiest quadrant.** The audit DDL is live-tested — six chain
   tests at `tests/test_sql_behaviour.py:387-429` — but nothing can emit an event:
   `sql/README.md` (design decision 5) records that the Python envelope and canonicalisation
   do not exist, so "nothing may emit an event yet". The canonicalisation half is now
-  drafted — D-13, proposed and not ratified — but no code emits an event either way.
+  drafted — D-13, ~~proposed and not ratified~~ **adopted 2026-08-07, the day after this ADR
+  was written** — but no code emits an event either way, which is the part that has not
+  changed: WP-H's library is still unwritten and `rfc8785` is in neither `pyproject.toml` nor
+  `uv.lock`.
 - **The gold set is the acknowledged blocker.** The 30–50 labelled-document set
   (tasks.md B.9, clarifications D-11) gates any accuracy claim; every figure in the plan is
   extrapolated from other domains.
@@ -105,9 +122,9 @@ is the conformance matrix.
 This directly answers the recorded hazard that the first adapter "decides the layout for
 everyone after it" (`docs/development.md:157-163`): the contract suite exists *before* the
 first adapter, so the adapter conforms to the tests rather than the tests to the adapter.
-It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:333`
+It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:402`
 names as a good first contribution, and it converts AC-8's `declared` status
-(`docs/current-state.md:177`) into something an adapter can be held to.
+(`docs/current-state.md:211`) into something an adapter can be held to.
 
 ### 3 — Producer-side bounding and explicit timeouts
 
@@ -167,7 +184,7 @@ the point of sequencing it here rather than building it speculatively.
 The substrate is ready: `extractor_version` already gives prompt identity coexisting with
 the append-only store — it is part of the claim key, so a re-optimized prompt appends new
 claims beside the old rather than overwriting them
-(`src/procurement_agent/services/claims/__init__.py:58-64`). The prompts and the labels are
+(`src/procurement_agent/services/claims/__init__.py:60-64`). The prompts and the labels are
 what do not exist.
 
 Constraints any optimizer must respect, restated from decisions already on record:

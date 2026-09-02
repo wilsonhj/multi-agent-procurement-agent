@@ -231,9 +231,13 @@ first two apply to a new condition dimension, the third to a new field on `Canon
 
 There is no output-projection step, because there is nothing to update: the canonical JSON
 projection is contract **C6** — format frozen by D-14 (2026-08-07), nothing built:
-`write_workbook()` raises `NotImplementedError`,
-and there is no `tests/fixtures/` directory — the existing tests build their inputs inline. When
-C6 lands, a projection-fixture step belongs here. There is likewise no store round-trip step:
+`write_workbook()` raises `NotImplementedError`, and `tests/fixtures/` deliberately ships no
+projection fixture. The directory itself does exist and has since `9ced3af`: it holds two claim
+fixtures, one conflict fixture, a README stating the three checks each must pass, and
+`tests/test_fixtures.py`, which compares them **byte for byte**. (This paragraph said "there is
+no `tests/fixtures/` directory — the existing tests build their inputs inline" until 2026-09-02,
+which was true when written and had been false for weeks.) When C6's projection lands, a
+projection-fixture step belongs here. There is likewise no store round-trip step:
 C1 has landed as the DDL in `sql/`, but nothing in Python connects to it — there is no
 repository layer, so there is no round trip to exercise. Adding one is the step that turns
 `sql/` from a schema into a store.

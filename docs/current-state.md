@@ -1,17 +1,20 @@
 # Current state
 
-This audit describes `main` at commit `6c52fba` on 2026-08-09. It was first written against
-`ee1503d`; the [database schema](#database-schema), [persistence](#persistence),
-[security](#security) and [contract status](#contracts-are-only-partially-frozen) sections were
-rewritten when the Phase 0 substrate landed, and the contract section was rewritten again when
-D-13, D-14 and D-15 were adopted on 2026-08-07. It answers the practical question a new
-contributor has first: what can the repository do today?
+This audit describes the repository at `bf5ca07` on 2026-09-02 — branch
+`claude/repo-status-docs-verify-eyma9p`, which is `main` at `a119d19` plus the implementation
+review below. It was first written against `ee1503d`; the [database schema](#database-schema),
+[persistence](#persistence), [security](#security) and
+[contract status](#contracts-are-only-partially-frozen) sections were rewritten when the Phase 0
+substrate landed, and the contract section was rewritten again when D-13, D-14 and D-15 were
+adopted on 2026-08-07. It answers the practical question a new contributor has first: what can
+the repository do today?
 
-The local verification baseline is 481 passing tests and 24 skipped, a clean Ruff check, a clean
+The local verification baseline is 500 passing tests and 24 skipped, a clean Ruff check, a clean
 `ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
 24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
 disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
-was 229 passing when this audit was first written, and 470 at the previous re-baseline.
+was 229 passing when this audit was first written, then 470, then 481 before the implementation
+review added 19.
 
 > **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
 > C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
@@ -19,6 +22,24 @@ was 229 passing when this audit was first written, and 470 at the previous re-ba
 > `NotImplementedError` stubs stand. The decisions were the binding constraint, so this is
 > progress — it is just not implementation. See
 > [phase-1-execution.md](../specs/001-procurement-agent/phase-1-execution.md).
+
+> **What the 2026-09-02 implementation review changed, and did not.** The first pass over `src/`
+> since the policy core landed found ten defects, all reproduced by running the code
+> ([analysis.md Round 7](../specs/001-procurement-agent/analysis.md)). **No status word in this
+> document moved because of it** — nothing was implemented and nothing was withdrawn — but two
+> claims below are now qualified rather than clean, and one of them is severe:
+>
+> - **A-51 (Critical, open).** The reducer cannot preserve or produce a RESOLVED field, so an
+>   idempotent re-run erases a human decision. Read [Source authority](#source-authority) and
+>   [architecture.md's claims section](architecture.md#claims-and-canonical-state) with that in
+>   mind: the append-only half holds, the human-authority half does not.
+> - **A-53 (High, open).** The 18 `list[str]` contract fields have no tolerance rule, so two
+>   datasheets listing identical certifications in a different order raise a CRITICAL conflict
+>   that refuses the workbook.
+>
+> Both need a contract decision rather than a patch and are filed as
+> [open-decisions.md](../specs/001-procurement-agent/open-decisions.md) items 8 and 9. Seven of
+> the ten are fixed; A-56 is open and minor.
 
 ## Executive assessment
 
@@ -36,9 +57,13 @@ The repository should currently be evaluated as:
 It should not yet be evaluated as:
 
 - an installable end-user product;
-- a document ingestion or RAG service;
-- a secure store for confidential procurement data; or
-- an open-source release, because no license has been granted.
+- a document ingestion or RAG service; or
+- a secure store for confidential procurement data.
+
+It *is* an open-source release: Apache-2.0 was adopted in `a2fe390` on 2026-08-07 and merged in
+`3b4e271` the next day. This document said otherwise for the following three and a half weeks,
+in two places, while `pyproject.toml`, `LICENSE`, `NOTICE` and the README all said the opposite —
+see [Public repository, licensed](#public-repository-licensed).
 
 ## Implemented and tested
 
@@ -78,6 +103,16 @@ The current implementation:
 `assert_no_autonomous_overwrite()` prevents a web supplement from replacing a populated
 system-of-record field. This is a useful safety predicate, although the future store must
 make bypassing it structurally impossible.
+
+**The other half of source authority — a human's decision — is not preserved at all.** A-51:
+`services.claims.project()` never reads or writes `resolution`, `_preferred()` has no human
+tier, and `_status_for()` reopens any group holding more than one distinct answer. Re-committing
+the identical, complete claim set for a resolved field — the idempotent reducer re-run C8
+requires to be safe — stores `conflict_status=OPEN` and `resolution=None`, discarding the
+decision FR-HITL-06 calls immutable. `sql/06_resolution.sql:29-38` designs the fix (the human
+decision as a highest-priority claim) and says in as many words that it is "a convention this
+file recommends, not one it can enforce". Nothing implements it. Open as
+[open-decisions.md](../specs/001-procurement-agent/open-decisions.md) item 8.
 
 ### Composition policy
 
@@ -182,58 +217,89 @@ a signature exists, **open** means there is no home in the code yet.
 | AC-5 | Re-ingesting an unchanged document creates no duplicates | `sql/02_document.sql`'s `UNIQUE (content_hash)`, exercised against a live server by `test_a_duplicate_content_hash_is_refused`. The store half only: `services/ingestion.ingest`, the thing that would re-ingest, raises `NotImplementedError` | partial |
 | AC-6 | Inverter TRD against the IEEE 2800 limit; tax status per supplier | Nothing | open |
 | AC-7 | Two generations from an unchanged store are byte-identical | `normalize_archive()`, at archive level only. Without a writer there is no complete workbook to regenerate, and the desktop Excel/LibreOffice gate is unrun | partial |
-| AC-8 | An uncleared user cannot influence any retrieved result | `VectorStorePort.search(allowed_document_ids=...)` declares the parameter. No adapter, no enforcement, no test imports `ports` | declared |
+| AC-8 | An uncleared user cannot influence any retrieved result | RLS on seven tables with `FORCE`, an entitlement GUC and a separate ingest role, live-tested by eight assertions in `tests/test_sql_behaviour.py` — the load-bearing one is `test_claims_do_not_leak_a_restricted_documents_values`. `VectorStorePort.search(allowed_document_ids=...)` only declares its parameter, and no test imports `ports` | partial |
 
 Read that table as three groups, because they fail differently. AC-4 is genuinely covered.
-AC-2, AC-3, AC-5 and AC-7 each have a tested *half* and an unbuilt one — that split is the
+AC-2, AC-3, AC-5, AC-7 and AC-8 each have a tested *half* and an unbuilt one — that split is the
 pattern to distrust in any status claim about this repository, because the tested half is the
-one that gets quoted. AC-5 is the variant worth naming separately: its tested half is the
-*store*, not a policy function, so the thing under test is a live database constraint and the
-missing half is the caller. AC-1, AC-6 and AC-8 have no test at all; of those, only AC-8 has so
-much as a signature.
+one that gets quoted. AC-5 and AC-8 are the variants worth naming separately: for both, the
+tested half is the *store* rather than a policy function, so the thing under test is a live
+database defence and the missing half is the caller. Only AC-1 and AC-6 have no test at all.
 
-> **Corrected 2026-08-05.** This row read "Nothing. `content_hash` exists but carries no
+> **Corrected 2026-08-05 (AC-5).** This row read "Nothing. `content_hash` exists but carries no
 > uniqueness constraint / **open**". The constraint had landed in `e7da9ad`, an ancestor of this
 > audit's own stated baseline, so the row was wrong when written rather than merely stale — and
 > [requirements-traceability.md](requirements-traceability.md) already carried the correct
 > `partial`. Two status documents disagreeing about one criterion is worse than either being
 > wrong alone, because the disagreement is invisible unless someone reads both.
 
+> **Corrected 2026-09-02 (AC-8), and it is the same correction again.** This row read
+> "`VectorStorePort.search(allowed_document_ids=...)` declares the parameter. No adapter, no
+> enforcement, no test imports `ports` / **declared**", and the paragraph above it counted AC-8
+> among the criteria with "no test at all". Both were false in the same direction as the AC-5 row
+> above: `requirements-traceability.md` already carried `partial`, citing eight live assertions
+> and naming `test_claims_do_not_leak_a_restricted_documents_values` as the one that fails when
+> and only when `claim`'s confidentiality policy is widened to `USING (true)`.
+>
+> The AC-5 note called a disagreement between two status documents "worse than either being
+> wrong alone". It then stood four weeks beside a second instance of itself, in the same table,
+> because the correction was applied to the row it was about rather than to the table it was
+> about. The counts in this document's own header — 10 enforced / 23 partial / 17 declared /
+> 6 open — are computed from the traceability table, so they were right while this row was wrong;
+> that is what let the disagreement hide.
+
 See [requirements-traceability.md](requirements-traceability.md) for the requirement-level
 mapping behind these.
 
 ## Design and documentation debt
 
-### Public repository without a license
+### Public repository, licensed
 
-`pyproject.toml` declares `UNLICENSED` and no `LICENSE` file exists. Public visibility alone
-does not permit reuse or redistribution. Selecting and adding an OSI-approved license is the
-largest non-code blocker to outside adoption.
+**Settled, and this section was wrong about it for three and a half weeks.** `pyproject.toml`
+declares `license = "Apache-2.0"` with `license-files = ["LICENSE", "NOTICE"]`, both files
+exist, and [README.md](../README.md#license) records why Apache-2.0 rather than MIT: the express
+patent grant in section 3.
+
+The stale text read "`pyproject.toml` declares `UNLICENSED` and no `LICENSE` file exists" and
+called it "the largest non-code blocker to outside adoption". It is recorded rather than quietly
+deleted because of *how* it survived: this file was edited twice after the licence landed
+(`79f0084`, `f18eb59`), both times to reconcile it with the 2026-08-07 decisions, and both times
+the sweep covered the sections those decisions named. The licence was not one of them. That is
+the same failure `phase-1-execution.md` records for Track 0 — **scoping a reconciliation by
+section or filename rather than by meaning** — on its third occurrence.
 
 ### No contributor governance
 
-Before a broad public launch, maintainers should add:
+Before a broad public launch, maintainers should still add:
 
-- a selected license;
 - a code of conduct;
 - a security reporting policy;
 - an issue and pull-request template;
 - a release and compatibility policy; and
 - a decision on DCO versus CLA for external contributions.
 
-This documentation adds a contribution workflow but intentionally does not invent legal or
-governance choices for the maintainers.
+The licence is no longer on this list. Nothing else on it exists: `.github/` holds
+`workflows/ci.yml` and nothing else, and there is no `CODE_OF_CONDUCT.md`, `SECURITY.md` or
+template directory. This documentation adds a contribution workflow but intentionally does not
+invent legal or governance choices for the maintainers.
 
 ### Specification drift
 
-The plan and the code disagreed on lexical retrieval in both directions at once. Plan Decision
-3b chooses PostgreSQL `tsvector` and `pg_trgm`; `services/retrieval` and `services/indexing`
-still advertised the TRS's BM25 (and `services/indexing`, an HNSW/IVF index that Decision 3a
-also reverses), while `ports` described the embedding model's sparse output, which is a
-Decision 5 contingency rather than Decision 3b's choice. All three docstrings are corrected as
-part of this documentation change. The remaining mismatch is inside `spec.md`'s own deviation
-note, which needs a spec edit; [architecture.md](architecture.md#the-fr-rag-03-lexical-drift-and-exactly-what-is-left-of-it)
-lays out all three positions and which one to build to.
+**Closed, and this paragraph outlived it.** The plan and the code disagreed on lexical retrieval
+in both directions at once. Plan Decision 3b chooses PostgreSQL `tsvector` and `pg_trgm`;
+`services/retrieval` and `services/indexing` still advertised the TRS's BM25 (and
+`services/indexing`, an HNSW/IVF index that Decision 3a also reverses), while `ports` described
+the embedding model's sparse output, which is a Decision 5 contingency rather than Decision 3b's
+choice. All three docstrings were corrected, and **`spec.md`'s own deviation note was corrected
+too** — in `d2dd02d` on 2026-08-04, before this paragraph's own stated baseline. It now names
+`tsvector`/GIN plus `pg_trgm` fused with RRF, which is what
+[architecture.md](architecture.md#the-fr-rag-03-lexical-drift-and-exactly-what-is-left-of-it)
+and [A-40](../specs/001-procurement-agent/analysis.md) both record as fixed. The sentence that
+stood here — "the remaining mismatch is inside `spec.md`'s own deviation note, which needs a
+spec edit" — described work already done, which is the drift-report's own version of the defect
+it reports. What remains is only the deliberate part: FR-RAG-03's requirement body still says
+"vector + BM25", because A-24 restored the TRS wording on purpose and marked the reversal
+inline rather than paraphrasing a `shall` away.
 
 The traceability record also contains historical statuses that must be kept in sync as
 features land.
@@ -328,9 +394,14 @@ claims cannot be validated.
 The fastest path to a useful contributor demo is not to implement every service in parallel.
 Build one tested vertical slice:
 
-1. settle the license and contributor-governance choices;
-2. freeze the five contracts still open above — C2, C4, C6, C7 and C8;
-3. commit sanitized fixtures for one PV module document and its expected claims;
+1. settle the remaining contributor-governance choices (the licence is done — Apache-2.0);
+2. finish the five contracts still open above — C2, C4, C6, C7 and C8. **The *decision* half of
+   C4, C6 and C7 closed on 2026-08-07** (D-13, D-14, D-15); what is left there is code. C2 and
+   C7 are the two still genuinely open, and A-51 adds a third question to C5/C8 — how a human
+   decision survives a projection;
+3. commit sanitized fixtures for one PV module document and its expected claims — the claim and
+   conflict fixture sets already exist in `tests/fixtures/`, so this is a *document* fixture and
+   the format constraints in `tests/fixtures/README.md` apply;
 4. implement content detection and one format-native parser;
 5. persist immutable claims and reduce them to canonical fields;
 6. run implemented conflict policy and create queue records;

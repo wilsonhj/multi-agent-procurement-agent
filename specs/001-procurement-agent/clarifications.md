@@ -846,7 +846,7 @@ Python identifiers, so only a deliberate alias could mint one. Assert no dumped 
    churn would otherwise be worst.
 2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands the stamp; AC-7 and
    G.5's `sleep(1.1)` re-run demand byte-identity; a store-derived stamp satisfies both with no
-   normative edit. The rule already exists at `services/output/__init__.py:151-153`; what is new
+   normative edit. The rule already exists at `services/output/__init__.py:157-159`; what is new
    is promoting it out of a docstring on an unimplemented function. See [A-48](analysis.md).
 
    **Recommended derivation: the maximum store write-timestamp over the rows the projection

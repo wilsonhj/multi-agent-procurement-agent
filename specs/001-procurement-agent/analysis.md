@@ -843,9 +843,9 @@ D-14](clarifications.md).
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:151-153` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Fixed** — D-14 adopted 2026-08-07. `generated_on` is the maximum store write-timestamp over the rows the projection reflects, folded from timestamps already inside the projection so AC-7-safety is structural; an empty store renders an explicit null |
+| A-48 | **M** | **FR-OUT-06 and AC-7 cannot both be satisfied by a wall-clock `generated_on` stamp, and no *specification* artifact says so.** FR-OUT-06 requires the workbook to carry "a generated-on timestamp"; AC-7 requires two generations from an unchanged store to be byte-identical, and `tasks.md` G.5 verifies it with `sleep(1.1)` between the runs specifically so a clock-derived value would differ. `services/output/__init__.py:157-159` already states the resolution — "no timestamps or ordering derived from anything but the store itself, plus an explicit generated-on stamp" — but it sits in a docstring on an unimplemented function, and neither `spec.md`, the traceability table nor this register carries it | **Fixed** — D-14 adopted 2026-08-07. `generated_on` is the maximum store write-timestamp over the rows the projection reflects, folded from timestamps already inside the projection so AC-7-safety is structural; an empty store renders an explicit null |
 | A-49 | **M** | **`audit.event` declares an event type it structurally cannot store, and it is the one NFR-02 names.** The taxonomy includes `'web_search'` (`sql/07:84`), but `document_id` is `NOT NULL REFERENCES public.document` (`:57`) under `CHECK (stream = 'doc:' \|\| document_id)` (`:116`), and `search_for_gap(field_name, supplier, model)` carries no document — by definition, since FR-WEB-01 triggers it precisely when *no* document supplied the value. No `DocumentType` member covers a web page either, so the FK cannot be satisfied by registering the source. Compounding it, `spec.md:153` says "**web** queries…" while `plan.md:66` paraphrases it as "…**query**…", dropping *web*, and D-13's first draft inherited the plan's wording and cited cross-document *retrieval* queries — which the normative text never names | **Fixed in principle** — D-13 adopted 2026-08-07: run-scoped events get a separately chained `audit.run_event` table keyed `run:<id>`, which is where gap-triggered web searches land. The event type stays in `audit.event`'s v1 taxonomy but is unreachable there; removing it is a taxonomy amendment WP-H should make when it writes the emitter |
-| A-50 | **H** | **D-14 banned enum `repr()` from hashed array order in one bullet and prescribed it in the next.** The condition-group bullet correctly routed ordering through `encode_value()`; the candidate bullet pinned ordering to `conflict_hitl._ordering_key`, whose **first component is `repr(candidate.condition.grouping_key())`** (`conflict_hitl/__init__.py:67`) — verified to render as `(<MeasurementBasis.STC: 'stc'>, None, …)`. Third instance of A-6's class, and the first to survive the remediation of its own predecessor | **Fixed** — D-14 now states one rule governing both bullets: nothing deciding hashed array order may contain an enum `repr()`. The projection sorts by `_ordering_key`'s *field sequence* with every component routed through `encode_value()` |
+| A-50 | **H** | **D-14 banned enum `repr()` from hashed array order in one bullet and prescribed it in the next.** The condition-group bullet correctly routed ordering through `encode_value()`; the candidate bullet pinned ordering to `conflict_hitl._ordering_key`, whose **first component is `repr(candidate.condition.grouping_key())`** (`conflict_hitl/__init__.py:77`) — verified to render as `(<MeasurementBasis.STC: 'stc'>, None, …)`. Third instance of A-6's class, and the first to survive the remediation of its own predecessor | **Fixed** — D-14 now states one rule governing both bullets: nothing deciding hashed array order may contain an enum `repr()`. The projection sorts by `_ordering_key`'s *field sequence* with every component routed through `encode_value()` |
 
 ## A-48 (Medium) — a constraint that only one docstring knows about
 
@@ -854,7 +854,7 @@ The tension is exact, and it is only a *contradiction* under the reading nobody 
 - `spec.md:144` (FR-OUT-06): the workbook "carries a generated-on timestamp plus the vintage of
   every source."
 - `spec.md` AC-7: two generations from an unchanged store are byte-identical — and
-  `tasks.md:229` (G.5) verifies precisely that with `sleep(1.1)` between the two runs. The sleep
+  `tasks.md:279` (G.5) verifies precisely that with `sleep(1.1)` between the two runs. The sleep
   exists *because* a naive timestamp would otherwise pass by accident on a fast machine.
 
 A wall-clock stamp changes between those two runs, so it fails AC-7. Removing the stamp fails
@@ -862,7 +862,7 @@ FR-OUT-06. **A store-derived stamp satisfies both texts with no normative edit a
 is what makes this a documentation defect rather than a spec defect.
 
 **The resolution already exists, in exactly one place, and it is the wrong place.**
-`services/output/__init__.py:151-153` says the workbook "must be deterministically regenerable
+`services/output/__init__.py:157-159` says the workbook "must be deterministically regenerable
 from the canonical store (FR-OUT-06), which means no timestamps or ordering derived from
 anything but the store itself, plus an explicit generated-on stamp." That sentence *is* the
 answer. But it is a docstring on a function that raises `NotImplementedError`, and nothing in
@@ -951,7 +951,7 @@ one axis right reads as getting the bullet right. The defect only appears when y
 both, cannot be satisfied by one and violated by the other.
 
 **Residual, deliberately not fixed here.** `_ordering_key` and `conflict_groupings`
-(`conflict_hitl/__init__.py:175`, `sorted(grouped, key=lambda k: repr(k))`) both still order by
+(`conflict_hitl/__init__.py:185`, `sorted(grouped, key=lambda k: repr(k))`) both still order by
 `repr()`. That is correct for an in-memory sort and this decision does not change them — but WP-G
 must not reach for either when it writes the projection, and converging them on `encode_value()`
 before WP-G would remove the trap rather than documenting around it.
@@ -993,6 +993,46 @@ Stated because a review's silence is otherwise read as a pass. `sql/` was not re
 the modules holding the ten `NotImplementedError` stubs were read only for their docstrings. The
 findings above are all in the implemented policy core and schema - about 4,900 of `src/`'s 5,264
 lines, the remainder being `ports/` and the four wholly-stub service modules.
+
+# Round 8 — the documentation reconciliation (2026-09-02)
+
+Run in the same pass as Round 7, against the question "are the docs and specs up to date with
+the code". Every `file:line` citation in `docs/` and `specs/` was resolved and checked to land on
+what it claims - **all 32 do**, including the ones most likely to rot (`tasks.md:368`,
+`canonical-parameters.md:221`, `tests/test_sql_behaviour.py:387-423`). The requirement counts
+recompute exactly: 10 enforced / 23 partial / 17 declared / 6 open over 56 rows. Ten stale
+claims were found, and **seven of the ten are the same failure**: a reconciliation scoped by
+filename or by section rather than by meaning, which `phase-1-execution.md` already records as
+having produced leftovers twice, and which A-41 and A-46 each register a prior instance of.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-61 | **H** | **`current-state.md` said the repository had no licence, for three and a half weeks, in two places.** "an open-source release, because no license has been granted" and a *Public repository without a license* section reading "`pyproject.toml` declares `UNLICENSED` and no `LICENSE` file exists", which it called "the largest non-code blocker to outside adoption". Apache-2.0 was adopted in `a2fe390` (2026-08-07) and `pyproject.toml`, `LICENSE`, `NOTICE` and the README all said so. The file was edited twice after the licence landed, both times to reconcile it with the 2026-08-07 decisions | **Fixed** — section rewritten as settled, with the survival mechanism recorded rather than the text quietly deleted; "a selected license" removed from the governance checklist |
+| A-62 | **H** | **Two status documents disagreed about AC-8 — which is A-43 again, on a different row, four weeks after A-43's own note called that the worst kind of error.** `current-state.md` had `declared` and "no adapter, no enforcement", and counted AC-8 among the criteria with "no test at all"; `requirements-traceability.md` had `partial`, citing eight live assertions led by `test_claims_do_not_leak_a_restricted_documents_values`. A-28 had even *predicted* the revision - "AC-8's row needs one revision once both branches land" - and it reached the traceability table only | **Fixed** — row and surrounding prose corrected, and the correction note explains why the header counts stayed right while the row was wrong: they are computed from the traceability table, so the disagreement had nowhere to show |
+| A-63 | **M** | **`current-state.md`'s *Specification drift* section described a spec edit as outstanding that had already landed.** "The remaining mismatch is inside `spec.md`'s own deviation note, which needs a spec edit" - corrected in `d2dd02d` on 2026-08-04, before the paragraph's own stated baseline of `6c52fba`, and recorded as fixed by both `architecture.md` and A-40. A drift report carrying its own drift | **Fixed** |
+| A-64 | **M** | **`agent-topology.md:34` still described `content_hash` as "an unconstrained field today - NFR-05 is `declared` and AC-5 `open`".** `sql/02_document.sql:41-50` adds `UNIQUE (content_hash)` **and quotes that exact sentence** as the gap it closes, so the file implementing the fix cited the document still describing the defect. Both rows have been `partial` since `e7da9ad` | **Fixed** |
+| A-65 | **L** | **`docs/development.md` said "there is no `tests/fixtures/` directory - the existing tests build their inputs inline".** It has existed since `9ced3af`: two claim fixtures, one conflict fixture, a README, and a 220-line suite that compares them byte for byte. Four other documents cite the directory correctly | **Fixed** |
+| A-66 | **M** | **`tests/fixtures/README.md` said "the canonical projection format is unfrozen - that is T0.5".** D-14 froze it on 2026-08-07 and `tasks.md` T0.5 says in as many words that "that gate has now lifted". The fixture README is the document a contributor reads *before adding a fixture*, so it was the worst single place for this to be stale | **Fixed** — the absence is kept, its reason replaced: the projection function is missing, not the decision |
+| A-67 | **M** | **The Q-1 collapse survived in three places after the decision that corrected it.** `clarifications.md:952` states that an earlier summary "wrongly collapsed them into 'either yes → `restricted_group`'" and gives three outcomes; `tasks.md:28`, `tasks.md:84` and `sql/README.md:472` still carried the two-outcome version, because the ratifying commit edited the two files it named | **Fixed** — all three now carry D-15's branching, including the per-person deny-list |
+| A-68 | **M** | **ADR-001 is orphaned, stale and load-bearing at once.** Still `Status: Proposed`, while `phase-1-execution.md` Track 4 is assigned to *implement* its Decision 2; its Context describes D-13 as "proposed and not ratified", true for one day; and **nothing outside `phase-1-execution.md` cites it** - not the README's repo map, not either statement of specification authority, not `current-state.md` or `architecture.md`. Both authority lists omit `docs/decisions/` entirely, so the ADR has no rank | **Partly fixed** — the stale D-13 line corrected, the file added to the README map, and both authority lists now say the gap is open and quote the ADR placing itself below `plan.md`. **Ratifying it and ranking it are a maintainer's call** and remain open |
+| A-69 | **M** | **`tasks.md` used a third status vocabulary and left landed work unmarked.** Its acceptance table read `passing` / `partial` / `☐` and disagreed with both status documents on four of eight rows (AC-2 `passing` where the guard is unit-level; AC-5, AC-7, AC-8 `☐` against live-tested store defences). T0.1-T0.3 carried no completion marker though their verify criteria are met, T0.6 none though it is half delivered, and no Phase 1 bullet carries a status, so shipped work - C.7, C.8, E.1-E.4, H.1, H.6 - reads as outstanding. It also never referenced `phase-1-execution.md`, the plan that re-cut its own Phase 1 | **Fixed** — acceptance table moved onto the traceability vocabulary with a "where it stands" column, Phase 0 tasks marked, a landed-work table added at the head of Phase 1, and the execution plan linked from the header |
+| A-70 | **L** | **`open-decisions.md` opens "Nothing here is adopted" while item 1 is implemented.** `severity.py` cites "open-decisions.md section 1" as its specification and `CRITICALITY` is that table row for row, tested bidirectionally against the frozen contract. Item 7 shows the intended end state - a **RATIFIED** block, entry retained. Items 1 and 2 have neither been ratified in writing nor folded into `clarifications.md` | **Flagged, not fixed** — ratifying or retiring them is a maintainer's call; the header now says the code is ahead of the decision record, which is the same shape as C7 before D-15 |
+
+## What Round 8 checked and found correct
+
+Recorded because a documentation audit that lists only defects overstates the rot:
+
+- **All 32 `file:line` citations resolve** and land on the claimed construct.
+- **The counts are recomputable**: 56 traceability rows giving 10/23/17/6, ten
+  `NotImplementedError` stubs across six modules, nine DDL files, eight tables, `FORCE ROW LEVEL
+  SECURITY` on exactly seven (`conflict_candidate` deliberately excluded, and `sql/README.md`
+  says why), six ports, five resolution actions, thirteen tabs, 481 passing / 24 skipped at the
+  stated baseline.
+- **The contract table C1-C8 is accurate**, checked one contract at a time against the SQL, the
+  source and the tests - including the two most likely to be over-read, C4 and C8, each with a
+  live-verified SQL half and no Python half.
+- `README.md`, `CONTRIBUTING.md`, `architecture.md` and `requirements-traceability.md` carried
+  **no stale status claim** that this pass could find.
 
 ## Consistency checks that passed
 

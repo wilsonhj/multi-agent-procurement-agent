@@ -335,6 +335,12 @@ Use this order when artifacts disagree:
 If implementing the higher-ranked artifact would violate a lower-ranked decision, register the
 deviation rather than silently choosing one.
 
+ADRs under [`decisions/`](decisions/) are deliberately absent from that list: ADR-001 states
+that it does not amend `plan.md` and records only decisions taken after the plan froze, which
+places it below rank 4 by its own text, but nothing adopted says where it sits and it is still
+marked `Proposed`. Ranking and ratifying it is a maintainer's call — see the note at the head of
+[ADR-001](decisions/ADR-001-cross-repo-pattern-adoption.md).
+
 The register is [`specs/001-procurement-agent/analysis.md`](../specs/001-procurement-agent/analysis.md).
 There is no separate file: it is a numbered finding list (A-1 …) with a status column, and every
 reversal of a normative `shall` in this repository is already filed there — A-23 for FR-RAG-02's

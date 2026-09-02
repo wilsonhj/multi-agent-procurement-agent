@@ -263,6 +263,8 @@ docs/
 ├── development.md           setup, conventions, and change recipes
 ├── requirements-traceability.md  every FR/NFR/AC mapped to code and tests
 ├── agent-topology.md        where the pipeline may fan out, and where it must not
+├── decisions/               ADRs — decisions taken after plan.md froze. ADR-001
+│                            is still `Proposed`; see the note at its head
 ├── defaults.md              proposed values for unresolved decisions
 └── open-questions.md        SUPERSEDED by clarifications.md, except for a short
                              carried-forward list at its foot
@@ -290,6 +292,15 @@ When two artifacts disagree, they are ranked. Highest first:
 4. technical decisions in `plan.md`;
 5. work decomposition in `tasks.md`; and
 6. explanatory code comments and contributor docs — including this file.
+
+**ADRs under `docs/decisions/` are not in this list, and that is an open gap rather than a
+statement that they rank last.** [ADR-001](docs/decisions/ADR-001-cross-repo-pattern-adoption.md)
+places itself: "plan.md Decisions 1–10 remain the architectural record; nothing here amends
+them… ADRs record decisions made **after** the plan froze." That puts it below rank 4 by its own
+text, but no adopted resolution says so, and it is still marked `Proposed` while
+`phase-1-execution.md` Track 4 is scheduled to implement its Decision 2. A maintainer needs to
+rank it and ratify it; until then, treat it as a proposal you should read before building
+adapters, not as an authority.
 
 `spec.md` is rank 2 and is the artifact most often left out of an informal retelling of this
 order, which is how a plan-level decision ends up quietly overriding a requirement. If following

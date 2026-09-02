@@ -1,6 +1,6 @@
 # Tasks: parallel work breakdown
 
-**Spec:** [spec.md](spec.md) · **Plan:** [plan.md](plan.md) · **Decisions:** [clarifications.md](clarifications.md) · **Analysis:** [analysis.md](analysis.md)
+**Spec:** [spec.md](spec.md) · **Plan:** [plan.md](plan.md) · **Decisions:** [clarifications.md](clarifications.md) · **Analysis:** [analysis.md](analysis.md) · **Current execution plan:** [phase-1-execution.md](phase-1-execution.md)
 
 Structured for several teams working simultaneously. Read **Phase 0 first** — nothing
 parallelises until the contracts are frozen, and the most common way a plan like this fails is
@@ -25,7 +25,7 @@ an unfrozen contract.
 | **C4** | Audit event envelope + `event_type` taxonomy + canonicalisation rule | All | **partial — decision half now closed.** [D-13](clarifications.md) (adopted 2026-08-07) settles the scheme (RFC 8785 via `rfc8785`), the preimage (one JCS object with `"v": 1`), the digest (SHA-256) and the taxonomy (v1, additive-only). What remains is code: no Python envelope, no canonicalisation library, no emitter. ⚠️ The version marker must exist **before the first event is ever emitted** |
 | **C5** | Conflict record + the five resolution action shapes | E, F, G | **done** — `ConflictQueueEntry`, `ResolutionAction` |
 | **C6** | Canonical workbook projection — sorted-key JSON, floats via `repr()` | G | ☐ **— format frozen, nothing built.** [D-14](clarifications.md) (adopted 2026-08-07) freezes the bytes, the shape, `encode_value()`, policy-inside-the-hash and the store-derived `generated_on`. `write_workbook()` still raises and no *workbook* projection function exists (`services.claims.project` is C8's claims→fields projection, a different thing) |
-| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS enforces the one label the schema has (`access_restricted`). [D-15](clarifications.md) adopts that model **provisionally** and closes T0.4's written-decision criterion, but two facts remain outstanding and they are facts rather than preferences: whether any executed NDA exceeds "need to know", and whether any evaluator is conflicted with a specific bidder. Either yes makes the label `restricted_group` |
+| **C7** | Retrieval interface + ACL/labelling model | A, C | **partial** — RLS enforces the one label the schema has (`access_restricted`). [D-15](clarifications.md) adopts that model **provisionally** and closes T0.4's written-decision criterion, but two facts remain outstanding and they are facts rather than preferences: whether any executed NDA exceeds "need to know", and whether any evaluator is conflicted with a specific bidder. **The two answers do not lead to the same place** — an NDA trigger makes the label `restricted_group`; a recusal alone wants a per-person deny-list with the boolean intact (D-15's own table) |
 | **C8** | Stage runner contract — job states, claim/lease semantics, idempotency key, **plus the append-only claim invariant below** | A, B, D, E, I | **partial** — the append-only invariant is enforced in both halves; `job` is the DDL's own proposal and `orchestrator.run` raises `NotImplementedError` |
 
 Three of the eight are done, four are partial and one is untouched. Read the four partials
@@ -80,22 +80,39 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 > one document-level label, per-principal clearance from the OIDC subject, labelling at ingest
 > failing closed, and `VectorStorePort.search(allowed_document_ids=...)` as scoping *within* an
 > entitlement rather than the boundary. It is **provisional** — two facts about NDA scope and
-> evaluator conflicts remain outstanding, and either one turns the label into
-> `restricted_group`.
+> evaluator conflicts remain outstanding. **They do not lead to the same place**, and an earlier
+> summary of D-15 wrongly collapsed them into "either yes → `restricted_group`": an NDA
+> exceeding "need to know" turns the label into `restricted_group`, while a recusal alone wants
+> a per-person **deny-list** and keeps the boolean, because question 2 asks who may *not* see one
+> supplier — an exclusion, not a clearance matrix. Both no keeps the boolean as built.
 
 ### Phase 0 tasks
 
-- **T0.1** Write the Postgres DDL for C1, including `audit.event` with hash-chain columns and
-  privilege separation per plan Decision 9. → verify: migrations apply cleanly; app role cannot
-  `UPDATE`/`DELETE`/`TRUNCATE` `audit.event`.
-- **T0.2** Add `condition` to `CanonicalField` and define the condition vocabulary per parameter
-  family (D-1). → verify: the Sungrow SG350HX case (four apparent conflicts, zero real) resolves
-  to zero conflicts in a fixture test.
-- **T0.3** Define the per-field tolerance table from D-2 as data, not code. → verify: a table-driven
-  test asserts nameplate Pmax at ±1 W does not merge adjacent 5 W bins.
+- **T0.1** ~~Write the Postgres DDL for C1, including `audit.event` with hash-chain columns and
+  privilege separation per plan Decision 9~~ → **done.** Both verify criteria are met and
+  recorded live-verified in `sql/README.md`: the nine files apply cleanly (now continuously —
+  `test_sql_behaviour.py`'s `schema` fixture reapplies them into a freshly dropped database on
+  every CI run), and `procurement_app` cannot `UPDATE`/`DELETE`/`TRUNCATE` `audit.event`
+  (`test_sql_schema.py` asserts the narrow grant; `test_truncate_is_refused` exercises the
+  tripwire).
+- **T0.2** ~~Add `condition` to `CanonicalField` and define the condition vocabulary per parameter
+  family (D-1)~~ → **done.** `condition` is on `FieldClaim`, `CanonicalField` and the `claim`
+  table, and the verify criterion is
+  `test_propose_commit.py::test_the_sungrow_trio_raises_no_conflict`.
+- **T0.3** ~~Define the per-field tolerance table from D-2 as data, not code~~ → **done.**
+  `FIELD_TOLERANCES` in `services/conflict_hitl/tolerance.py` is a dict of `FieldTolerance` rows
+  keyed on the frozen contract's own keys, and `test_values_conflict.py` is table-driven against
+  it — including `test_every_tolerance_key_is_a_contract_key`. ⚠️ **One gap the criterion did not
+  ask about:** the contract's 18 `list[str]` keys have **no row at all** and fall to
+  `DEFAULT_TOLERANCE`, which compares lists with order-sensitive `==`. That is
+  [A-53](analysis.md) and needs a D-2 amendment ([open-decisions.md #9](open-decisions.md)).
 - **T0.4** ~~Decide the ACL/labelling model (C7)~~ → **written as [D-15](clarifications.md), provisionally adopted 2026-08-07.** The verify criterion is met; the model is contingent on two outstanding facts recorded in that decision.
 - **T0.5** ~~Freeze the canonical workbook projection format (C6)~~ → **frozen as [D-14](clarifications.md), adopted 2026-08-07.** ⚠️ The verify criterion is **not** met: no golden JSON fixture exists yet. `tests/fixtures/` deliberately shipped none until ratification; that gate has now lifted.
-- **T0.6** Publish fixture sets for every contract (see below).
+- **T0.6** Publish fixture sets for every contract (see below). → **partial.** `tests/fixtures/`
+  ships two claim fixtures (C2, C3) and one conflict fixture (C5), each validated three ways by
+  `tests/test_fixtures.py` including a byte comparison. **No C6 projection fixture** — that is
+  Track 3's deliverable now the format is frozen — and **no C4 audit-envelope fixture**, which
+  waits on WP-H's library.
 
 ### The decoupling technique: frozen fixtures, not running code
 
@@ -109,6 +126,39 @@ double as the regression suite.
 ## Phase 1 — Parallel work packages
 
 All nine run concurrently once Phase 0 lands.
+
+> **Two things this list does not tell you, both added 2026-09-02.**
+>
+> **1. The current execution plan is
+> [phase-1-execution.md](phase-1-execution.md), not this section.** Phase 0's decision half
+> closed on 2026-08-07 while five of the eight contracts stayed partial, so the work was
+> re-cut into six tracks with team assignments (settled 2026-08-11) rather than started as nine
+> whole packages. Track 0 is done; Tracks 1a, 1b, 2, 3, 4 and 5 are unstarted. Read that
+> document for what to pick up; read this one for what each package ultimately owes.
+>
+> **2. Nothing below carries a status marker, so landed work reads as outstanding.** These
+> bullets have shipped and are covered by tests:
+>
+> | Bullet | Where |
+> |---|---|
+> | **C.7** `FORCE ROW LEVEL SECURITY`, app as non-owner non-superuser | all seven content tables in `sql/`, live-tested |
+> | **C.8** no ANN index, `hnsw.iterative_scan` set anyway | `sql/01`'s `ALTER DATABASE … SET`, asserted by `test_no_ann_index_exists_anywhere` |
+> | **E.1** `values_conflict()` with D-2's three kinds and the rounding floor | `services/conflict_hitl`, `tests/test_values_conflict.py` |
+> | **E.2** the condition-matching gate, ahead of any tolerance check | `Condition.comparable_with`, `tests/test_condition_matching.py` |
+> | **E.3** the five conflict classes | `ConflictClass` and `_classify` |
+> | **E.4** D-4 identity resolution, incl. the Trina split-entity case | `services/identity`, `tests/test_identity.py` |
+> | **H.1** audit DDL and privilege separation | `sql/07`, live-tested |
+> | **H.6** `BEFORE TRUNCATE` statement-level tripwires | `claim`, `resolution` and `audit.event` |
+>
+> Partly landed: **B.7** (`confidence.fuse` exists; the cold-start rule is not tuned against a
+> gold set), **B.10** (`tier_for` and `requires_review` exist; there is no `threshold_for`),
+> **D.4** (the guard exists at a chokepoint, but no write path routes through it because no
+> write path exists), **E.5** (`ConflictVerdict.reason` explains a *verdict*; nothing generates
+> `ConflictQueueEntry.explanation`), and **E.6/E.7** (the transformer and BESS *dimensions* —
+> `standards_regime`, `rte_boundary` — are in the schema and gate comparison through condition
+> matching; no family-specific rules beyond that).
+>
+> Everything else below is untouched.
 
 ### WP-A · Ingest & storage
 **Depends:** C1, C3, C7
@@ -293,16 +343,23 @@ These cannot be parallelised away. Plan for them rather than discovering them.
 
 ## Acceptance criteria ownership
 
-| AC | Owner | Status |
-|---|---|---|
-| AC-1 scanned spec sheet → fields with provenance, low confidence to review | WP-A + WP-B | ☐ needs corpus |
-| AC-2 web contradiction raises conflict, record unchanged | WP-D + WP-E | **passing** |
-| AC-3 all 13 tabs with conditional formatting | WP-G | partial |
-| AC-4 every cell resolves to a source | WP-G | **passing** (schema level) |
-| AC-5 re-ingest creates no duplicates | WP-A | ☐ |
-| AC-6 TRD against correct voltage-class limit; tax status per supplier | WP-B + WP-G | ☐ |
-| AC-7 byte-identical regeneration | WP-G | ☐ gated on G.6 |
-| AC-8 unclear user cannot influence retrieved results | WP-C | ☐ |
+**Status words are [requirements-traceability.md](../../docs/requirements-traceability.md)'s
+closed vocabulary**, not a third set. This table used `passing` / `partial` / `☐` and disagreed
+with both status documents on four of eight rows — AC-2 read `passing` where the guard is
+unit-level and nothing drives a contradiction to a queue entry, and AC-5, AC-7 and AC-8 read `☐`
+where a live-tested store defence exists. A third vocabulary is how that hides: a reader
+comparing two documents sees a disagreement, a reader comparing three assumes a mapping.
+
+| AC | Owner | Status | Where it stands |
+|---|---|---|---|
+| AC-1 scanned spec sheet → fields with provenance, low confidence to review | WP-A + WP-B | open | needs the corpus and an extractor; nothing reaches one |
+| AC-2 web contradiction raises conflict, record unchanged | WP-D + WP-E | partial | `assert_no_autonomous_overwrite` and `test_a_web_claim_contradicting_the_record_is_queued`; no test drives it on to a queue entry, because nothing builds one |
+| AC-3 all 13 tabs with conditional formatting | WP-G | partial | `expected_tabs()` and `flags_for()`; no workbook, so no formatting |
+| AC-4 every cell resolves to a source | WP-G | enforced | the `SourceRef` validator, at model level |
+| AC-5 re-ingest creates no duplicates | WP-A | partial | `UNIQUE (content_hash)` live-tested by `test_a_duplicate_content_hash_is_refused`; the ingest caller does not exist |
+| AC-6 TRD against correct voltage-class limit; tax status per supplier | WP-B + WP-G | open | no home in the code yet |
+| AC-7 byte-identical regeneration | WP-G | partial | `normalize_archive()` at archive level; gated on G.6, and there is no writer to regenerate |
+| AC-8 unclear user cannot influence retrieved results | WP-C | partial | RLS on seven tables, eight live assertions led by `test_claims_do_not_leak_a_restricted_documents_values`; no retrieval path exists to filter |
 
 ---
 

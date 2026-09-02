@@ -37,10 +37,16 @@ green, and FR-5 is about surfacing disagreement, not hiding it.
 
 ## What is deliberately absent
 
-**No C6 workbook projection fixture.** The canonical projection format is unfrozen
-— that is T0.5, and `tasks.md` calls C6 the contract that blocks WP-G entirely.
-Publishing a golden projection now would freeze by accident the one decision that
-is supposed to be made deliberately.
+**No C6 workbook projection fixture — but the reason has changed.** The format
+was unfrozen when this file was written, and publishing a golden projection then
+would have frozen by accident the one decision that was supposed to be made
+deliberately. **D-14 froze it on 2026-08-07**, so that gate has lifted:
+`tasks.md` T0.5 says so in as many words, and the fixture is now Track 3's
+deliverable in [phase-1-execution.md](../../specs/001-procurement-agent/phase-1-execution.md)
+— one committed projection and hash for a synthetic two-supplier PV store
+containing D-1's Sungrow trio, so it exercises list-valued fields rather than the
+easy one-value-per-key case. What is missing is the projection function, not the
+decision.
 
 **No document fixtures** (PDF, DOCX, XLSX). Two reasons, and the second is binding:
 

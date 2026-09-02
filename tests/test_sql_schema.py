@@ -420,3 +420,36 @@ def test_the_job_identity_columns_are_never_updatable() -> None:
         "updated_at",
     ):
         assert column not in allowed
+
+
+def test_the_job_stage_check_is_the_orchestrators_stage_vocabulary() -> None:
+    """`sql/08_job.sql` says its `stage` column "is keyed on orchestrator.Stage",
+    and nothing checked it: two encodings of one six-value vocabulary, in two
+    languages, with no test importing `Stage` at all. That is the failure mode
+    `severity.py` and `tolerance.py` each cost this repository a shipped defect
+    for - a table keyed on names that drift from the thing they name. Bound
+    here, in both directions, so a stage added to either side alone is a red
+    suite (design review 2026-09-02, proposal 7)."""
+    from procurement_agent.orchestrator import Stage
+
+    match = re.search(r"stage\s+text NOT NULL CHECK \(stage IN \(([^)]*)\)\)", _sql("08_job.sql"))
+    assert match, "the stage CHECK constraint did not parse"
+    in_ddl = set(re.findall(r"'([a-z_]+)'", match.group(1)))
+    in_code = {member.value for member in Stage}
+    assert in_ddl == in_code, f"DDL {sorted(in_ddl)} vs orchestrator.Stage {sorted(in_code)}"
+
+
+def test_the_migration_ledger_holds_no_content_and_grants_the_app_roles_nothing() -> None:
+    """The ledger is outside the FORCE RLS obligation because it holds no
+    document content - and that is only safe if the application roles cannot
+    touch it, since a role that could rewrite the ledger could hide an
+    unapplied file. Both halves asserted against the DDL text."""
+    text = _sql("00_roles.sql")
+    assert "CREATE TABLE IF NOT EXISTS public.schema_migration" in text
+    assert "ALTER TABLE public.schema_migration OWNER TO procurement_owner" in text
+    for statement in _statements(text):
+        if "schema_migration" in statement and statement.upper().startswith("GRANT"):
+            raise AssertionError(f"the ledger must not be granted to any role: {statement}")
+    assert "FORCE ROW LEVEL SECURITY" not in text.split("schema_migration", 1)[1], (
+        "the ledger is deliberately outside RLS; a policy on it would imply it holds content"
+    )

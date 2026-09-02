@@ -555,3 +555,46 @@ def test_no_project_role_is_a_member_of_another(schema: None) -> None:
         "hands over every privilege of the granting role for the cost of one "
         "SET ROLE, and survives re-running 00_roles.sql."
     )
+
+
+# --- the migration ledger ------------------------------------------------------
+
+
+def test_the_ledger_names_a_file_edited_after_it_was_applied(schema: None) -> None:
+    """The one property the ledger exists for. A file recorded with one hash
+    and presented with another is not skipped and not applied: it raises, by
+    name, because a live database and the files on disk have diverged and
+    nothing else in this directory can see that."""
+    same, changed = b"\x01" * 32, b"\x02" * 32
+    with _connect() as conn:
+        conn.execute("DELETE FROM public.schema_migration WHERE filename = '09_example.sql'")
+        assert (
+            conn.execute(
+                "SELECT public.schema_migration_status(%s, %s)", ("09_example.sql", same)
+            ).fetchone()[0]  # type: ignore[index]
+            == "apply"
+        )
+        conn.execute(
+            "INSERT INTO public.schema_migration (filename, sha256) VALUES (%s, %s)",
+            ("09_example.sql", same),
+        )
+        assert (
+            conn.execute(
+                "SELECT public.schema_migration_status(%s, %s)", ("09_example.sql", same)
+            ).fetchone()[0]  # type: ignore[index]
+            == "skip"
+        )
+        with pytest.raises(psycopg.errors.IntegrityConstraintViolation, match="09_example.sql"):
+            conn.execute(
+                "SELECT public.schema_migration_status(%s, %s)", ("09_example.sql", changed)
+            )
+        conn.execute("DELETE FROM public.schema_migration WHERE filename = '09_example.sql'")
+
+
+def test_the_application_roles_cannot_touch_the_ledger(schema: None) -> None:
+    """A role that could rewrite the ledger could hide an unapplied file."""
+    for role in ("procurement_app", "procurement_ingest"):
+        with _connect() as conn:
+            conn.execute(f"SET ROLE {role}")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute("SELECT count(*) FROM public.schema_migration")

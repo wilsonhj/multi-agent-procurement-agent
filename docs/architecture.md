@@ -329,17 +329,16 @@ Use this order when artifacts disagree:
 2. `spec.md` for externally visible requirements;
 3. adopted resolutions in `clarifications.md`;
 4. technical decisions in `plan.md`;
-5. work decomposition in `tasks.md`; and
-6. explanatory code comments and contributor docs.
+5. ratified ADRs under [`decisions/`](decisions/), which by their own text never amend a plan
+   decision — a reversal of one belongs in the plan's register, not in an ADR;
+6. work decomposition in `tasks.md`; and
+7. explanatory code comments and contributor docs.
 
 If implementing the higher-ranked artifact would violate a lower-ranked decision, register the
 deviation rather than silently choosing one.
 
-ADRs under [`decisions/`](decisions/) are deliberately absent from that list: ADR-001 states
-that it does not amend `plan.md` and records only decisions taken after the plan froze, which
-places it below rank 4 by its own text, but nothing adopted says where it sits and it is still
-marked `Proposed`. Ranking and ratifying it is a maintainer's call — see the note at the head of
-[ADR-001](decisions/ADR-001-cross-repo-pattern-adoption.md).
+Rank 5 dates from 2026-09-02, when [ADR-001](decisions/ADR-001-cross-repo-pattern-adoption.md)
+was ratified after four weeks at `Proposed` and unranked (A-68).
 
 The register is [`specs/001-procurement-agent/analysis.md`](../specs/001-procurement-agent/analysis.md).
 There is no separate file: it is a numbered finding list (A-1 …) with a status column, and every

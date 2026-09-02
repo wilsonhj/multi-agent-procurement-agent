@@ -78,7 +78,7 @@ Status values:
 ### Live-database coverage, and what it is worth
 
 `tests/test_sql_behaviour.py` runs its assertions against a real PostgreSQL. It is `skipif` on
-`PROCUREMENT_TEST_DSN`, so it **skips silently in a default local `pytest`** — the 24 skips in a
+`PROCUREMENT_TEST_DSN`, so it **skips silently in a default local `pytest`** — the 26 skips in a
 clean run are this file — and executes only in the `sql` job of `.github/workflows/ci.yml`, which
 greps the output and fails the job if the suite skipped rather than ran.
 

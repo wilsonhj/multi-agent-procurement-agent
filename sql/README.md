@@ -25,7 +25,7 @@ gets the dependency order right automatically:
 
 | File | Contents | Depends on |
 |---|---|---|
-| `00_roles.sql` | `procurement_owner`, `audit_owner` (both NOLOGIN), `procurement_app` and `procurement_ingest` (LOGIN, non-superuser); unconditional attribute re-assertion | — |
+| `00_roles.sql` | `procurement_owner`, `audit_owner` (both NOLOGIN), `procurement_app` and `procurement_ingest` (LOGIN, non-superuser); unconditional attribute re-assertion; the `schema_migration` ledger and `schema_migration_status()` (no RLS — see below) | — |
 | `01_extensions_and_settings.sql` | `vector`, `pg_trgm`; `audit` schema; `hnsw.iterative_scan = relaxed_order` | `00_roles.sql` |
 | `02_document.sql` | `document` + RLS | `00`, `01` |
 | `03_chunk.sql` | `chunk` + RLS + tsvector/trgm indexes | `01`, `02` |
@@ -41,16 +41,39 @@ carrying a `document_id` keys on, and `05_conflict.sql` defines
 `public.conflict_is_restricted(text)` for the two tables that do not have one.
 Both are `SECURITY DEFINER`; decision 10 below says why.
 
-Apply with, e.g.:
+Apply with the ledger-aware loop below. The end of `00_roles.sql` creates
+`public.schema_migration` and `schema_migration_status()`; the loop asks that
+function before every file, skips a file already applied with the same bytes,
+**fails** on a file applied with different bytes, and records each file after
+applying it. On a fresh database the function does not exist until `00` has
+run, so `00` applies unguarded and is recorded the moment it finishes - the
+bootstrap exception, and the only one. Verified end to end on 2026-09-02: a
+fresh database applies nine and records nine; a second run skips nine; a
+recorded hash that no longer matches the file stops the loop by name.
 
 ```sh
 for f in sql/0*.sql; do
+  name=$(basename "$f"); sum=$(sha256sum "$f" | cut -c1-64)
+  if psql -tA "$DATABASE_URL" -c \
+       "SELECT to_regprocedure('public.schema_migration_status(text,bytea)') IS NOT NULL" \
+     | grep -qx t; then
+    state=$(psql -tA -v ON_ERROR_STOP=1 "$DATABASE_URL" -c \
+       "SELECT public.schema_migration_status('$name', '\\x$sum'::bytea)") || exit 1
+    [ "$state" = skip ] && continue
+  fi
   psql -v ON_ERROR_STOP=1 -f "$f" "$DATABASE_URL"
+  psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c \
+    "INSERT INTO public.schema_migration (filename, sha256) VALUES ('$name', '\\x$sum'::bytea)"
 done
 ```
 
 `ON_ERROR_STOP=1` matters: without it, `psql` keeps going past a failed
-statement and a broken migration can look like it "applied."
+statement and a broken migration can look like it "applied." The ledger is
+what makes the *next* change survivable: three are already owed (D-13's edits
+to `07`, D-16's resolution column on `04`), and without it nothing could say
+which files a live database had applied. It does not turn this directory into
+a migration tool - files are still forward-only and still unguarded - it
+records what happened.
 
 **Who runs this.** Every file assumes it executes as a bootstrap identity with
 enough privilege to `CREATE ROLE`, `CREATE EXTENSION`, `ALTER DATABASE`, and
@@ -356,6 +379,11 @@ follows is what a live run on 16 and 17 still could not reach.
   directory still looked correct. Nothing in DDL can check this; it is a
   deployment property, and it is the single most important thing to get right
   when wiring the application up.
+- **`schema_migration` has no RLS**, deliberately, and no grant to any application
+  role. It holds which `sql/` files were applied and their bytes — no document
+  content — so it is outside the seven-table obligation, and a role that could
+  read or rewrite it could hide an unapplied file. Added 2026-09-02 (design
+  review, proposal 1); the apply loop above is the only intended caller.
 - **`conflict_candidate` has no RLS**, deliberately. A policy on it calling
   `conflict_is_restricted` — which reads it — is a genuine infinite recursion,
   which PostgreSQL rejects at query time rather than at `CREATE POLICY`. The

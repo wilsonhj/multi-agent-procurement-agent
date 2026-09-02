@@ -1,21 +1,21 @@
 # ADR-001 — Cross-repo pattern adoption: avalanche and predict-rlm
 
-**Status:** Proposed · **Date:** 2026-08-06 · **CI:** not run on this branch (zero Actions
-runs, empty status-check rollup) — a docs-only diff, but not a green build
+**Status:** Ratified 2026-09-02 on the maintainer's instruction · **Date:** 2026-08-06 ·
+**Rank:** below `plan.md`, above `tasks.md` — by its own text ("nothing here amends" the plan's
+Decisions 1–10; ADRs record decisions made after the plan froze), now written into both
+statements of specification authority ([README](../../README.md#specification-authority),
+[architecture.md](../architecture.md#specification-authority)).
 
-> **Still `Proposed`, and that is now load-bearing rather than pending paperwork
-> (noted 2026-09-02).** [phase-1-execution.md](../../specs/001-procurement-agent/phase-1-execution.md)
-> Track 4 is scheduled to *implement* Decision 2 — "a capability-declaring conformance matrix
-> plus one in-memory reference adapter per port" — and assigns it to Team 4. A track cannot
-> implement a proposal. Either the ADR is ratified, or Track 4 is building against a document
-> nobody has agreed to. **Nothing else in the repository cites this file**: it is not in the
-> README's map, not in either statement of specification authority, and not referenced from
-> `current-state.md`, `architecture.md` or `tasks.md`. That is a governance gap for a maintainer
-> to close, not an editorial one, so it is recorded here rather than resolved.
+> **History of this line (kept because it was load-bearing).** The ADR sat at `Proposed` for
+> four weeks while `phase-1-execution.md` Track 4 was assigned to *implement* its Decision 2,
+> and nothing outside that plan cited it — not the README's map, not either authority list
+> (A-68). A track cannot implement a proposal. Ratification and ranking were put to the
+> maintainer on 2026-09-02 and confirmed the same day; the four-week gap is the finding, and it
+> closed here rather than by editing the date above.
 >
-> Its **Context** section is also dated: it describes D-13 as "proposed and not ratified", which
-> was true on 2026-08-06 and stopped being true the next day — D-13, D-14 and D-15 were all
-> adopted on 2026-08-07. The corrected sentence is marked inline below.
+> The **Context** section below is dated: it describes D-13 as "proposed and not ratified",
+> which was true on 2026-08-06 and stopped being true the next day. The corrected sentence is
+> marked inline.
 
 This is the first ADR, so the relationship to the existing record needs stating once.
 [plan.md](../../specs/001-procurement-agent/plan.md) Decisions 1–10 remain the architectural
@@ -47,7 +47,7 @@ The gaps, verified against the working tree:
   container health check, a different concern). No module in `src/` imports `logging`.
 - **Ports with no adapters and no tests.** The six port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
-  at all (`docs/current-state.md:407`). `docs/development.md:157-163` records the hazard in
+  at all (`docs/current-state.md:417`). `docs/development.md:157-163` records the hazard in
   its own words: no adapter layout convention exists, so the first adapter "decides the
   layout for everyone after it".
 - **Observability is the emptiest quadrant.** The audit DDL is live-tested — six chain
@@ -122,9 +122,9 @@ is the conformance matrix.
 This directly answers the recorded hazard that the first adapter "decides the layout for
 everyone after it" (`docs/development.md:157-163`): the contract suite exists *before* the
 first adapter, so the adapter conforms to the tests rather than the tests to the adapter.
-It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:407`
+It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:417`
 names as a good first contribution, and it converts AC-8's `declared` status
-(`docs/current-state.md:216`) into something an adapter can be held to.
+(`docs/current-state.md:226`) into something an adapter can be held to.
 
 ### 3 — Producer-side bounding and explicit timeouts
 

@@ -8,17 +8,16 @@ Items 8-10 existed here for one day (2026-09-02): three defects reproduced
 against the running code whose fix needed a contract choice. They were adopted
 as [D-16, D-17 and D-18](clarifications.md) and deleted, per the rule above.
 
-> ⚠️ **"Nothing here is adopted" is no longer true of item 1, and the entry was
-> not deleted (noted 2026-09-02).** `services/conflict_hitl/severity.py` implements
-> item 1's lookup - its module docstring cites "open-decisions.md section 1" as its
-> specification, `CRITICALITY` is the table below row for row, and
-> `tests/test_severity.py` parses the frozen contract and fails on any key in
-> either that is missing from the other. Item 7 shows the intended end state: it
-> carries a **RATIFIED** block and stays for the record. Items 1 and 2 have neither
-> been ratified in writing nor folded into `clarifications.md`, so the code is
-> ahead of the decision record - the same shape as C7, where `sql/` enforced the
-> label model months before D-15 wrote it down. A maintainer should ratify or
-> retire them; this note does not do it for them.
+> **Item 1 is ratified (2026-09-02); item 2 is not, and says why.**
+> `services/conflict_hitl/severity.py` implements item 1's lookup - its module
+> docstring cites "open-decisions.md section 1" as its specification,
+> `CRITICALITY` is the table below row for row, and `tests/test_severity.py`
+> parses the frozen contract and fails on any key in either that is missing from
+> the other. The code was ahead of the decision record for weeks - the same
+> shape as C7, where `sql/` enforced the label model months before D-15 wrote
+> it down - and the maintainer ratified it on instruction; see the block at the
+> foot of item 1. Item 2 stays open on the merits, not by neglect: nothing
+> implements it and one of its premises is now contested (see its own note).
 
 Sourcing caveat: egress returned HTTP 403 for standards bodies, `ecfr.gov`, CEC
 and manufacturer domains throughout, so **no standard, regulation or datasheet
@@ -72,9 +71,30 @@ Not derived from source-tier pair alone (record-vs-web on a UL 9540A listing
 beats inter-document on module weight) and not from magnitude alone (the RPN
 error). Keep severity separate from queue priority, which folds in age and SLA.
 
+> **RATIFIED 2026-09-02** by the maintainer, on instruction, as implemented:
+> `severity.py`'s `CRITICALITY` lookup, the four bounded modifiers, the Tier A
+> and certification floors, and the purity invariant, all pinned by
+> `tests/test_severity.py` - including `EXPECTED_CRITICALITY`, which restates
+> the 124 rows independently of the module so that a change to either is a red
+> suite. The entry stays for the record, as item 7 does. The one open thread it
+> leaves is the design review's suggestion to add a table-level test that no
+> Tier A key is filed below HIGH in `CRITICALITY`, so drift is a red suite rather
+> than a silently-floored value; that is a test, not a decision.
+
 ---
 
 ## 2. Condition defaulting — resolve before grouping
+
+> **Deliberately left open on 2026-09-02, when item 1 was ratified.** Nothing
+> implements `resolve_condition`: there is no extraction, so there is nothing to
+> default at extraction time - this is WP-B's, and it cannot be ratified as
+> implemented the way item 1 was. It also rests on `Condition.derived` as the
+> place to record what was filled in, and the 2026-09-02 design review proposed
+> deleting `derived` outright because nothing populates it and it is in no
+> contract. Ratifying this item would settle that question by implication;
+> retiring it would discard the per-row safe/never-default analysis below, which
+> is the part WP-B needs. So it stays as a proposal, to be decided together
+> with `derived`'s fate when WP-B starts.
 
 **Confidence: reasoned; per-row below.**
 

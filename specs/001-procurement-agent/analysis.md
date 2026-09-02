@@ -1014,9 +1014,9 @@ having produced leftovers twice, and which A-41 and A-46 each register a prior i
 | A-65 | **L** | **`docs/development.md` said "there is no `tests/fixtures/` directory - the existing tests build their inputs inline".** It has existed since `9ced3af`: two claim fixtures, one conflict fixture, a README, and a 220-line suite that compares them byte for byte. Four other documents cite the directory correctly | **Fixed** |
 | A-66 | **M** | **`tests/fixtures/README.md` said "the canonical projection format is unfrozen - that is T0.5".** D-14 froze it on 2026-08-07 and `tasks.md` T0.5 says in as many words that "that gate has now lifted". The fixture README is the document a contributor reads *before adding a fixture*, so it was the worst single place for this to be stale | **Fixed** — the absence is kept, its reason replaced: the projection function is missing, not the decision |
 | A-67 | **M** | **The Q-1 collapse survived in three places after the decision that corrected it.** `clarifications.md:952` states that an earlier summary "wrongly collapsed them into 'either yes → `restricted_group`'" and gives three outcomes; `tasks.md:28`, `tasks.md:84` and `sql/README.md:472` still carried the two-outcome version, because the ratifying commit edited the two files it named | **Fixed** — all three now carry D-15's branching, including the per-person deny-list |
-| A-68 | **M** | **ADR-001 is orphaned, stale and load-bearing at once.** Still `Status: Proposed`, while `phase-1-execution.md` Track 4 is assigned to *implement* its Decision 2; its Context describes D-13 as "proposed and not ratified", true for one day; and **nothing outside `phase-1-execution.md` cites it** - not the README's repo map, not either statement of specification authority, not `current-state.md` or `architecture.md`. Both authority lists omit `docs/decisions/` entirely, so the ADR has no rank | **Partly fixed** — the stale D-13 line corrected, the file added to the README map, and both authority lists now say the gap is open and quote the ADR placing itself below `plan.md`. **Ratifying it and ranking it are a maintainer's call** and remain open |
+| A-68 | **M** | **ADR-001 is orphaned, stale and load-bearing at once.** Still `Status: Proposed`, while `phase-1-execution.md` Track 4 is assigned to *implement* its Decision 2; its Context describes D-13 as "proposed and not ratified", true for one day; and **nothing outside `phase-1-execution.md` cites it** - not the README's repo map, not either statement of specification authority, not `current-state.md` or `architecture.md`. Both authority lists omit `docs/decisions/` entirely, so the ADR has no rank | **Fixed** — the stale D-13 line corrected, the file added to the README map, and on 2026-09-02 the maintainer ratified the ADR and confirmed its rank: below `plan.md`, above `tasks.md`, now rank 5 in both statements of specification authority |
 | A-69 | **M** | **`tasks.md` used a third status vocabulary and left landed work unmarked.** Its acceptance table read `passing` / `partial` / `☐` and disagreed with both status documents on four of eight rows (AC-2 `passing` where the guard is unit-level; AC-5, AC-7, AC-8 `☐` against live-tested store defences). T0.1-T0.3 carried no completion marker though their verify criteria are met, T0.6 none though it is half delivered, and no Phase 1 bullet carries a status, so shipped work - C.7, C.8, E.1-E.4, H.1, H.6 - reads as outstanding. It also never referenced `phase-1-execution.md`, the plan that re-cut its own Phase 1 | **Fixed** — acceptance table moved onto the traceability vocabulary with a "where it stands" column, Phase 0 tasks marked, a landed-work table added at the head of Phase 1, and the execution plan linked from the header |
-| A-70 | **L** | **`open-decisions.md` opens "Nothing here is adopted" while item 1 is implemented.** `severity.py` cites "open-decisions.md section 1" as its specification and `CRITICALITY` is that table row for row, tested bidirectionally against the frozen contract. Item 7 shows the intended end state - a **RATIFIED** block, entry retained. Items 1 and 2 have neither been ratified in writing nor folded into `clarifications.md` | **Flagged, not fixed** — ratifying or retiring them is a maintainer's call; the header now says the code is ahead of the decision record, which is the same shape as C7 before D-15 |
+| A-70 | **L** | **`open-decisions.md` opens "Nothing here is adopted" while item 1 is implemented.** `severity.py` cites "open-decisions.md section 1" as its specification and `CRITICALITY` is that table row for row, tested bidirectionally against the frozen contract. Item 7 shows the intended end state - a **RATIFIED** block, entry retained. Items 1 and 2 have neither been ratified in writing nor folded into `clarifications.md` | **Fixed for item 1, decided for item 2** — on 2026-09-02 the maintainer ratified item 1 as implemented (a RATIFIED block, as item 7 has); item 2 is deliberately left open, because nothing implements it and its `Condition.derived` premise is contested by the same review, and its own note now says so |
 
 ## What Round 8 checked and found correct
 
@@ -1033,6 +1033,34 @@ Recorded because a documentation audit that lists only defects overstates the ro
   live-verified SQL half and no Python half.
 - `README.md`, `CONTRIBUTING.md`, `architecture.md` and `requirements-traceability.md` carried
   **no stale status claim** that this pass could find.
+
+## Design-review proposals taken (2026-09-02)
+
+The three architecture analysts that ran alongside Round 7 produced eight ranked proposals
+(reported in the session, not registered here as findings, because they are suggestions rather
+than defects). Three were taken the same day on the maintainer's instruction and are recorded
+where they landed:
+
+- **RESOLVED derived, not stored** - [D-18](clarifications.md), adopted in full; A-56 above.
+- **A migration ledger** - `public.schema_migration` and `schema_migration_status()` at the end
+  of `sql/00_roles.sql`, with the ledger-aware apply loop in `sql/README.md`. Verified against a
+  live PostgreSQL 16 with pgvector: a fresh database applies nine and records nine, a second run
+  skips nine, and a recorded hash that no longer matches the file stops the loop by name
+  (`test_the_ledger_names_a_file_edited_after_it_was_applied`,
+  `test_the_application_roles_cannot_touch_the_ledger`,
+  `test_the_migration_ledger_holds_no_content_and_grants_the_app_roles_nothing`). The ledger is
+  what makes the next `sql/` change survivable; three are already owed (D-13's edits to `07`,
+  D-16's resolution column on `04`).
+- **`orchestrator.Stage` bound to `sql/08`'s stage CHECK** in both directions
+  (`test_the_job_stage_check_is_the_orchestrators_stage_vocabulary`) - two encodings of one
+  vocabulary with nothing watching, the shape that cost this repository a shipped defect twice.
+
+The remaining five - the canonical projection before more xlsx tests, deleting
+`takes_a_write_handle` for an import-graph test, routing the five remaining enum-`repr` sort
+paths through `encode_value()`, deleting `Condition.derived`, and collapsing the thirteen
+`procurement_ingest` policies - stand as proposals. The last two interact with
+`open-decisions.md` item 2 and with `test_the_read_back_policies_are_scoped_to_the_write_role`
+respectively, and each says so where it is recorded.
 
 ## Consistency checks that passed
 

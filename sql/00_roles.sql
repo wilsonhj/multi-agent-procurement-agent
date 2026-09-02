@@ -259,3 +259,75 @@ BEGIN
     END LOOP;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- The migration ledger (design review 2026-09-02, proposal 1).
+--
+-- sql/ is a numbered, forward-only file set applied in lexical order, with no
+-- version tracking: re-running 02-08 against a database that already has the
+-- tables fails loudly with "relation already exists", by design (README,
+-- "not a migration tool"). The cost arrives with the first schema change, and
+-- three are already owed -- D-13's edits to 07 and D-16's resolution column on
+-- 04: nothing can answer "which files has this database applied?". Add a
+-- 09_*.sql and fresh and live databases diverge in statement order; edit 07 in
+-- place and CI, which applies the files to an empty container, tests a schema
+-- no live database has. Neither failure is visible to test_sql_schema.py (it
+-- reads the files) or test_sql_behaviour.py (it applies them fresh).
+--
+-- This table is the one fact the scheme could not state, and the function is
+-- the only check that turns "someone edited a file after it was applied" from
+-- silent divergence into a named error. It does NOT reintroduce the
+-- IF-NOT-EXISTS-everywhere pattern the README rejects: a file is still
+-- unguarded, and re-running an unrecorded one still fails loudly. This table
+-- is itself IF NOT EXISTS -- the one legitimate exception, because it has to
+-- exist before it can record anything. It lives at the end of 00 rather than
+-- in 01 so that the only file applied before it exists is this one, and this
+-- one can be recorded the moment it finishes.
+--
+-- Holds no document content, so it is outside the FORCE ROW LEVEL SECURITY
+-- obligation the seven content tables carry (README attack matrix). The
+-- application roles get nothing on it: applying migrations is the bootstrap
+-- identity's job, and a role that could rewrite the ledger could hide an
+-- unapplied file.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS public.schema_migration (
+    filename    text PRIMARY KEY,
+    sha256      bytea NOT NULL CHECK (octet_length(sha256) = 32),
+    applied_at  timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.schema_migration OWNER TO procurement_owner;
+
+COMMENT ON TABLE public.schema_migration IS
+    'Which sql/ files this database has applied, and the bytes they had. '
+    'Consulted by the apply loop in sql/README.md before every file: a file '
+    'recorded with the same hash is skipped, one recorded with a different '
+    'hash raises, one not recorded is applied and then recorded.';
+
+-- What the apply loop asks before each file. Returns 'apply' or 'skip';
+-- raises when the file on disk is not the file that was applied. SECURITY
+-- INVOKER on purpose: the caller is the bootstrap identity.
+CREATE OR REPLACE FUNCTION public.schema_migration_status(p_filename text, p_sha256 bytea)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    recorded bytea;
+BEGIN
+    SELECT sha256 INTO recorded FROM public.schema_migration WHERE filename = p_filename;
+    IF NOT FOUND THEN
+        RETURN 'apply';
+    END IF;
+    IF recorded = p_sha256 THEN
+        RETURN 'skip';
+    END IF;
+    RAISE EXCEPTION 'sql/% was applied with sha256 % but the file on disk is now %; '
+                    'a file edited after it was applied is the divergence this ledger '
+                    'exists to name (see sql/README.md)',
+        p_filename, encode(recorded, 'hex'), encode(p_sha256, 'hex')
+        USING ERRCODE = 'integrity_constraint_violation';
+END
+$$;
+
+ALTER FUNCTION public.schema_migration_status(text, bytea) OWNER TO procurement_owner;

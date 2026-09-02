@@ -9,12 +9,13 @@ substrate landed, and the contract section was rewritten again when D-13, D-14 a
 adopted on 2026-08-07. It answers the practical question a new contributor has first: what can
 the repository do today?
 
-The local verification baseline is 524 passing tests and 24 skipped, a clean Ruff check, a clean
+The local verification baseline is 526 passing tests and 26 skipped, a clean Ruff check, a clean
 `ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
-24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
+26 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
 disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
 was 229 passing when this audit was first written, then 470, then 481 before the implementation
-review added 19 and the three decisions it forced added 24 more.
+review added 19, the three decisions it forced added 24 more, and the two design-review
+proposals taken on 2026-09-02 added 2 (one of them live-only).
 
 > **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
 > C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
@@ -39,6 +40,13 @@ review added 19 and the three decisions it forced added 24 more.
 > - **D-18 (was A-56).** RESOLVED is now derived from `resolution` rather than stored, so a
 >   resolved field with no decision has no representation; five pydantic overrides are gone and
 >   the wire shape is unchanged. Adopted in full on the maintainer's instruction.
+>
+> Two of the design review's eight proposals were also taken the same day, on the same
+> instruction: the **migration ledger** (`schema_migration` plus the ledger-aware apply loop in
+> `sql/README.md`, verified end to end against a live server - nine applied, nine skipped, a
+> tampered file stops the loop by name) and a test **binding `orchestrator.Stage` to the job
+> table's CHECK** in both directions. ADR-001 was ratified and ranked, and `open-decisions.md`
+> item 1 ratified as implemented; item 2 is deliberately left open, and says why.
 >
 > **No status word in this document moved because of it.** Nothing new is implemented end to
 > end and nothing was withdrawn; the counts below are unchanged.
@@ -142,7 +150,9 @@ enum, which is a different thing from the helper that returns it.
 ### Database schema
 
 Nine numbered DDL files in `sql/` create `document`, `chunk`, `claim`, `conflict`,
-`conflict_candidate`, `resolution`, `job` and `audit.event`. They carry
+`conflict_candidate`, `resolution`, `job`, `audit.event` and - since 2026-09-02 - the
+`schema_migration` ledger, which records which files a database has applied and with what
+bytes, so a file edited after it was applied is a named error rather than silent divergence. They carry
 `FORCE ROW LEVEL SECURITY` on the seven tables that hold document content, owner/application
 privilege separation across four roles, append-only triggers on `claim`, `resolution` and
 `audit.event`, and `audit.event`'s per-document hash chain with its fork, parent-exists and
@@ -153,7 +163,7 @@ Two suites cover them, and the split is the point. `tests/test_sql_schema.py` as
 descends from against a real PostgreSQL — a role declassifying rows it cannot read, a chunk not
 inheriting its document's restriction, a `TRUNCATE` taking the decision log with it, a chain that
 was constrained but not walkable — and the `sql` job in `.github/workflows/ci.yml` supplies one
-from a `pgvector/pgvector` container. Those are the 24 tests that skip locally.
+from a `pgvector/pgvector` container. Those are the 26 tests that skip locally.
 
 ## Declared but not operational
 

@@ -29,18 +29,35 @@ from collections.abc import Callable, Iterable, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...schema import (
     CanonicalField,
     Condition,
     ConflictCandidate,
     ConflictStatus,
+    Resolution,
+    ResolutionAction,
     SourceRef,
     SourceTier,
     render_value,
 )
 from ..conflict_hitl import assert_no_autonomous_overwrite
+
+#: The `extractor_version` prefix that marks a reviewer's decision recorded as a
+#: claim (D-16). `sql/06_resolution.sql` proposes `human:<resolved_by>`; the
+#: validator on `FieldClaim` is what makes the convention real.
+HUMAN_PREFIX = "human:"
+
+#: The resolution actions that assert a value and so may be recorded as a claim.
+#: DEFER and REQUEST_MORE_WEB_SEARCH are events against the conflict, not values.
+SETTLING_ACTIONS: frozenset[ResolutionAction] = frozenset(
+    {
+        ResolutionAction.SELECT_VALUE,
+        ResolutionAction.ENTER_OVERRIDE,
+        ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+    }
+)
 
 
 class FieldClaim(BaseModel):
@@ -79,6 +96,68 @@ class FieldClaim(BaseModel):
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
+    resolution: Resolution | None = Field(
+        default=None,
+        description=(
+            "Present on a **human claim** and on nothing else (D-16). A reviewer's "
+            "SELECT_VALUE, ENTER_OVERRIDE or KEEP_SYSTEM_OF_RECORD decision is "
+            "recorded as a claim carrying its Resolution, so the reducer sees a "
+            "human decision as the highest-priority claim rather than reading the "
+            "resolution table - which keeps 'the canonical value is a projection "
+            "over claims' (C8) true for human overrides too. sql/06 recommends "
+            "exactly this convention and says it cannot enforce it; this validator "
+            "is the enforcement."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _human_claims_carry_their_decision(self) -> FieldClaim:
+        """The D-16 convention, in both directions.
+
+        A claim whose `extractor_version` starts with `human:` is a reviewer's
+        decision and must carry the `Resolution` that produced it; a claim
+        carrying a `Resolution` must be marked as human. One without the other is
+        a decision with nobody behind it, or a person's name on a machine value.
+
+        Only value-asserting actions may be claims. DEFER and
+        REQUEST_MORE_WEB_SEARCH assert nothing about the world - they are events
+        against the *conflict*, recorded in `resolution` and `audit.event`, and a
+        claim for one would put a non-value in the value store.
+
+        `value_after`, when the reviewer recorded one, must be the claim's value:
+        a decision recorded against one number and a claim asserting another is
+        the drift this whole module exists to make impossible.
+        """
+        is_human = self.extractor_version.startswith(HUMAN_PREFIX)
+        if is_human and self.resolution is None:
+            raise ValueError(
+                f"a human claim ({self.extractor_version!r}) must carry its Resolution; a "
+                "reviewer's value with no recorded decision is a decision with nobody "
+                "behind it (FR-HITL-06)"
+            )
+        if self.resolution is not None:
+            if not is_human:
+                raise ValueError(
+                    f"a claim carrying a Resolution must be a human claim: extractor_version "
+                    f"{self.extractor_version!r} does not start with {HUMAN_PREFIX!r}"
+                )
+            if self.resolution.action not in SETTLING_ACTIONS:
+                raise ValueError(
+                    f"{self.resolution.action.value} asserts no value and cannot be a claim; "
+                    "it is recorded against the conflict, not in the value store (D-16)"
+                )
+            recorded = self.resolution.value_after
+            if recorded is not None and recorded != self.value:
+                raise ValueError(
+                    "the Resolution's value_after must be the claim's value: "
+                    f"{self.resolution.value_after!r} != {self.value!r}"
+                )
+        return self
+
+    @property
+    def is_human(self) -> bool:
+        """Whether this claim records a reviewer's decision (D-16)."""
+        return self.resolution is not None
 
     def claim_key(self) -> tuple[object, ...]:
         """The uniqueness key. Two claims sharing it are the same assertion.
@@ -86,13 +165,21 @@ class FieldClaim(BaseModel):
         `condition.grouping_key()` is in it because without it the Sungrow trio -
         one document, one field, one extractor version, three ambients - is
         indistinguishable from an extractor emitting three answers for one field.
+
+        A human claim's key also carries `resolved_at`: one reviewer may settle
+        the same field twice - a reopened conflict records a *new* decision, it
+        does not rewrite the old one - and without the timestamp the second
+        decision would collide with the first as "one extractor, two answers".
         """
-        return (
+        key: tuple[object, ...] = (
             self.document_id,
             self.field_name,
             self.extractor_version,
             self.condition.grouping_key(),
         )
+        if self.resolution is not None:
+            key = (*key, self.resolution.resolved_at)
+        return key
 
     def provenance(self) -> SourceRef:
         """This claim's `source_ref` with contract C3's fourth element stamped on.
@@ -223,6 +310,7 @@ def _identity(claim: FieldClaim) -> tuple[str, ...]:
         claim.source_tier.value,
         repr(claim.source_ref.model_dump(mode="json")),
         repr(claim.confidence),
+        "" if claim.resolution is None else repr(claim.resolution.model_dump(mode="json")),
     )
 
 
@@ -271,6 +359,14 @@ def _status_for(group: Sequence[FieldClaim]) -> ConflictStatus:
     pair as agreement, which is the unit conflict FR-ING-08 says tolerance may
     never absorb.
     """
+    if any(claim.is_human for claim in group):
+        # D-16: a reviewer's decision settles the group. A later extraction that
+        # disagrees does not reopen it - reopening is a human action
+        # (REQUEST_MORE_WEB_SEARCH, capped by task F.3), not a side effect of
+        # re-running an extractor. Before this branch existed a human claim was
+        # one more distinct answer, so recording a decision reopened the
+        # conflict permanently (A-51).
+        return ConflictStatus.RESOLVED
     answers = {_asserted(claim) for claim in group}
     return ConflictStatus.OPEN if len(answers) > 1 else ConflictStatus.NONE
 
@@ -287,10 +383,19 @@ def _preferred(group: Sequence[FieldClaim]) -> FieldClaim:
     This does not arbitrate a genuine disagreement: `_status_for` has already
     marked the group OPEN, so a human still decides. It only picks what to show
     beside the conflict.
+
+    **A human claim outranks everything, and the latest human claim outranks an
+    earlier one** (D-16). The decision is the reviewer's, so its tier and
+    confidence are irrelevant; and a reopened conflict records a new decision,
+    so `resolved_at` - stored data, not the clock - orders two decisions by the
+    same person. Before this term existed a human claim competed on confidence
+    with the machine claims it was meant to settle (A-51).
     """
     return sorted(
         group,
         key=lambda c: (
+            c.resolution is None,
+            None if c.resolution is None else -c.resolution.resolved_at.timestamp(),
             c.source_tier is not SourceTier.SYSTEM_OF_RECORD,
             c.value is None,
             -c.confidence,
@@ -349,6 +454,12 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
                 source_ref=chosen.provenance(),
                 confidence=chosen.confidence,
                 conflict_status=_status_for(group),
+                # D-16: the stored field carries the decision that settled it.
+                # `_status_for` returns RESOLVED exactly when a human claim is
+                # in the group, and `_preferred` puts that claim first, so the
+                # two cannot disagree: a RESOLVED field always has its
+                # Resolution and a field with a Resolution is always RESOLVED.
+                resolution=chosen.resolution,
             )
         )
     return projected

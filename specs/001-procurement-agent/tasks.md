@@ -102,10 +102,10 @@ projection. C2 and C7 are the two still open, and they are where the week is bes
 - **T0.3** ~~Define the per-field tolerance table from D-2 as data, not code~~ → **done.**
   `FIELD_TOLERANCES` in `services/conflict_hitl/tolerance.py` is a dict of `FieldTolerance` rows
   keyed on the frozen contract's own keys, and `test_values_conflict.py` is table-driven against
-  it — including `test_every_tolerance_key_is_a_contract_key`. ⚠️ **One gap the criterion did not
-  ask about:** the contract's 18 `list[str]` keys have **no row at all** and fall to
-  `DEFAULT_TOLERANCE`, which compares lists with order-sensitive `==`. That is
-  [A-53](analysis.md) and needs a D-2 amendment ([open-decisions.md #9](open-decisions.md)).
+  it — including `test_every_tolerance_key_is_a_contract_key`. One gap the criterion did not ask
+  about — the contract's `list[str]` keys had no row and fell to an order-sensitive `==` — was
+  [A-53](analysis.md), closed by [D-17](clarifications.md) (`SET_EQUAL`, a row per list key,
+  pinned bidirectionally by `test_every_list_field_in_the_contract_has_a_set_rule`).
 - **T0.4** ~~Decide the ACL/labelling model (C7)~~ → **written as [D-15](clarifications.md), provisionally adopted 2026-08-07.** The verify criterion is met; the model is contingent on two outstanding facts recorded in that decision.
 - **T0.5** ~~Freeze the canonical workbook projection format (C6)~~ → **frozen as [D-14](clarifications.md), adopted 2026-08-07.** ⚠️ The verify criterion is **not** met: no golden JSON fixture exists yet. `tests/fixtures/` deliberately shipped none until ratification; that gate has now lifted.
 - **T0.6** Publish fixture sets for every contract (see below). → **partial.** `tests/fixtures/`
@@ -285,8 +285,10 @@ All nine run concurrently once Phase 0 lands.
   (plan Decision 8b). → verify: greyscale separation and WCAG AA contrast.
 - **G.5** Deterministic render — `ExcelWriter` direct (bypassing `save_workbook`, which re-stamps
   `modified = now()` *after* you set it), zip normalisation at epoch 1980-01-01 **12:00**.
-  → ⚠️ `ZipFile(compresslevel=)` is **silently ignored** with a hand-built `ZipInfo`; set
-  `zi._compresslevel`. → verify: **AC-7**, with `sleep(1.1)` between the two runs.
+  → ⚠️ `ZipFile(compresslevel=)` is **silently ignored** with a hand-built `ZipInfo`; pass
+  `writestr(..., compresslevel=)`, which is honoured. (This bullet said "set `zi._compresslevel`"
+  until 2026-09-02; that private attribute is renamed in Python 3.13 — [A-58](analysis.md).)
+  → verify: **AC-7**, with `sleep(1.1)` between the two runs.
 - **G.6** ⚠️ **GATING: open the generated workbook in real desktop Excel and LibreOffice.** The
   determinism recipe was validated only by openpyxl round-trip and OPC structural checks. Test
   `[Content_Types].xml`-first ordering and the 1980 timestamps before this ships. A verified

@@ -47,7 +47,7 @@ The gaps, verified against the working tree:
   container health check, a different concern). No module in `src/` imports `logging`.
 - **Ports with no adapters and no tests.** The six port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
-  at all (`docs/current-state.md:402`). `docs/development.md:157-163` records the hazard in
+  at all (`docs/current-state.md:406`). `docs/development.md:157-163` records the hazard in
   its own words: no adapter layout convention exists, so the first adapter "decides the
   layout for everyone after it".
 - **Observability is the emptiest quadrant.** The audit DDL is live-tested — six chain
@@ -122,9 +122,9 @@ is the conformance matrix.
 This directly answers the recorded hazard that the first adapter "decides the layout for
 everyone after it" (`docs/development.md:157-163`): the contract suite exists *before* the
 first adapter, so the adapter conforms to the tests rather than the tests to the adapter.
-It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:402`
+It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:406`
 names as a good first contribution, and it converts AC-8's `declared` status
-(`docs/current-state.md:211`) into something an adapter can be held to.
+(`docs/current-state.md:215`) into something an adapter can be held to.
 
 ### 3 — Producer-side bounding and explicit timeouts
 
@@ -184,7 +184,7 @@ the point of sequencing it here rather than building it speculatively.
 The substrate is ready: `extractor_version` already gives prompt identity coexisting with
 the append-only store — it is part of the claim key, so a re-optimized prompt appends new
 claims beside the old rather than overwriting them
-(`src/procurement_agent/services/claims/__init__.py:60-64`). The prompts and the labels are
+(`src/procurement_agent/services/claims/__init__.py:77-81`). The prompts and the labels are
 what do not exist.
 
 Constraints any optimizer must respect, restated from decisions already on record:

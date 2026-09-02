@@ -312,6 +312,37 @@ UNWIRED_TOLERANCE_CONDITIONS: dict[ToleranceCondition, str] = {
 #: guessed band silently merges values where exactness merely raises a reviewable
 #: conflict. D-2 gives no default; this is the safe direction, recorded here
 #: rather than buried in the comparison.
+def _set_equal(basis: str) -> FieldTolerance:
+    return FieldTolerance(rule=ToleranceRule.SET_EQUAL, basis=basis)
+
+
+#: D-17. Every `list[str]` key in the frozen contract - 14 distinct keys across
+#: 18 rows, several shared between categories - compared as a set of normalised
+#: elements. Before these rows existed they fell to `DEFAULT_TOLERANCE`'s
+#: order-sensitive `==`, and `certifications` carries base severity CRITICAL,
+#: so a reordered list refused the workbook (A-53). Kept as a separate mapping
+#: and merged below so `test_every_list_field_has_a_set_rule` can name the set.
+LIST_FIELD_TOLERANCES: dict[str, FieldTolerance] = {
+    key: _set_equal("Contract type list[str]; a list of attestations is a set (D-17). High [V]")
+    for key in (
+        "bess_integration",
+        "cell_certification",
+        "certifications",
+        "communication_protocols",
+        "cooling_classes",
+        "cybersecurity_standards",
+        "filtering_provisions",
+        "fire_safety_certifications",
+        "inverter_integration",
+        "pcs_certification",
+        "protocols",
+        "ride_through_standards",
+        "standards",
+        "ul_listing",
+    )
+}
+FIELD_TOLERANCES.update(LIST_FIELD_TOLERANCES)
+
 DEFAULT_TOLERANCE = _exact("Unassigned field - exact until D-2 gains a row. See tolerance.py")
 
 

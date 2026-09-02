@@ -475,8 +475,10 @@ timestamps are *local*, and midnight underflows the 1980 floor in negative UTC o
 with `[Content_Types].xml` forced first.
 
 Non-obvious and verified: **`ZipFile(compresslevel=N)` is silently ignored** when you pass a
-hand-built `ZipInfo` to `writestr()`. You must set `zi._compresslevel`. Anyone who thinks they
-pinned compression via the constructor has not.
+hand-built `ZipInfo` to `writestr()`. Pass `writestr(..., compresslevel=N)` instead, which is
+honoured. (Until 2026-09-02 this said "set `zi._compresslevel`"; that private attribute is
+renamed in Python 3.13 and the public keyword sets the same thing — [A-58](analysis.md).) Anyone
+who thinks they pinned compression via the constructor has not.
 
 Validation: 9 permutations of `PYTHONHASHSEED` × `TZ` produced **one unique hash**.
 

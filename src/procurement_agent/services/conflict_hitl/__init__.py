@@ -202,8 +202,16 @@ def assert_no_autonomous_overwrite(
     Web data may populate an empty field, but may never replace a value that
     came from an ingested contract or spec sheet. A disagreement between the two
     is queued for a human instead (FR-WEB-04).
+
+    **A human's decision is the one thing that may.** The rule is against
+    *autonomous* overwrite - the word is in the name - and a reviewer choosing
+    the web candidate in the queue is FR-HITL-04's SELECT_VALUE, the opposite of
+    autonomous. A field carrying a `Resolution` is that decision projected (D-16),
+    so it passes; a web value with no decision behind it still does not.
     """
     if existing is None or existing.value is None:
+        return
+    if incoming.resolution is not None:
         return
     if (
         existing.source_tier is SourceTier.SYSTEM_OF_RECORD
@@ -452,12 +460,27 @@ def values_conflict(
             "resolved by tolerance (FR-ING-08)",
         )
 
+    if tolerance.rule is ToleranceRule.SET_EQUAL:
+        return _compare_sets(a, b)
+
     number_a, number_b = as_number(a.value), as_number(b.value)
     if number_a is None or number_b is None:
         if isinstance(a.value, str) and isinstance(b.value, str):
             return _compare_text(a, b)
         if number_a is None and number_b is None and a.value == b.value:
             return ConflictVerdict(conflicts=False, reason="values are equal")
+        if _is_sequence(a.value) and _is_sequence(b.value):
+            # A list-valued field with no SET_EQUAL row: compared as written,
+            # which is order-sensitive, and the reason says so rather than
+            # calling two lists "not comparable" (A-53). The contract's
+            # `list[str]` keys all have a row; this is the path an off-contract
+            # key reaches.
+            return ConflictVerdict(
+                conflicts=True,
+                conflict_class=_classify(a, b),
+                reason=f"lists differ as written ({a.value!r} vs {b.value!r}); this field has "
+                "no SET_EQUAL tolerance row, so element order counts",
+            )
         return ConflictVerdict(
             conflicts=True,
             conflict_class=_classify(a, b),
@@ -465,6 +488,64 @@ def values_conflict(
         )
 
     return _compare_numbers(a, b, number_a, number_b, tolerance, band_a, band_b)
+
+
+def _is_sequence(value: object) -> bool:
+    return isinstance(value, list | tuple | set | frozenset)
+
+
+def _editions_by_base(values: object) -> dict[str, set[str | None]]:
+    """Each element split into `(standard, edition)` and grouped by standard."""
+    assert _is_sequence(values)
+    grouped: dict[str, set[str | None]] = {}
+    for element in values:  # type: ignore[attr-defined]
+        text = element if isinstance(element, str) else render_value(element)
+        base, year = _split_edition(text)
+        grouped.setdefault(base, set()).add(year)
+    return grouped
+
+
+def _compare_sets(a: ConflictCandidate, b: ConflictCandidate) -> ConflictVerdict:
+    """D-17: a `list[str]` field compared as a set of normalised elements.
+
+    Order is typography. Each element gets the same treatment a single string
+    does - `_normalise_text` and `_split_edition` - so a certification list is
+    compared standard by standard, and an edition difference on one standard is
+    a TEMPORAL conflict on that element rather than a set mismatch. Containment
+    is a conflict: for attestations, absence is the finding (FR-HITL-01), and
+    `{UL 1741}` against `{UL 1741, IEC 61215}` is one source claiming a
+    certification the other does not.
+    """
+    if not (_is_sequence(a.value) and _is_sequence(b.value)):
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=_classify(a, b),
+            reason=f"a SET_EQUAL field holds a non-list value ({a.value!r} vs {b.value!r}); "
+            "an extractor emitted a scalar where the contract types a list",
+        )
+    left, right = _editions_by_base(a.value), _editions_by_base(b.value)
+    only_left = sorted(set(left) - set(right))
+    only_right = sorted(set(right) - set(left))
+    if only_left or only_right:
+        return ConflictVerdict(
+            conflicts=True,
+            conflict_class=_classify(a, b),
+            reason=f"sets differ after normalisation (only in first: {only_left}; only in "
+            f"second: {only_right}); containment is a conflict, because for an "
+            "attestation absence is the finding",
+        )
+    for base in sorted(left):
+        years_a = {y for y in left[base] if y is not None}
+        years_b = {y for y in right[base] if y is not None}
+        if years_a and years_b and years_a != years_b:
+            return ConflictVerdict(
+                conflicts=True,
+                conflict_class=ConflictClass.TEMPORAL,
+                reason=f"same standards, different edition of {base!r} "
+                f"({sorted(years_a)} vs {sorted(years_b)}); an edition difference is a "
+                "temporal conflict, not a set mismatch",
+            )
+    return ConflictVerdict(conflicts=False, reason="sets match after normalisation")
 
 
 def _compare_text(a: ConflictCandidate, b: ConflictCandidate) -> ConflictVerdict:

@@ -284,3 +284,17 @@ def test_an_uncoercible_resolution_is_still_refused() -> None:
 
     with pytest.raises(ValueError, match="cannot be replaced"):
         field.resolution = not_a_resolution
+
+
+def test_shallow_copying_a_corrupt_field_raises_rather_than_duplicating_it() -> None:
+    """A-56. `copy.copy` was the route the inventory missed: pydantic implements
+    it by copying `__dict__` exactly as `__deepcopy__` does, so a poisoned field
+    shallow-copied into a collection carried the forbidden state across while
+    the deep copy of the same object refused it."""
+    with pytest.raises(ValueError, match="must carry its Resolution"):
+        copy.copy(_poisoned())
+
+
+def test_a_valid_field_still_survives_a_shallow_copy() -> None:
+    field = _resolved()
+    assert copy.copy(field) == field

@@ -194,6 +194,16 @@ class ToleranceRule(StrEnum):
     """Different physical quantities that share a field name in careless sources -
     inverter kVA against kW. Not a wide tolerance: not a comparison."""
 
+    SET_EQUAL = "set_equal"
+    """The contract's `list[str]` fields - certifications, standards, protocols
+    (D-17, amending D-2). A list of attestations is a *set*: the order a
+    datasheet prints them in is typography, and two sources listing identical
+    certifications in a different order were a CRITICAL conflict under the
+    order-sensitive fallback (A-53). Compared per element after the same text
+    normalisation single strings get, so `IEC 61215:2016` against `:2021` is a
+    TEMPORAL conflict on that element rather than a set mismatch. Containment is
+    a conflict, not a gap - absence is the finding for attestations."""
+
 
 class ToleranceCondition(StrEnum):
     """Discriminators for the D-2 rows that state two bands, not one.

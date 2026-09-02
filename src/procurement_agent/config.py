@@ -33,8 +33,12 @@ class Settings(BaseSettings):
     embedding_model: str | None = None
 
     database_url: str | None = None
+    # plan.md Decision 3: one PostgreSQL instance holds documents, claims, chunks
+    # and vectors. This is the migration trigger Decision 3 names (Qdrant above
+    # ~5M chunks), kept so the swap has a home; it is read by nothing today. An
+    # `object_store_url` sat beside it with no decision behind it anywhere in
+    # plan.md, architecture.md or sql/, and was removed on 2026-09-02.
     vector_store_url: str | None = None
-    object_store_url: str | None = None
     web_search_api_key: str | None = None
 
     # --- Review routing ---

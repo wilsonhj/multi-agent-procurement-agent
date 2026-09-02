@@ -1,20 +1,20 @@
 # Current state
 
-This audit describes the repository at `bf5ca07` on 2026-09-02 — branch
-`claude/repo-status-docs-verify-eyma9p`, which is `main` at `a119d19` plus the implementation
-review below. It was first written against `ee1503d`; the [database schema](#database-schema),
+This audit describes the repository at the head of branch
+`claude/repo-status-docs-verify-eyma9p` on 2026-09-02, which is `main` at `a119d19` plus the
+implementation review below and the three decisions it forced. It was first written against `ee1503d`; the [database schema](#database-schema),
 [persistence](#persistence), [security](#security) and
 [contract status](#contracts-are-only-partially-frozen) sections were rewritten when the Phase 0
 substrate landed, and the contract section was rewritten again when D-13, D-14 and D-15 were
 adopted on 2026-08-07. It answers the practical question a new contributor has first: what can
 the repository do today?
 
-The local verification baseline is 500 passing tests and 24 skipped, a clean Ruff check, a clean
+The local verification baseline is 523 passing tests and 24 skipped, a clean Ruff check, a clean
 `ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
 24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
 disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
 was 229 passing when this audit was first written, then 470, then 481 before the implementation
-review added 19.
+review added 19 and the three decisions it forced added 23 more.
 
 > **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
 > C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
@@ -25,21 +25,22 @@ review added 19.
 
 > **What the 2026-09-02 implementation review changed, and did not.** The first pass over `src/`
 > since the policy core landed found ten defects, all reproduced by running the code
-> ([analysis.md Round 7](../specs/001-procurement-agent/analysis.md)). **No status word in this
-> document moved because of it** — nothing was implemented and nothing was withdrawn — but two
-> claims below are now qualified rather than clean, and one of them is severe:
+> ([analysis.md Round 7](../specs/001-procurement-agent/analysis.md)). **All ten are now fixed.**
+> Seven were patches; three needed a contract choice and were adopted the same day, on the
+> instruction to fix every verified defect, as [D-16, D-17 and
+> D-18](../specs/001-procurement-agent/clarifications.md):
 >
-> - **A-51 (Critical, open).** The reducer cannot preserve or produce a RESOLVED field, so an
->   idempotent re-run erases a human decision. Read [Source authority](#source-authority) and
->   [architecture.md's claims section](architecture.md#claims-and-canonical-state) with that in
->   mind: the append-only half holds, the human-authority half does not.
-> - **A-53 (High, open).** The 18 `list[str]` contract fields have no tolerance rule, so two
->   datasheets listing identical certifications in a different order raise a CRITICAL conflict
->   that refuses the workbook.
+> - **D-16 (was A-51, Critical).** A reviewer's decision is a `human:` claim carrying its
+>   `Resolution`; the reducer ranks it first, returns RESOLVED, and copies the decision onto the
+>   stored field. The idempotent re-run that used to erase a decision is now the regression
+>   test. See [Source authority](#source-authority).
+> - **D-17 (was A-53, High).** `ToleranceRule.SET_EQUAL` and a row for every `list[str]` key,
+>   so a reordered certification list is no longer a CRITICAL conflict.
+> - **D-18 (was A-56).** `copy.copy` now revalidates like `copy.deepcopy`; the structural
+>   encoding that removes the class of hole is recommended to the C5 owner, not adopted.
 >
-> Both need a contract decision rather than a patch and are filed as
-> [open-decisions.md](../specs/001-procurement-agent/open-decisions.md) items 8 and 9. Seven of
-> the ten are fixed; A-56 is open and minor.
+> **No status word in this document moved because of it.** Nothing new is implemented end to
+> end and nothing was withdrawn; the counts below are unchanged.
 
 ## Executive assessment
 
@@ -95,7 +96,8 @@ The current implementation:
 - detects unit mismatches before numeric tolerance;
 - preserves standard editions as temporal conflicts;
 - normalizes text without fuzzy-matching compliance claims;
-- applies per-field exact, absolute, relative, one-sided, and declared-band rules; and
+- applies per-field exact, absolute, relative, one-sided, declared-band and set-equality
+  rules (D-17); and
 - honors the precision of the source’s printed value.
 
 ### Source authority
@@ -104,15 +106,17 @@ The current implementation:
 system-of-record field. This is a useful safety predicate, although the future store must
 make bypassing it structurally impossible.
 
-**The other half of source authority — a human's decision — is not preserved at all.** A-51:
-`services.claims.project()` never reads or writes `resolution`, `_preferred()` has no human
-tier, and `_status_for()` reopens any group holding more than one distinct answer. Re-committing
-the identical, complete claim set for a resolved field — the idempotent reducer re-run C8
-requires to be safe — stores `conflict_status=OPEN` and `resolution=None`, discarding the
-decision FR-HITL-06 calls immutable. `sql/06_resolution.sql:29-38` designs the fix (the human
-decision as a highest-priority claim) and says in as many words that it is "a convention this
-file recommends, not one it can enforce". Nothing implements it. Open as
-[open-decisions.md](../specs/001-procurement-agent/open-decisions.md) item 8.
+**The other half of source authority — a human's decision — is now preserved through the
+reducer** ([D-16](../specs/001-procurement-agent/clarifications.md), 2026-09-02). Until then
+`services.claims.project()` never read or wrote `resolution`, `_preferred()` had no human tier,
+and `_status_for()` reopened any group holding more than one distinct answer, so re-committing
+the identical claim set for a resolved field stored `OPEN` / `resolution=None` (A-51). A
+reviewer's decision is now a `human:` claim carrying its `Resolution`, enforced by the claim's
+own validator in both directions; it outranks every tier, settles its group, and a later
+extraction does not reopen it — reopening is a human action. Twelve tests in
+`tests/test_propose_commit.py` pin this, led by `test_an_idempotent_rerun_keeps_the_decision`.
+`sql/04_claim.sql` does not yet carry the column that record needs; the Python is ahead of the
+DDL, and that migration is WP-F's.
 
 ### Composition policy
 
@@ -397,8 +401,8 @@ Build one tested vertical slice:
 1. settle the remaining contributor-governance choices (the licence is done — Apache-2.0);
 2. finish the five contracts still open above — C2, C4, C6, C7 and C8. **The *decision* half of
    C4, C6 and C7 closed on 2026-08-07** (D-13, D-14, D-15); what is left there is code. C2 and
-   C7 are the two still genuinely open, and A-51 adds a third question to C5/C8 — how a human
-   decision survives a projection;
+   C7 are the two still genuinely open; the C5/C8 question A-51 raised — how a human decision
+   survives a projection — is answered by D-16;
 3. commit sanitized fixtures for one PV module document and its expected claims — the claim and
    conflict fixture sets already exist in `tests/fixtures/`, so this is a *document* fixture and
    the format constraints in `tests/fixtures/README.md` apply;

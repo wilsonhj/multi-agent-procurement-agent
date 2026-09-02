@@ -731,6 +731,21 @@ class CanonicalField(BaseModel):
         super().__setstate__(state)
         self._assert_resolution_matches_status()
 
+    def __copy__(self) -> Self:
+        """Revalidate on shallow copy, for the same reason as `__deepcopy__`.
+
+        `copy.copy` is the route the inventory below missed: pydantic implements
+        it by copying `__dict__` exactly as `__deepcopy__` does, so a
+        `__dict__`-poisoned field shallow-copied into a collection carried the
+        forbidden state across while the deep copy of the same object refused
+        it (A-56). The docstring argument for guarding `__deepcopy__` applies
+        here word for word. D-18 records that this closes today's hole and not
+        the class of hole; the structural encoding that would is a C5 change.
+        """
+        duplicate: Self = super().__copy__()
+        duplicate._assert_resolution_matches_status()
+        return duplicate
+
     def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
         """Revalidate on deep copy, for the same reason as `__setstate__`.
 

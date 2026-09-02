@@ -64,11 +64,11 @@ since that table is theirs.
 Track 1a moved from Team 1 to **Team 6**. Team 6 consumes `encode_value()` immediately in Track 3
 and cannot start Track 3 without it, so no idle time is created — and it takes the critical path
 off Team 1, who would otherwise hold 0, 1a and 2 while three teams waited. The objection worth
-naming: `schema/` is Team 1's substrate per `tasks.md:368`, and Team 6 writing `schema/encoding.py`
+naming: `schema/` is Team 1's substrate per `tasks.md:370`, and Team 6 writing `schema/encoding.py`
 erodes that. Mitigated because the amended D-14 now fully determines the file — it is the
 implementation of a frozen spec, not a judgement call — and Team 1 reviews the PR.
 
-Note `tasks.md:368` still allocates no work package to `ports/` at all, which is a plausible
+Note `tasks.md:370` still allocates no work package to `ports/` at all, which is a plausible
 reason NFR-04 has sat at `declared` since the beginning.
 
 ---
@@ -112,7 +112,7 @@ the only placement letting both consumers — `services/output` (Track 3) and
 as RFC 3339 UTC with microseconds always printed, enums via `.value`, frozensets sorted.
 
 > ⚠️ **D-14's `encode_value()` has no `Decimal` rule, and it needs one before this is written.**
-> `conflict_hitl/__init__.py:328` records that "`Decimal("650")` is the natural representation"
+> `conflict_hitl/__init__.py:336` records that "`Decimal("650")` is the natural representation"
 > of D-2's EXACT catalog values, so `Decimal` is genuinely in the value domain. Under `repr()`,
 > `Decimal("650")`, `650` and `650.0` are three distinct keys. A naive encoder collapses them.
 >
@@ -235,10 +235,10 @@ three places contract keys are duplicated as data — the frozen markdown, `FIEL
 
 **Three paths this track must own that are easy to miss.** Rejecting an off-contract key needs
 **two** enforcement points, and neither is in `schema/field.py` — `FieldClaim` lives at
-`services/claims/__init__.py:46`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
+`services/claims/__init__.py:63`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
 the condition types instead. The keys are validated where they are *used as keys*:
 `ComponentInstance.fields` (`schema/component.py:83`, the `dict[str, list[CanonicalField]]`) and
-`commit_claims` (`services/claims/__init__.py:357`). Third, tightening either can break the
+`commit_claims` (`services/claims/__init__.py:468`). Third, tightening either can break the
 **byte-compared** committed fixtures in `tests/fixtures/claims/`, which must be re-validated as
 part of this track rather than discovered by Track 3.
 

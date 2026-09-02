@@ -1,14 +1,12 @@
 # Open decisions — recommended defaults
 
-Ten decisions the specs left to a human. Each carries a recommendation, the
+Seven decisions the specs left to a human. Each carries a recommendation, the
 reasoning, and a confidence marking. Nothing here is adopted; adopting means
 folding it into `clarifications.md` and deleting the entry.
 
-Items 1-7 came out of the specification passes. **Items 8-10 came out of the
-2026-09-02 implementation review** and are a different kind: each is a defect
-reproduced against the running code, whose *fix* requires a contract choice
-rather than a patch. They are filed as A-51, A-53 and A-56 in
-[analysis.md](analysis.md).
+Items 8-10 existed here for one day (2026-09-02): three defects reproduced
+against the running code whose fix needed a contract choice. They were adopted
+as [D-16, D-17 and D-18](clarifications.md) and deleted, per the rule above.
 
 > ⚠️ **"Nothing here is adopted" is no longer true of item 1, and the entry was
 > not deleted (noted 2026-09-02).** `services/conflict_hitl/severity.py` implements
@@ -301,140 +299,3 @@ call and not a default.
 > a count, not a measurement basis. It is rejected on cost and timing. Revisit it if
 > a real supplier document quotes a threshold outside the three, which would be the
 > evidence this decision currently lacks.
-
----
-
-## 8. The reducer has no notion of a resolution — contract C5/C8
-
-**Confidence: firm that it is a gap, open on which of two shapes closes it.**
-
-`sql/06_resolution.sql:29-38` states the intended design: a `select_value` or
-`enter_override` resolution "is expected to also INSERT a new claim row for the
-human's asserted value", so that "the projection reducer sees a human decision as
-just another, highest-priority claim rather than needing a special case". The file
-adds that this is "a convention this file recommends, not one it can enforce".
-
-**Nothing in `services/claims` implements either half.** Verified against the code:
-
-- `project()` never reads or writes `resolution` — every `CanonicalField` it
-  returns is constructed with the field absent, so a stored `Resolution` is
-  dropped on the next reduction.
-- `_preferred()` orders by `(tier, value is None, -confidence, identity)`. There
-  is no human tier and no resolution term, so a human's claim wins only by
-  accident of confidence.
-- `_status_for()` returns `OPEN` whenever a group holds more than one distinct
-  answer. A human override *adds* an answer, so recording a decision as a claim
-  reopens the conflict permanently.
-
-The consequence is reachable today with no new code: re-committing the identical,
-complete claim set for a field that a human has resolved — an idempotent reducer
-re-run, which C8 requires to be safe — passes `StoredValueLossError` and
-`assert_no_autonomous_overwrite` and stores `conflict_status=OPEN`,
-`resolution=None`. FR-HITL-06 calls the decision log immutable; the compose gate
-then blocks on a conflict a human already settled.
-
-**Two shapes close it, and they are not equivalent:**
-
-| Shape | What changes | Cost |
-|---|---|---|
-| **A — the claim convention, made real** | A reserved tier or `extractor_version` prefix (`human:<resolved_by>`) that `_preferred` ranks above everything and `_status_for` treats as *settling* the group rather than joining it. The resolution row is looked up to populate `CanonicalField.resolution`. | Keeps "canonical value is a projection over claims" true for human overrides, which is C8's whole point. Needs a rule for what happens when a *later* extraction contradicts a settled group — reopen, or stay settled |
-| **B — resolutions as a second input** | `project(claims, resolutions)`. The reducer stays pure but is no longer a function of claims alone. | Simpler to reason about; breaks the sentence C8 is built on, and gives the store two write paths to keep consistent |
-
-**Recommendation: A**, because the SQL already recommends it and B contradicts
-C8's stated invariant. The open sub-question A carries — does a new extraction
-reopen a settled group? — is a real policy call: FR-HITL-04's
-`request_more_web_search` implies reopening is a *human* action with a reopen cap
-of 3 (task F.3), which argues for **stay settled, and let the human reopen**.
-
-Whichever is chosen, it is a change to contract C5 or C8 and belongs in
-`clarifications.md`, not in a pull request that fixes the symptom.
-
----
-
-## 9. List-valued fields have no tolerance rule — a D-2 amendment
-
-**Confidence: firm on the defect, firm on the direction, open on the rule's name.**
-
-`values_conflict` compares numbers, then text, then falls through to
-`a.value == b.value` with the reason *"values are not comparable as numbers or
-text"*. For the contract's **18 `list[str]` fields** — `certifications`,
-`ul_listing`, `standards` among them — that fallback is order-sensitive:
-
-    values_conflict(cand(["UL 1741", "IEC 61215"]),
-                    cand(["IEC 61215", "UL 1741"]), tolerance_for("certifications"))
-    # conflicts=True, class=inter_document
-
-Two datasheets listing identical certifications in a different order therefore
-raise a conflict. `certifications` has base severity `CRITICAL` in
-`severity.CRITICALITY` and floors at `CRITICAL`, so `compose_gate_blocks()`
-refuses the workbook over a reordering. The reason string also misdescribes the
-inputs to the reviewer: two lists *are* comparable, and the queue tells them
-otherwise.
-
-**No `ToleranceRule` member covers a set.** The five are EXACT, ABSOLUTE,
-RELATIVE, ONE_SIDED and the never-compare/declared-band cases; `FIELD_TOLERANCES`
-has no row for any list-valued key, so all 18 fall to `DEFAULT_TOLERANCE`.
-
-**The direction is not in doubt**: a certification list is a *set* of
-attestations, and the order a datasheet prints them in is typography. The
-questions a human has to answer are narrower:
-
-1. **Set equality, or set containment?** `{UL 1741, IEC 61215}` versus
-   `{UL 1741}` — is the shorter list a disagreement, or missing data? D-2's
-   never-compare precedent and FR-HITL-01's "absence is the finding" reasoning
-   for attestations both argue **disagreement**, but this is exactly where a
-   silent choice becomes a wrong queue.
-2. **Does normalisation apply per element?** `_normalise_text` and
-   `_split_edition` already exist and would make `IEC 61215:2016` versus
-   `IEC 61215:2021` a TEMPORAL conflict per element rather than a set mismatch.
-   Reusing them is the obvious reading and it is not what the code does today.
-3. **What is the rule called** — `SET_EQUAL`, or an `unordered: bool` on the
-   existing rules? A new member is clearer and costs a schema change to a frozen
-   enum.
-
-**Recommendation:** a `SET_EQUAL` member, per-element text normalisation reused,
-containment treated as a conflict, and explicit `FIELD_TOLERANCES` rows for all 18
-keys so none of them reaches the default. Until then the defect stands, because
-inventing a comparison policy for attestation fields in a bug-fix commit is how
-D-2's per-field discipline gets lost.
-
----
-
-## 10. FR-HITL-06 is guarded route by route, not encoded
-
-**Confidence: firm on the observation, genuinely open on whether it is worth the
-change.**
-
-`CanonicalField` forbids one state: `conflict_status=RESOLVED` with
-`resolution=None`. It defends that with five overrides — `model_copy`,
-`model_construct`, `__setstate__`, `__deepcopy__`, `__setattr__` — each one
-closing a pydantic route that skips validation. The class docstring inventories
-them.
-
-**The inventory is already incomplete.** `copy.copy` reproduces the forbidden
-state: `__deepcopy__` is overridden and `__copy__` is not, so a shallow copy of a
-`__dict__`-poisoned field succeeds and yields a RESOLVED field with no
-resolution, while the deep copy of the same object raises. The docstring's own
-argument for guarding `__deepcopy__` — "the in-process twin of a pickle round
-trip" — applies to `__copy__` word for word.
-
-Adding a sixth override closes today's hole and leaves the shape unchanged: every
-new pydantic entry point (`model_validate_strings`, `from_attributes`, whatever a
-future release adds) needs another one, and the failure mode is silence.
-
-**The alternative is to make the state unrepresentable.** A discriminated pair —
-`status: Literal[RESOLVED]` carrying a non-optional `Resolution`, against the
-other statuses carrying none — cannot express the forbidden combination at all,
-so none of the five overrides is needed and no future route can reintroduce it.
-
-**Why this is a decision and not a fix.** It changes the shape of the frozen C5
-record; `CanonicalField` is what `ComponentInstance.fields` holds, what the two
-committed claim fixtures serialise, and what `project()` builds. The cheap move
-(add `__copy__`) and the correct move (encode it) are both defensible, and the
-cheap one is genuinely defensible here: the store does not exist yet, so the
-number of call sites is small, but the fixtures are byte-compared and the
-projection is about to become a hashed artifact under D-14.
-
-**Recommendation:** add `__copy__` now as a one-line closure of a live hole, and
-put the discriminated encoding to Team 1 as a C5 amendment before WP-F builds the
-reviewer API against the current shape.

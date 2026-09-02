@@ -7,6 +7,7 @@ changelog, because each one passed a green suite.
 
 import inspect
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -17,11 +18,14 @@ from procurement_agent.schema import (
     Condition,
     ConflictStatus,
     MeasurementBasis,
+    Resolution,
+    ResolutionAction,
     SourceRef,
     SourceTier,
 )
 from procurement_agent.services import claims as claims_module
 from procurement_agent.services.claims import (
+    HUMAN_PREFIX,
     ClaimWriter,
     FieldClaim,
     ProposalError,
@@ -634,3 +638,201 @@ def test_a_dict_valued_field_does_not_disagree_with_itself() -> None:
         ]
     )
     assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+# --- D-16: a reviewer's decision is a claim, and it settles the group ----------
+#
+# A-51. `project()` never read or wrote `resolution`, `_preferred` had no human
+# tier, and `_status_for` reopened any group with more than one distinct answer,
+# so a recorded decision was discarded by the next reducer run and a human claim
+# reopened the conflict it settled. sql/06 recommended the human-as-claim
+# convention and said it could not enforce it; `FieldClaim` now does.
+
+
+def _decision(
+    value: object,
+    *,
+    action: ResolutionAction = ResolutionAction.SELECT_VALUE,
+    by: str = "procurement.lead",
+    at: datetime = datetime(2026, 8, 1, tzinfo=UTC),
+) -> Resolution:
+    return Resolution(
+        action=action,
+        resolved_by=by,
+        resolved_at=at,
+        rationale="datasheet revision C supersedes the PO",
+        value_after=value,
+    )
+
+
+def _human(
+    value: object,
+    *,
+    doc: str = "contract",
+    by: str = "procurement.lead",
+    at: datetime = datetime(2026, 8, 1, tzinfo=UTC),
+    tier: SourceTier = SourceTier.SYSTEM_OF_RECORD,
+    action: ResolutionAction = ResolutionAction.SELECT_VALUE,
+) -> FieldClaim:
+    return FieldClaim(
+        document_id=doc,
+        field_name="nameplate_power",
+        extractor_version=f"{HUMAN_PREFIX}{by}",
+        value=value,
+        unit="Wp",
+        source_tier=tier,
+        source_ref=SourceRef(document_id=doc),
+        confidence=1.0,
+        resolution=_decision(value, action=action, by=by, at=at),
+    )
+
+
+def test_a_human_claim_settles_a_disagreement() -> None:
+    """The decision half of source authority. Two records disagree; a reviewer
+    picks one; the stored field is RESOLVED and carries the decision."""
+    projected = project(
+        [_claim(650.0, doc="contract"), _claim(700.0, doc="datasheet"), _human(650.0)]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.RESOLVED]
+    assert projected[0].value == 650.0
+    assert projected[0].resolution is not None
+    assert projected[0].resolution.resolved_by == "procurement.lead"
+
+
+def test_an_idempotent_rerun_keeps_the_decision() -> None:
+    """A-51's reproduction, now as the guarantee. Re-committing the identical,
+    complete claim set - the reducer re-run C8 says must be safe - must not turn a
+    RESOLVED field back into an OPEN one."""
+    store = _Store()
+    claims = [_claim(650.0, doc="contract"), _claim(700.0, doc="datasheet"), _human(650.0)]
+    first = commit_claims("nameplate_power", claims, writer=store)
+    second = commit_claims("nameplate_power", claims, writer=store)
+    assert first == second
+    assert store.committed["nameplate_power"][0].conflict_status is ConflictStatus.RESOLVED
+    assert store.committed["nameplate_power"][0].resolution is not None
+
+
+def test_a_later_extraction_does_not_reopen_a_settled_group() -> None:
+    """Reopening is a human action (REQUEST_MORE_WEB_SEARCH, task F.3), not a
+    side effect of re-running an extractor with a new version."""
+    projected = project(
+        [
+            _claim(650.0, doc="contract"),
+            _claim(700.0, doc="datasheet"),
+            _human(650.0),
+            _claim(710.0, doc="datasheet", version="extract@2"),
+        ]
+    )
+    assert projected[0].conflict_status is ConflictStatus.RESOLVED
+    assert projected[0].value == 650.0
+
+
+def test_the_latest_decision_wins() -> None:
+    """A reopened conflict records a NEW decision. `resolved_at` is stored data,
+    so the order is a function of the store and not of arrival."""
+    earlier = _human(650.0, at=datetime(2026, 8, 1, tzinfo=UTC))
+    later = _human(700.0, at=datetime(2026, 8, 9, tzinfo=UTC))
+    forward = project([_claim(650.0, doc="contract"), earlier, later])
+    backward = project([later, _claim(650.0, doc="contract"), earlier])
+    assert forward[0].value == backward[0].value == 700.0
+    assert forward[0].resolution is not None
+    assert forward[0].resolution.resolved_at == later.resolution.resolved_at  # type: ignore[union-attr]
+
+
+def test_two_decisions_by_one_reviewer_are_two_claims_not_a_contradiction() -> None:
+    """Without `resolved_at` in the claim key the second decision collided with
+    the first as 'one extractor, two answers' and raised ProposalError."""
+    earlier = _human(650.0, at=datetime(2026, 8, 1, tzinfo=UTC))
+    later = _human(700.0, at=datetime(2026, 8, 9, tzinfo=UTC))
+    assert earlier.claim_key() != later.claim_key()
+    assert len(canonical_claims([earlier, later])) == 2
+
+
+def test_a_human_may_select_the_web_value() -> None:
+    """The guard is against *autonomous* overwrite. A reviewer choosing the web
+    candidate in the queue is FR-HITL-04's SELECT_VALUE, the opposite of
+    autonomous, so the committed field may be web-tiered when a decision says so."""
+    store = _Store()
+    commit_claims("nameplate_power", [_claim(650.0, doc="contract")], writer=store)
+    committed = commit_claims(
+        "nameplate_power",
+        [
+            _claim(650.0, doc="contract"),
+            _claim(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT),
+            _human(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT),
+        ],
+        writer=store,
+    )
+    assert committed[0].value == 700.0
+    assert committed[0].source_tier is SourceTier.WEB_SUPPLEMENT
+    assert committed[0].conflict_status is ConflictStatus.RESOLVED
+
+
+def test_a_web_value_with_no_decision_behind_it_is_still_refused() -> None:
+    """The exception is for a decision, not for a tier. The autonomous case the
+    guard exists for is unchanged."""
+    store = _Store()
+    commit_claims("nameplate_power", [_claim(650.0, doc="contract")], writer=store)
+    with pytest.raises(AutonomousOverwriteError):
+        commit_claims(
+            "nameplate_power",
+            [_claim(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT)],
+            writer=store,
+        )
+
+
+def test_a_human_prefix_without_a_decision_is_rejected() -> None:
+    """A reviewer's value with no recorded decision is a decision with nobody
+    behind it (FR-HITL-06)."""
+    with pytest.raises(ValidationError, match="must carry its Resolution"):
+        _claim(650.0, version=f"{HUMAN_PREFIX}someone")
+
+
+def test_a_decision_on_a_machine_claim_is_rejected() -> None:
+    """The convention holds in both directions: a Resolution on an
+    `extract@1` claim is a person's name on a machine value."""
+    with pytest.raises(ValidationError, match="must be a human claim"):
+        FieldClaim(
+            document_id="contract",
+            field_name="nameplate_power",
+            extractor_version="extract@1",
+            value=650.0,
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="contract"),
+            confidence=0.9,
+            resolution=_decision(650.0),
+        )
+
+
+@pytest.mark.parametrize(
+    "action", [ResolutionAction.DEFER, ResolutionAction.REQUEST_MORE_WEB_SEARCH]
+)
+def test_an_action_that_asserts_no_value_cannot_be_a_claim(action: ResolutionAction) -> None:
+    """DEFER and REQUEST_MORE_WEB_SEARCH are events against the conflict. A claim
+    for one would put a non-value in the value store."""
+    with pytest.raises(ValidationError, match="asserts no value"):
+        _human(650.0, action=action)
+
+
+def test_a_decision_recorded_against_a_different_value_is_rejected() -> None:
+    """`value_after` and the claim's value must agree, or the decision log and
+    the value store drift apart on the first human write."""
+    with pytest.raises(ValidationError, match="value_after must be the claim's value"):
+        FieldClaim(
+            document_id="contract",
+            field_name="nameplate_power",
+            extractor_version=f"{HUMAN_PREFIX}procurement.lead",
+            value=650.0,
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="contract"),
+            confidence=1.0,
+            resolution=_decision(655.0),
+        )
+
+
+def test_the_fixture_shape_now_carries_the_resolution_key() -> None:
+    """The claim fixtures are byte-compared, so adding `resolution` to
+    `FieldClaim` changed their bytes; they were regenerated with the canonical
+    options. Pinned so the next schema change fails here with a sentence rather
+    than in a 90-line JSON diff."""
+    assert "resolution" in FieldClaim.model_fields

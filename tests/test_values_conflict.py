@@ -741,3 +741,114 @@ def test_a_decimal_value_reports_its_own_precision() -> None:
     assert values_conflict(
         _c(Decimal("22.0"), unit="%"), _c(22.4, unit="%", doc="doc-b"), tolerance=efficiency
     ).conflicts
+
+
+# --- D-17: list-valued fields are sets ------------------------------------------
+#
+# A-53. The contract's `list[str]` fields fell to `DEFAULT_TOLERANCE`, whose
+# fallback compared lists with order-sensitive `==`, so two datasheets listing
+# identical certifications in a different order raised a conflict - CRITICAL,
+# for `certifications` - and the reason called two lists "not comparable".
+
+
+def _list_keys_in_contract() -> set[str]:
+    contract = pathlib.Path(__file__).parent.parent / (
+        "specs/001-procurement-agent/contracts/canonical-parameters.md"
+    )
+    text = contract.read_text(encoding="utf-8")
+    keys = {
+        m.group(1)
+        for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|\s*list\[str\]\s*\|", text, re.MULTILINE)
+    }
+    assert len(keys) >= 10, "the contract's list[str] rows did not parse"
+    return keys
+
+
+def test_every_list_field_in_the_contract_has_a_set_rule() -> None:
+    """Bidirectional: every `list[str]` key has a SET_EQUAL row, and every
+    SET_EQUAL row is a `list[str]` key. A list-valued key that reaches
+    `DEFAULT_TOLERANCE` is compared by element order, which is the defect."""
+    from procurement_agent.services.conflict_hitl.tolerance import LIST_FIELD_TOLERANCES
+
+    assert set(LIST_FIELD_TOLERANCES) == _list_keys_in_contract()
+    for key, row in LIST_FIELD_TOLERANCES.items():
+        assert row.rule is ToleranceRule.SET_EQUAL, key
+        assert tolerance_for(key).rule is ToleranceRule.SET_EQUAL, key
+
+
+def test_identical_certifications_in_a_different_order_do_not_conflict() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215"], unit=None),
+        _c(["IEC 61215", "UL 1741"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert not verdict.conflicts, verdict.reason
+
+
+def test_per_element_normalisation_applies_to_a_set() -> None:
+    """The same treatment a single string gets: NFKC, case, whitespace."""
+    verdict = values_conflict(
+        _c(["ul 1741", "IEC  61215"], unit=None),
+        _c(["UL 1741", "IEC 61215"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert not verdict.conflicts, verdict.reason
+
+
+def test_containment_is_a_conflict_not_a_gap() -> None:
+    """For an attestation, absence is the finding (FR-HITL-01): one source claims
+    a certification the other does not."""
+    verdict = values_conflict(
+        _c(["UL 1741"], unit=None),
+        _c(["UL 1741", "IEC 61215"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+    assert "iec 61215" in verdict.reason
+
+
+def test_an_edition_difference_on_one_element_is_temporal() -> None:
+    """`IEC 61215:2016` against `:2021` is the same standard at a different
+    edition - a TEMPORAL conflict on that element, not a set mismatch."""
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215:2016"], unit=None),
+        _c(["UL 1741", "IEC 61215:2021"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.TEMPORAL
+
+
+def test_a_genuinely_different_set_still_conflicts() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741"], unit=None),
+        _c(["IEC 61215"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+
+
+def test_a_scalar_in_a_set_field_is_a_conflict_that_says_so() -> None:
+    """An extractor emitting a string where the contract types a list is a
+    defect the reviewer should see named, not a silent element-wise compare."""
+    verdict = values_conflict(
+        _c("UL 1741", unit=None),
+        _c(["UL 1741"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert "non-list" in verdict.reason
+
+
+def test_a_list_field_off_contract_still_compares_as_written_and_says_why() -> None:
+    """The fallback an off-contract key reaches is order-sensitive, and now the
+    reason says so instead of calling two lists 'not comparable'."""
+    verdict = values_conflict(
+        _c(["a", "b"], unit=None),
+        _c(["b", "a"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("some_field_nobody_has_specified"),
+    )
+    assert verdict.conflicts
+    assert "no SET_EQUAL tolerance row" in verdict.reason

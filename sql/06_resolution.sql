@@ -36,7 +36,11 @@ CREATE TABLE public.resolution (
     -- not only for machine extractions. See sql/README.md's decisions list --
     -- this is a convention this file recommends, not one it can enforce
     -- without a cross-table trigger, which was judged too fragile for the
-    -- gain.
+    -- gain. Adopted as D-16 on 2026-09-02 and enforced in Python instead:
+    -- services.claims.FieldClaim requires a human:<resolved_by> claim to carry
+    -- its Resolution and vice versa, and the reducer ranks it first. The claim
+    -- table does not yet carry the resolution column that record needs; that
+    -- migration is WP-F's, alongside the first emitter.
     selected_claim_id  bigint REFERENCES public.claim (claim_id) ON DELETE RESTRICT
 );
 

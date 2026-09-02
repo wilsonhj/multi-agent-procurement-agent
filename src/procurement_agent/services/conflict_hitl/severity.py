@@ -38,12 +38,12 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Sequence
-from decimal import Decimal
 
 from ...schema import ConflictCandidate, ConflictClass, Severity, SourceTier, ToleranceRule
 from ..confidence import FIELD_TIERS, CriticalityTier
 from ..confidence import looks_tier_a as looks_tier_a
 from .tolerance import FieldTolerance, tolerance_for
+from .tolerance import as_number as as_number  # re-exported: one numeric rule, not two
 
 # --- the criticality-class lookup ----------------------------------------------
 #
@@ -261,25 +261,6 @@ def criticality_for(field_name: str) -> Severity:
 # --- the coarse numeric helpers the modifiers share -----------------------------
 
 
-def _numeric_value(value: object) -> float | None:
-    """A numeric reading of a candidate value.
-
-    Deliberately not imported from `conflict_hitl._as_number`: that name is
-    underscore-prefixed in this package's `__init__.py`, and reaching past the
-    mark that it is not for reuse - rather than adding a second, smaller
-    computation this module actually needs - is how a "helper" import quietly
-    becomes a second copy of the parent's comparison semantics. `bool` is
-    excluded for the same reason it is there: `True` would compare equal to a
-    1.0 candidate value under no tolerance at all.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float | Decimal):
-        number = float(value)
-        return number if math.isfinite(number) else None
-    return None
-
-
 def _band(tolerance: FieldTolerance, numbers: Sequence[float]) -> float | None:
     """A coarse tolerance band in the compared quantity's own unit.
 
@@ -348,7 +329,7 @@ def _scaled_numbers(candidates: Sequence[ConflictCandidate]) -> list[float] | No
     """
     numbers: list[float] = []
     for candidate in candidates:
-        number = _numeric_value(candidate.value)
+        number = as_number(candidate.value)
         if number is None:
             return None
         numbers.append(number)
@@ -395,7 +376,7 @@ def _reconciles(a: ConflictCandidate, b: ConflictCandidate, tolerance: FieldTole
     base_b = _BASE_UNIT.get(b.unit.strip().casefold())
     if base_a is None or base_b is None or base_a[0] != base_b[0]:
         return False
-    number_a, number_b = _numeric_value(a.value), _numeric_value(b.value)
+    number_a, number_b = as_number(a.value), as_number(b.value)
     if number_a is None or number_b is None:
         return False
     common_a, common_b = number_a * base_a[1], number_b * base_b[1]

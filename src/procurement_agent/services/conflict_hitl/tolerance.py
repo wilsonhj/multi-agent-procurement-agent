@@ -22,10 +22,38 @@ and fails on any key that is not in it.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...schema import ToleranceCondition, ToleranceRule
+
+
+def as_number(value: object) -> float | None:
+    """A numeric reading of a candidate value, or None if it is not a number.
+
+    `bool` is excluded even though it is an `int`: `True` comparing equal to a
+    1.0 nameplate is nonsense that no tolerance would catch.
+
+    Public, and here rather than in either caller, because it was two identical
+    copies - `conflict_hitl._as_number` and `severity._numeric_value`. The
+    second's docstring said it declined to import the first because reaching
+    past an underscore "is how a helper import quietly becomes a second copy of
+    the parent's comparison semantics", and described itself as "a second,
+    smaller computation this module actually needs". It was neither smaller nor
+    different: the two bodies matched line for line, so the copy the reasoning
+    warned about is the one that existed. Both modules already import this one,
+    and what counts as a number *is* tolerance semantics - extending it (a
+    `Fraction`, a numpy scalar, a different NaN policy) must move conflict
+    detection and severity together or they disagree silently about whether a
+    candidate is comparable at all.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float | Decimal):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    return None
 
 
 class FieldTolerance(BaseModel):

@@ -133,6 +133,13 @@ Route `_ordering_key` and `comparison_groups` (`conflict_hitl/__init__.py:175`) 
 `encode_value()` instead of `repr()`. This is the A-50 residual. It gates no other track, and
 carries all of this plan's re-baselining risk — which is why it is separated from 1a.
 
+> **One component of that key has already moved, and it is not the A-50 one.** The 2026-09-02
+> implementation review found the key's *value* component reprinting dicts in insertion order
+> ([A-57](analysis.md)), so it now routes through `schema.rendering.render_value`. That fix is
+> deliberately scoped: it does not touch `repr(condition.grouping_key())`, which is the enum
+> `repr` A-50 is actually about, and it reorders only values that are `==`, so it needed no
+> re-baselining. **This track's scope and its risk are unchanged.**
+
 **Pair membership cannot change, and this is provable rather than open.** `comparison_pairs` is
 `itertools.combinations(sorted(candidates, key=_ordering_key), 2)` filtered by
 `condition.comparable_with`. Combinations over a fixed input set is invariant under permutation,

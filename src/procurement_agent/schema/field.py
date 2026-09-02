@@ -25,6 +25,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     field_serializer,
     field_validator,
     model_validator,
@@ -106,6 +107,31 @@ class Resolution(BaseModel):
     rationale: str
     value_before: object | None = None
     value_after: object | None = None
+
+
+def _as_resolution(value: object) -> object:
+    """The `Resolution` a caller meant, for comparison only.
+
+    `CanonicalField.__setattr__` and `evolve` both promise that re-assigning an
+    *equal* resolution is allowed, "so an idempotent replay is not an error".
+    They compared the incoming value before pydantic coerced it, so the promise
+    held only for a caller who already had a `Resolution` object: a replay from
+    a stored row - `field.resolution = row["resolution"]`, a dict - compared a
+    `dict` against a `Resolution`, found them unequal, and raised the
+    immutability error at the one boundary the class explicitly designs for
+    (`__setstate__` and `__deepcopy__` exist for exactly that crossing).
+
+    Coercion is attempted, never forced: an input that is not a valid
+    `Resolution` is returned unchanged, so it still compares unequal and still
+    raises. This decides only *whether the value differs*; assignment itself
+    goes on to `validate_assignment`, which is what actually parses it.
+    """
+    if isinstance(value, Resolution) or value is None:
+        return value
+    try:
+        return Resolution.model_validate(value)
+    except ValidationError:
+        return value
 
 
 class DeclaredBand(BaseModel):
@@ -634,7 +660,7 @@ class CanonicalField(BaseModel):
         if (
             "resolution" in changes
             and self.resolution is not None
-            and changes["resolution"] != self.resolution
+            and _as_resolution(changes["resolution"]) != self.resolution
         ):
             raise ValueError(
                 "a recorded Resolution cannot be replaced or cleared (FR-HITL-06: "
@@ -749,7 +775,7 @@ class CanonicalField(BaseModel):
         if (
             name == "resolution"
             and getattr(self, "resolution", None) is not None
-            and value != self.resolution
+            and _as_resolution(value) != self.resolution
             and not (value is None and self.conflict_status is ConflictStatus.RESOLVED)
         ):
             raise ValueError(

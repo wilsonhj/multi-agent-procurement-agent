@@ -774,3 +774,21 @@ def test_result_does_not_depend_on_candidate_order() -> None:
     forward = assign_severity("nameplate_power", ConflictClass.INTER_DOCUMENT, [a, b], [a, b])
     backward = assign_severity("nameplate_power", ConflictClass.INTER_DOCUMENT, [b, a], [b, a])
     assert forward == backward
+
+
+def test_severity_and_conflict_detection_share_one_numeric_rule() -> None:
+    """`severity._numeric_value` was a line-for-line copy of
+    `conflict_hitl._as_number`, and its docstring justified the copy by saying it
+    was "a second, smaller computation this module actually needs" - which the
+    two identical bodies contradicted.
+
+    Identity, not equality of behaviour, because behaviour is what drifts: the
+    two must move together when what counts as a number changes (a `Fraction`, a
+    numpy scalar, a different NaN policy), or severity and detection disagree
+    silently about whether a candidate is comparable at all.
+    """
+    from procurement_agent.services.conflict_hitl import as_number as detection_rule
+    from procurement_agent.services.conflict_hitl.severity import as_number as severity_rule
+
+    assert detection_rule is severity_rule
+    assert detection_rule(True) is None, "bool is excluded, in both callers"

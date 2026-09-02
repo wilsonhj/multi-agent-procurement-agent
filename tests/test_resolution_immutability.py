@@ -26,6 +26,7 @@ from __future__ import annotations
 import copy
 import pickle
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -240,3 +241,46 @@ def test_the_dict_write_route_is_documented_as_open() -> None:
     cleared = _resolved()
     cleared.__dict__["resolution"] = None
     assert cleared.resolution is None
+
+
+def test_replaying_an_equal_resolution_from_its_serialised_form_is_not_an_error() -> None:
+    """The same promise as the test above, at the boundary the class is built for.
+
+    A worker replaying a decision read back from the store holds a `dict`, not a
+    `Resolution`. Both routes compared the incoming value *before* pydantic
+    coerced it, so `dict != Resolution` was true for two spellings of one
+    decision and the immutability error fired on an idempotent replay - the exact
+    case `__setstate__` and `__deepcopy__` exist to make safe.
+    """
+    field = _resolved()
+    field.resolution = _resolution()
+    # `Any`: a store row arrives untyped, which is the whole point of the case.
+    serialised: Any = _resolution().model_dump()
+
+    field.resolution = serialised
+    assert field.resolution == _resolution()
+    assert field.evolve(resolution=serialised).resolution == _resolution()
+
+
+def test_a_different_resolution_in_dict_form_is_still_refused() -> None:
+    """Coercing before comparing must widen *equality*, not the rule. A second
+    reviewer's decision arriving as a dict is still an overwrite."""
+    field = _resolved()
+    field.resolution = _resolution()
+    someone_else: Any = _resolution(resolved_by="someone.else").model_dump()
+
+    with pytest.raises(ValueError, match="cannot be replaced"):
+        field.resolution = someone_else
+    with pytest.raises(ValueError, match="cannot be replaced"):
+        field.evolve(resolution=someone_else)
+
+
+def test_an_uncoercible_resolution_is_still_refused() -> None:
+    """A value that is not a Resolution at all must not slip through the coercion
+    attempt as 'equal'. It compares unequal and raises, as before."""
+    field = _resolved()
+    field.resolution = _resolution()
+    not_a_resolution: Any = {"action": "not-an-action"}
+
+    with pytest.raises(ValueError, match="cannot be replaced"):
+        field.resolution = not_a_resolution

@@ -19,6 +19,7 @@ from procurement_agent.schema import (
     SourceTier,
 )
 from procurement_agent.services.conflict_hitl import (
+    _ordering_key,
     comparison_groups,
     comparison_pairs,
     conflict_groupings,
@@ -336,3 +337,70 @@ def test_the_bridging_candidate_appears_in_two_entries() -> None:
     groups = conflict_groupings([eu, bare, cec])
     assert len(groups) == 2
     assert sum(1 for g in groups if any(c.value == 320.0 for c in g)) == 2
+
+
+# --- the ordering key renders, it does not repr ---------------------------------
+
+
+def _dict_candidate(rating: dict[str, float], doc: str) -> ConflictCandidate:
+    return ConflictCandidate(
+        value=rating,
+        unit="MVA",
+        condition=Condition(),
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id=doc),
+        confidence=0.9,
+    )
+
+
+def test_two_equal_dicts_get_one_ordering_key() -> None:
+    """`repr` walks a dict in *insertion* order, so two extractions that read one
+    cooling table's rows in different orders produced different keys for values
+    that are `==`. The contract has three dict-valued parameters."""
+    onan_first = _dict_candidate({"ONAN": 30.0, "ONAF": 40.0}, "d1")
+    onaf_first = _dict_candidate({"ONAF": 40.0, "ONAN": 30.0}, "d1")
+
+    assert onan_first.value == onaf_first.value
+    assert _ordering_key(onan_first) == _ordering_key(onaf_first)
+
+
+def test_pair_orientation_does_not_move_with_a_dicts_insertion_order() -> None:
+    """The defect that matters downstream. Which candidate comes out `left` fed
+    the queue payload and, through it, a hashed artifact - so re-reading a table
+    in a different order changed bytes with no data change. A-50's class.
+
+    The comparison candidate is chosen so the flip is actually observable: under
+    `repr`, `{'ONAF': 40.0, 'ONAN': 30.0}` sorts *before* `{'ONAF': 40.0}` and
+    `{'ONAN': 30.0, 'ONAF': 40.0}` sorts *after* it, so the two spellings of one
+    value land on opposite sides of it. A neighbour that does not straddle the
+    two spellings leaves the orientation unchanged by luck, and the test passes
+    against the defect - which the first version of this test did.
+    """
+    straddled = _dict_candidate({"ONAF": 40.0}, "d2")
+
+    forward = comparison_pairs([_dict_candidate({"ONAN": 30.0, "ONAF": 40.0}, "d1"), straddled])
+    reversed_insertion = comparison_pairs(
+        [_dict_candidate({"ONAF": 40.0, "ONAN": 30.0}, "d1"), straddled]
+    )
+
+    assert [(a.value, b.value) for a, b in forward] == [
+        (a.value, b.value) for a, b in reversed_insertion
+    ]
+
+
+def test_two_different_dicts_still_order_apart() -> None:
+    """Canonicalising equal values must not collapse unequal ones: the key is
+    still total, which is what `comparison_pairs` sorts on."""
+    assert _ordering_key(_dict_candidate({"ONAN": 30.0}, "d1")) != _ordering_key(
+        _dict_candidate({"ONAN": 31.0}, "d1")
+    )
+
+
+def test_a_list_valued_candidate_orders_by_content() -> None:
+    """`certifications` and 17 other contract fields are `list[str]`. Order within
+    a list is preserved - whether two orderings of one list are the same *value*
+    is a D-2 question this key does not get to answer - but two equal lists must
+    still key alike."""
+    left = _dict_candidate({}, "d1").model_copy(update={"value": ["UL 1741", "IEC 61215"]})
+    right = _dict_candidate({}, "d1").model_copy(update={"value": ["UL 1741", "IEC 61215"]})
+    assert _ordering_key(left) == _ordering_key(right)

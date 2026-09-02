@@ -660,10 +660,21 @@ def identity_keys(supplier: str, model: str, nameplate: float | None) -> Identit
     one product — which is the entity split D-4 names as the regression test. A
     hash of the raw strings would reintroduce it in the tie-break after Stage 1
     had removed it everywhere else.
+
+    The nameplate is normalised through `float` for the same reason, one level
+    down. `repr(700)` and `repr(700.0)` are different strings for one product,
+    and the two spellings are both reachable: `ComponentInstance.nameplate` is a
+    `float` after its validator, while a nameplate read from a JSON row or a CEC
+    export arrives as an `int`. Two ids for one SKU sort as two rows and reorder
+    the workbook on re-ingest, which is AC-7's failure with no data change —
+    A-50's class reaching the tie-break. `float` leaves every existing
+    `float`-keyed id untouched, so this widens agreement rather than moving it.
     """
     mfr = manufacturer_key(supplier)
     family = decompose(model, nameplate).family
     digest = hashlib.sha256(
-        "\x1f".join((mfr, family, repr(nameplate))).encode("utf-8")
+        "\x1f".join((mfr, family, repr(None if nameplate is None else float(nameplate)))).encode(
+            "utf-8"
+        )
     ).hexdigest()[:16]
     return IdentityKeys(manufacturer_key=mfr, model_family=family, surrogate_id=digest)

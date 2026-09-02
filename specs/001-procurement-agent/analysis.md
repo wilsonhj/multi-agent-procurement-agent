@@ -957,6 +957,43 @@ must not reach for either when it writes the projection, and converging them on 
 before WP-G would remove the trap rather than documenting around it.
 
 
+# Round 7 — the implementation review (2026-09-02)
+
+The first pass over `src/` since the policy core landed, prompted by "what remains to be done,
+and how can this be optimised". Ten findings, every one reproduced by executing the code rather
+than reading it. **Seven are fixed in the same change as this entry; three are not, because
+their fix is a contract choice** and are filed as items 8, 9 and 10 of
+[open-decisions.md](open-decisions.md).
+
+The pattern worth naming before the table: **four of the ten are one missing primitive.** A-52,
+A-54 and A-57 are all "`repr` was used to decide whether two values are the same", in three
+different modules, and A-53 is the same question unanswered for a fourth type. This repository
+has four independent renderings of a value - `claims._render`, `conflict_hitl._ordering_key`,
+`identity.identity_keys`, `claims._asserted` - and D-14's `encode_value()` will be a fifth.
+A-50 predicted a fourth instance of A-6's class in as many words ("Assume a fourth exists");
+A-57 is it.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-51 | **C** | **The reducer cannot preserve or produce a RESOLVED field, so an idempotent re-run erases a human decision.** `sql/06_resolution.sql:29-38` designs the human decision as "just another, highest-priority claim"; `project()` never reads or writes `resolution`, `_preferred()` has no human tier, and `_status_for()` reopens any group holding more than one distinct answer - so a human override claim reopens the conflict permanently. Reproduced: re-committing the identical complete claim set for a resolved field passes both guards and stores `OPEN` / `resolution=None`. FR-HITL-06 calls the log immutable; the compose gate then blocks on a settled conflict | **Open — contract decision.** [open-decisions.md #8](open-decisions.md) sets out the two shapes and recommends the claim-convention one. C5/C8 amendment, not a patch |
+| A-52 | **H** | **One number in three Python types was three answers.** `_asserted` rendered values with `repr`, so `650`, `650.0` and `Decimal("650")` differed. Two consequences, reproduced: `project()` reported `OPEN` for a pair `values_conflict` calls no conflict at all (`test_nameplate_absorbs_650_versus_650_point_0_and_nothing_more` pins the tolerance side), and `canonical_claims` raised `ProposalError` - losing the whole field - when one extractor read `650` from a table cell and `650.0` from body text under one claim key | **Fixed** — `_numeric_answer` renders every spelling of one figure alike, guarded so `bool`, a differing unit, and a string `"650"` all stay distinct answers |
+| A-53 | **H** | **The contract's 18 `list[str]` fields have no tolerance rule, so identical certification lists in a different order are a CRITICAL conflict.** `values_conflict` falls through to order-sensitive `a.value == b.value` and reports "not comparable as numbers or text", which also misdescribes two lists to the reviewer. `certifications` floors at `CRITICAL`, so `compose_gate_blocks()` refuses the workbook over a reordering. No `ToleranceRule` member covers a set and no `FIELD_TOLERANCES` row covers any list-valued key | **Open — needs a D-2 amendment.** [open-decisions.md #9](open-decisions.md); a comparison policy for attestation fields invented inside a bug-fix commit is how D-2's per-field discipline gets lost |
+| A-54 | **M** | **`surrogate_id` hashed `repr(nameplate)`, so one SKU got two ids.** `identity_keys(..., 700)` and `identity_keys(..., 700.0)` returned different digests. Both spellings are reachable: `ComponentInstance.nameplate` is a `float` after its validator, a nameplate from a JSON row or CEC export is an `int`. Two ids for one product sort as two rows, so the workbook reorders on re-ingest with no data change - AC-7's failure reaching the tie-break | **Fixed** — normalised through `float`, which leaves every existing float-keyed id untouched |
+| A-55 | **M** | **Replaying a resolution from its serialised form was refused as tampering.** `__setattr__` and `evolve` compared the incoming value *before* pydantic coerced it, so a `dict` read back from a store never equalled the `Resolution` it encodes. Both docstrings promise the opposite - "re-assigning an equal value is allowed so an idempotent replay is not an error" - and the failure lands at the store boundary the class explicitly designs `__setstate__` and `__deepcopy__` for | **Fixed** — coerced before comparing, never forced: an uncoercible value still compares unequal and still raises |
+| A-56 | **M** | **FR-HITL-06's invariant is guarded route by route, and the inventory is already incomplete.** Five pydantic entry points are overridden; `copy.copy` is not, and reproduces the forbidden RESOLVED-without-resolution state that `copy.deepcopy` of the same object refuses. Every future entry point needs another override, and the failure mode is silence | **Open.** [open-decisions.md #10](open-decisions.md) recommends `__copy__` now and a discriminated encoding as a C5 amendment before WP-F builds against the current shape |
+| A-57 | **H** | **`_ordering_key` reprs the candidate value, so a dict's insertion order decided pair orientation.** `{"ONAN": 30, "ONAF": 40}` and `{"ONAF": 40, "ONAN": 30}` are `==` and repr differently; the contract has three dict-valued parameters. Which candidate came out `left` in `comparison_pairs` therefore moved when an extractor re-read a cooling table's rows in a different order - and D-14 pins the projection's sort to this function's field sequence, so it moves a hashed artifact with no data change. **Fourth instance of A-6's class**, and A-50 said to expect it | **Fixed for the value component** — it routes through `schema.rendering.render_value`, the canonicalisation `claims._render` already applied and this function did not. **A-50's own residual is untouched and still Track 1b's**: the key's *first* component is still `repr(condition.grouping_key())`, the enum `repr` D-14 bans, which needs `encode_value()` and carries the re-baselining risk this fix does not |
+| A-58 | **L** | `normalize_archive` set the private `ZipInfo._compresslevel` with a `type: ignore`, on a comment citing Decision 8c. Decision 8c's warning is about `ZipFile(compresslevel=)`; `writestr` takes its own and sets exactly that attribute. The private spelling also leaned on a compatibility alias - the attribute is `_compress_level` from 3.13 | **Fixed** — `writestr(..., compresslevel=...)`. Verified byte-identical output against the previous implementation, so no AC-7 hash moves |
+| A-59 | **L** | `severity._numeric_value` was a line-for-line copy of `conflict_hitl._as_number`. Its docstring justified the copy as "a second, smaller computation this module actually needs" and warned that importing the original "is how a helper import quietly becomes a second copy of the parent's comparison semantics" - which is what the copy itself was | **Fixed** — promoted to `tolerance.as_number`, public and imported by both, so what counts as a number cannot drift between detection and severity |
+| A-60 | **L** | `ComponentInstance.unresolved_conflicts` and `output.flags_for` imported `ConflictStatus` inside the function body although the module was already imported at the top with no cycle to break, which reads as a cycle-breaker and invites the next author to preserve it | **Fixed** — hoisted to the existing top-level imports |
+
+## What this round did not look at
+
+Stated because a review's silence is otherwise read as a pass. `sql/` was not re-reviewed (Round
+5 and the live suite cover it), the six `ports/` Protocols have no implementation to review, and
+the modules holding the ten `NotImplementedError` stubs were read only for their docstrings. The
+findings above are all in the implemented policy core and schema - about 4,900 of `src/`'s 5,264
+lines, the remainder being `ports/` and the four wholly-stub service modules.
+
 ## Consistency checks that passed
 
 - All **32** FR IDs in spec.md match the TRS analysis; none invented, none dropped. (An earlier version of this line said 26, which is the count with FR-OUT-01..06 omitted — see A-27. The sweep itself was correct; the total was not.)

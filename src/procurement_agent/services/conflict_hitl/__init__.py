@@ -13,7 +13,6 @@ AC-2 tests it directly.
 from __future__ import annotations
 
 import itertools
-import math
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -30,9 +29,11 @@ from ...schema import (
     StandardsRegime,
     ToleranceCondition,
     ToleranceRule,
+    render_value,
 )
 from .severity import assign_severity as assign_severity  # re-exported: the D-3 lookup
 from .tolerance import FieldTolerance
+from .tolerance import as_number as as_number  # re-exported: one numeric rule, not two
 from .tolerance import tolerance_for as tolerance_for  # re-exported: the table's entry point
 
 
@@ -63,10 +64,19 @@ def _ordering_key(candidate: ConflictCandidate) -> tuple[str, ...]:
     and two candidates that differ are two candidates. Nothing normalises a
     candidate's `unit` or `verbatim_value` on the way in, so preserving the
     distinction is the only way the order stays total.
+
+    **The value goes through `render_value`, not `repr`.** Faithful is not the
+    same as `repr`: a dict reprs in insertion order, so `{'ONAN': 30, 'ONAF': 40}`
+    and `{'ONAF': 40, 'ONAN': 30}` - equal values, and the contract has three
+    dict-valued parameters - sorted apart, and which candidate came out `left`
+    in `comparison_pairs` changed with the order an extractor happened to read a
+    cooling table's rows. That is A-50's class again: a hashed artifact moving
+    with no data change. Ordering *between* two genuinely different values is
+    unaffected, since the rendering is still total.
     """
     return (
         repr(candidate.condition.grouping_key()),
-        repr(candidate.value),
+        render_value(candidate.value),
         repr(candidate.unit),
         candidate.source_tier.value,
         repr(candidate.source_ref.model_dump(mode="json")),
@@ -256,20 +266,6 @@ def _split_edition(value: str) -> tuple[str, str | None]:
     return _EDITION.sub("", text), match.group(1)
 
 
-def _as_number(value: object) -> float | None:
-    """A numeric reading of a candidate value, or None if it is not a number.
-
-    `bool` is excluded even though it is an `int`: `True` comparing equal to a
-    1.0 nameplate is nonsense that no tolerance would catch.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float | Decimal):
-        number = float(value)
-        return number if math.isfinite(number) else None
-    return None
-
-
 def _places(text: str) -> int:
     try:
         exponent = Decimal(text).as_tuple().exponent
@@ -334,7 +330,7 @@ def _decimals(candidate: ConflictCandidate) -> int:
     catalog values D-2 calls EXACT, and `repr(float(...))` would give it a
     decimal place it never had - the `650` vs `650.0` case D-2 names.
     """
-    number = _as_number(candidate.value)
+    number = as_number(candidate.value)
     if candidate.verbatim_value is not None and number is not None:
         printed: int | None = None
         for pattern in _NUMBER_TOKENS:
@@ -456,7 +452,7 @@ def values_conflict(
             "resolved by tolerance (FR-ING-08)",
         )
 
-    number_a, number_b = _as_number(a.value), _as_number(b.value)
+    number_a, number_b = as_number(a.value), as_number(b.value)
     if number_a is None or number_b is None:
         if isinstance(a.value, str) and isinstance(b.value, str):
             return _compare_text(a, b)

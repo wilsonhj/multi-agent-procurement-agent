@@ -7,6 +7,7 @@ changelog, because each one passed a green suite.
 
 import inspect
 from collections.abc import Sequence
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -545,3 +546,91 @@ def test_the_claim_is_the_single_authority_for_it() -> None:
         confidence=0.9,
     )
     assert claim.provenance().extractor_version == "extract@3"
+
+
+# --- one number, three Python types --------------------------------------------
+#
+# `_asserted` rendered the value with `repr`, so `650`, `650.0` and
+# `Decimal("650")` were three answers about one figure. The projection then
+# disagreed with the tolerance table it is supposed to feed, and - worse, because
+# it loses the field rather than over-reporting - `canonical_claims` raised on a
+# claim key whose two claims say the same thing.
+
+
+def test_an_int_and_a_float_of_one_figure_are_one_answer() -> None:
+    """`values_conflict` calls 650 vs 650.0 no conflict
+    (`test_nameplate_absorbs_650_versus_650_point_0_and_nothing_more`). The
+    projection reporting OPEN for the same pair puts a reviewer in a queue the
+    conflict detector says is empty."""
+    projected = project([_claim(650, doc="d1"), _claim(650.0, doc="d2")])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_a_decimal_is_the_same_answer_as_the_int_and_the_float() -> None:
+    """D-2's EXACT catalog values are naturally `Decimal`, so all three types
+    reach one field."""
+    projected = project(
+        [_claim(650, doc="d1"), _claim(650.0, doc="d2"), _claim(Decimal("650"), doc="d3")]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_a_trailing_zero_is_not_a_second_answer() -> None:
+    """`Decimal("650")` and `Decimal("650.0")` are `==`. The precision difference
+    is real and D-14's *hash* encoder must keep it - it sets D-2's rounding floor
+    - but that floor is read downstream from `verbatim_value`, which `_asserted`
+    deliberately excludes. Here the question is only whether the two claims said
+    the same thing."""
+    projected = project([_claim(Decimal("650"), doc="d1"), _claim(Decimal("650.0"), doc="d2")])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_one_extractor_reading_an_int_and_a_float_does_not_lose_the_field() -> None:
+    """Same document, same version, same condition: one claim key. A table cell
+    parsed to `int` and body text parsed to `float` raised ProposalError and took
+    the whole field with it."""
+    same_key = [
+        _claim(650, doc="d1", version="extract@1"),
+        _claim(650.0, doc="d1", version="extract@1"),
+    ]
+    assert len(canonical_claims(same_key)) >= 1
+    assert project(same_key)[0].conflict_status is ConflictStatus.NONE
+
+
+def test_a_genuine_disagreement_still_opens() -> None:
+    """The fix must not swallow the case the projection exists for."""
+    projected = project([_claim(650.0, doc="d1"), _claim(655.0, doc="d2")])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.OPEN]
+
+
+def test_a_bool_is_not_the_number_one() -> None:
+    """`True` is an `int`. Collapsing it onto `1` is the case `as_number` excludes
+    for tolerance, and the same reasoning holds for agreement."""
+    projected = project([_claim(True, doc="d1", unit=None), _claim(1, doc="d2", unit=None)])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.OPEN]
+
+
+def test_a_unit_apart_is_still_two_answers() -> None:
+    """The numeric collapse must not reach across units: FR-ING-08 says a unit
+    mismatch is never resolved by tolerance."""
+    projected = project([_claim(650, doc="d1", unit="W"), _claim(650.0, doc="d2", unit="kW")])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.OPEN]
+
+
+def test_a_number_and_its_string_are_two_answers() -> None:
+    """`"650"` is a string a parser failed to convert, not the figure 650."""
+    projected = project([_claim(650, doc="d1"), _claim("650", doc="d2")])
+    assert [f.conflict_status for f in projected] == [ConflictStatus.OPEN]
+
+
+def test_a_dict_valued_field_does_not_disagree_with_itself() -> None:
+    """Two extractions reading one cooling table's rows in different orders.
+    `render_value` already covered this in the projection; pinned here so the
+    move to `schema.rendering` keeps it."""
+    projected = project(
+        [
+            _claim({"ONAN": 30.0, "ONAF": 40.0}, doc="d1", field="rating_mva_by_cooling"),
+            _claim({"ONAF": 40.0, "ONAN": 30.0}, doc="d2", field="rating_mva_by_cooling"),
+        ]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]

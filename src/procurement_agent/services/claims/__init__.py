@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +38,7 @@ from ...schema import (
     ConflictStatus,
     SourceRef,
     SourceTier,
+    render_value,
 )
 from ..conflict_hitl import assert_no_autonomous_overwrite
 
@@ -142,35 +144,40 @@ class StoredValueLossError(ProposalError):
     """
 
 
-def _render(value: object, _containers: tuple[int, ...] = ()) -> str:
-    """A textual rendering of a claim value that respects equality.
+def _numeric_answer(value: object) -> str | None:
+    """One rendering for every spelling of the same number, or None.
 
-    `repr` does not, and that is not a nicety: a dict reprs in *insertion* order,
-    so two extractions that read one cooling table's rows in different orders
-    give values that are `==` and reprs that are not. The contract has three
-    dict-valued parameters - `rating_mva_by_cooling`, `harmonic_spectrum`,
-    `ercot_compliance_items` - and under `repr` such a pair counted as a
-    disagreement: an OPEN conflict between two identical values, or a
-    `ProposalError` losing the whole field when the two shared a claim key.
+    `650`, `650.0` and `Decimal("650")` are one answer about the world in three
+    Python types, and `repr` gives three strings. That split reached two places
+    at once: `_status_for` reported OPEN for a pair `values_conflict` calls no
+    conflict at all (`test_nameplate_absorbs_650_versus_650_point_0_and_nothing_more`
+    pins the tolerance side), and `canonical_claims` raised `ProposalError` and
+    lost the whole field when one extractor read `650` from a table cell and
+    `650.0` from parsed text under the same claim key.
 
-    Containers are walked rather than repr'd whole, so the canonicalisation
-    reaches a nested dict. The cycle guard is not tidiness: `repr` already
-    handles a self-referential value, and a hand-rolled walk that did not would
-    trade a false conflict for a `RecursionError`.
+    **This is not the encoder D-14 asks to be injective.** That one hashes the
+    artifact of record and must keep the three apart, because `_decimals` reads
+    precision from the printed value and that precision sets D-2's rounding
+    floor. Here the question is only "did these two claims say the same thing",
+    and the rounding floor is computed downstream from `verbatim_value`, which
+    this signature deliberately excludes. Agreeing with `values_conflict` is the
+    requirement; injectivity is the other function's.
+
+    `bool` is excluded for the reason `as_number` excludes it: `True` is an
+    `int`, and a `True` that read as `1` would agree with a 1.0 claim.
     """
-    if id(value) in _containers:
-        return "..."
-    nested = (*_containers, id(value))
-    if isinstance(value, dict):
-        entries = sorted((_render(k, nested), _render(v, nested)) for k, v in value.items())
-        return "{" + ", ".join(f"{key}: {item}" for key, item in entries) + "}"
-    if isinstance(value, list | tuple):
-        return f"{type(value).__name__}[" + ", ".join(_render(v, nested) for v in value) + "]"
-    if isinstance(value, set | frozenset):
-        return (
-            f"{type(value).__name__}[" + ", ".join(sorted(_render(v, nested) for v in value)) + "]"
-        )
-    return repr(value)
+    if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:  # pragma: no cover - str() of a real number parses
+        return None
+    if not number.is_finite():
+        return None
+    # `normalize()` folds the trailing zero `:f` would keep, so `650.0` and `650`
+    # render alike; `:f` then keeps the result out of exponent form, so a
+    # normalize() that returns `6.5E+2` does not reintroduce a second spelling.
+    return f"num:{number.normalize():f}"
 
 
 def _asserted(claim: FieldClaim) -> tuple[str, str]:
@@ -186,8 +193,12 @@ def _asserted(claim: FieldClaim) -> tuple[str, str]:
     a location, which is provenance in exactly the way `source_ref.page` is: a
     datasheet printing `650 W` in a summary table and `650` in the electrical
     table has stated one figure twice, not contradicted itself.
+
+    Numbers go through `_numeric_answer` so that one figure in three Python
+    types is one answer; everything else through `render_value`, so a dict's
+    insertion order is not an answer either.
     """
-    return (_render(claim.value), claim.unit or "")
+    return (_numeric_answer(claim.value) or render_value(claim.value), claim.unit or "")
 
 
 def _identity(claim: FieldClaim) -> tuple[str, ...]:
@@ -206,7 +217,7 @@ def _identity(claim: FieldClaim) -> tuple[str, ...]:
         claim.field_name,
         claim.extractor_version,
         repr(claim.condition.grouping_key()),
-        _render(claim.value),
+        render_value(claim.value),
         claim.unit or "",
         claim.verbatim_value or "",
         claim.source_tier.value,

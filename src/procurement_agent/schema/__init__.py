@@ -32,6 +32,7 @@ from .field import (
     SourceRef,
     VocabularyError,
 )
+from .rendering import render_value
 
 __all__ = [
     "CATEGORY_TO_TAB",
@@ -63,4 +64,5 @@ __all__ = [
     "ToleranceRule",
     "VocabularyError",
     "WorkbookTab",
+    "render_value",
 ]

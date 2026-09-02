@@ -604,3 +604,27 @@ def test_the_variant_mismatch_gap_is_named() -> None:
     """D-4 is explicit that a variant mismatch is *not* a spec conflict, and
     nothing downstream can express that yet."""
     assert any("ConflictClass" in key for key in UNIMPLEMENTED_D4A)
+
+
+def test_the_surrogate_id_does_not_depend_on_the_nameplates_python_type() -> None:
+    """One product, two spellings of its nameplate.
+
+    `ComponentInstance.nameplate` is a `float` after its validator; a nameplate
+    read from a JSON row or a CEC export arrives as an `int`. Hashing
+    `repr(nameplate)` gave those two ids, so one SKU sorted as two rows and the
+    workbook reordered on re-ingest with no data change - AC-7's failure mode
+    reaching the tie-break.
+    """
+    assert (
+        identity_keys("Trina Solar", "TSM-700NEG21C.20", 700).surrogate_id
+        == identity_keys("Trina Solar", "TSM-700NEG21C.20", 700.0).surrogate_id
+    )
+
+
+def test_an_absent_nameplate_is_not_the_same_as_zero() -> None:
+    """Normalising through `float` must not fold `None` onto a number: 'no
+    nameplate stated' and 'a nameplate of 0' are different facts."""
+    assert (
+        identity_keys("Trina Solar", "TSM-700NEG21C.20", None).surrogate_id
+        != identity_keys("Trina Solar", "TSM-700NEG21C.20", 0.0).surrogate_id
+    )

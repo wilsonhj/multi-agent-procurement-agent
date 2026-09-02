@@ -238,7 +238,7 @@ three places contract keys are duplicated as data — the frozen markdown, `FIEL
 `services/claims/__init__.py:52`, and `schema/field.py` holds `CanonicalField`, `SourceRef` and
 the condition types instead. The keys are validated where they are *used as keys*:
 `ComponentInstance.fields` (`schema/component.py:83`, the `dict[str, list[CanonicalField]]`) and
-`commit_claims` (`services/claims/__init__.py:472`). Third, tightening either can break the
+`commit_claims` (`services/claims/__init__.py:475`). Third, tightening either can break the
 **byte-compared** committed fixtures in `tests/fixtures/claims/`, which must be re-validated as
 part of this track rather than discovered by Track 3.
 

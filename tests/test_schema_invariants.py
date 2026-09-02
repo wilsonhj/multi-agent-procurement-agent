@@ -88,19 +88,34 @@ def test_canonical_field_has_the_eight_spec_keys_plus_condition() -> None:
         "conflict_status",
         "resolution",
     }
-    assert spec_keys <= set(CanonicalField.model_fields)
-    assert set(CanonicalField.model_fields) - spec_keys == {"condition"}
+    field = CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    on_the_wire = set(field.model_dump())
+    assert spec_keys <= on_the_wire
+    assert on_the_wire - spec_keys == {"condition"}
+    # D-18: `conflict_status` is computed from `resolution` and the stored
+    # `unresolved_status`, which is excluded from the dump. The contract's key
+    # set is the wire shape, not the storage layout.
+    assert "conflict_status" in CanonicalField.model_computed_fields
+    assert "unresolved_status" in CanonicalField.model_fields
+    assert "unresolved_status" not in on_the_wire
 
 
 def test_resolved_field_must_carry_its_resolution() -> None:
     """FR-HITL-06: decisions are logged with user, timestamp, before/after, rationale."""
     with pytest.raises(ValidationError):
-        CanonicalField(
-            value=650,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="doc-1"),
-            confidence=0.9,
-            conflict_status=ConflictStatus.RESOLVED,
+        CanonicalField.model_validate(
+            {
+                "value": 650,
+                "source_tier": SourceTier.SYSTEM_OF_RECORD,
+                "source_ref": SourceRef(document_id="doc-1"),
+                "confidence": 0.9,
+                "conflict_status": ConflictStatus.RESOLVED,
+            }
         )
 
 
@@ -110,7 +125,6 @@ def test_resolved_field_accepts_a_resolution() -> None:
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="doc-1"),
         confidence=0.9,
-        conflict_status=ConflictStatus.RESOLVED,
         resolution=Resolution(
             action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
             resolved_by="procurement.lead",
@@ -120,18 +134,21 @@ def test_resolved_field_accepts_a_resolution() -> None:
             value_after=650,
         ),
     )
-    # Echoing the constructor kwarg back tests pydantic, not the validator. What
-    # `_resolution_matches_status` actually enforces is the *other* direction:
-    # RESOLVED without a Resolution is the state FR-HITL-06 forbids, because a
-    # decision with no record of who made it is not auditable.
+    # D-18: RESOLVED is derived from the resolution being present, not stored.
+    # The other direction - RESOLVED asked for with no Resolution - is refused
+    # at the door, because a decision with no record of who made it is not
+    # auditable (FR-HITL-06).
     assert field.resolution is not None
+    assert field.conflict_status is ConflictStatus.RESOLVED
     with pytest.raises(ValidationError):
-        CanonicalField(
-            value=650,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="doc-1"),
-            confidence=0.9,
-            conflict_status=ConflictStatus.RESOLVED,
+        CanonicalField.model_validate(
+            {
+                "value": 650,
+                "source_tier": SourceTier.SYSTEM_OF_RECORD,
+                "source_ref": SourceRef(document_id="doc-1"),
+                "confidence": 0.9,
+                "conflict_status": ConflictStatus.RESOLVED,
+            }
         )
 
 
@@ -203,7 +220,7 @@ def test_resolution_invariant_survives_assignment() -> None:
         source_ref=SourceRef(document_id="doc-1"),
         confidence=0.9,
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="must carry its Resolution"):
         field.conflict_status = ConflictStatus.RESOLVED
 
 
@@ -242,10 +259,11 @@ def test_a_resolved_field_cannot_have_its_resolution_cleared() -> None:
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="doc-1"),
         confidence=0.9,
-        conflict_status=ConflictStatus.RESOLVED,
         resolution=_resolution("procurement.lead"),
     )
-    with pytest.raises(ValidationError):
+    # D-18: clearing the resolution would silently un-resolve the field, so it
+    # is the append-only rule that refuses it now, not a state validator.
+    with pytest.raises(ValueError, match="cannot be replaced or cleared"):
         field.resolution = None
 
 
@@ -282,7 +300,7 @@ def _field(value: object, status: ConflictStatus, temp: float | None = None) -> 
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="ds-1"),
         confidence=0.9,
-        conflict_status=status,
+        unresolved_status=status,
     )
 
 

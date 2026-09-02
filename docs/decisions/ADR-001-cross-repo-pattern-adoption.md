@@ -47,7 +47,7 @@ The gaps, verified against the working tree:
   container health check, a different concern). No module in `src/` imports `logging`.
 - **Ports with no adapters and no tests.** The six port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
-  at all (`docs/current-state.md:406`). `docs/development.md:157-163` records the hazard in
+  at all (`docs/current-state.md:407`). `docs/development.md:157-163` records the hazard in
   its own words: no adapter layout convention exists, so the first adapter "decides the
   layout for everyone after it".
 - **Observability is the emptiest quadrant.** The audit DDL is live-tested — six chain
@@ -122,9 +122,9 @@ is the conformance matrix.
 This directly answers the recorded hazard that the first adapter "decides the layout for
 everyone after it" (`docs/development.md:157-163`): the contract suite exists *before* the
 first adapter, so the adapter conforms to the tests rather than the tests to the adapter.
-It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:406`
+It also gives `ports` its first importing tests, closing the gap `docs/current-state.md:407`
 names as a good first contribution, and it converts AC-8's `declared` status
-(`docs/current-state.md:215`) into something an adapter can be held to.
+(`docs/current-state.md:216`) into something an adapter can be held to.
 
 ### 3 — Producer-side bounding and explicit timeouts
 

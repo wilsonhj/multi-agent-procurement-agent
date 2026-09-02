@@ -1067,29 +1067,46 @@ typography.
    element order counts because no `SET_EQUAL` row exists, instead of calling two lists
    "not comparable".
 
-## D-18 — The RESOLVED invariant: close today's hole, and name the structural fix
+## D-18 — The RESOLVED invariant is structural: RESOLVED is derived, not stored
 
-> **Status: ADOPTED 2026-09-02** for the first half; the second half is a recommendation for
-> the C5 owner. Closes [A-56](analysis.md)'s reproduced defect and folds in what was
-> `open-decisions.md` item 10.
+> **Status: ADOPTED IN FULL 2026-09-02.** First adopted for the interim `__copy__` closure;
+> the structural half was adopted the same day on the maintainer's instruction. Closes
+> [A-56](analysis.md) and folds in what was `open-decisions.md` item 10.
 
 **The defect.** `CanonicalField` forbids `conflict_status=RESOLVED` with `resolution=None` by
 overriding five pydantic entry points, and `copy.copy` was not among them: a `__dict__`-poisoned
 field shallow-copied into a collection carried the forbidden state across while `copy.deepcopy`
 of the same object refused it.
 
-**Adopted now:** a `__copy__` override mirroring `__deepcopy__`. This closes the hole, not the
-class of hole — every future entry point (`model_validate_strings`, `from_attributes`, whatever
-the next pydantic adds) needs another override, and the failure mode is silence.
+**Adopted, interim (superseded the same day):** a `__copy__` override mirroring
+`__deepcopy__`. It closed the hole, not the class of hole.
 
-**Recommended, not adopted:** make `RESOLVED` *derived*, not stored. Store the non-resolved
-state and `resolution: Resolution | None`; expose `conflict_status` as a computed field that
-returns `RESOLVED` exactly when a resolution is present. The forbidden combination then has no
-representation, and every override above goes away. The 2026-09-02 design review assessed this
-as low fixture risk — neither committed fixture serialises a `conflict_status` key — but it
-changes the shape of the frozen C5 record and interacts with any move to `extra="forbid"`, so it
-is the C5 owner's call and belongs in a change of its own, before WP-F builds the reviewer API
-against the current shape.
+**Adopted, structural:** `RESOLVED` is *derived*, not stored.
+
+1. `CanonicalField` stores `unresolved_status` — NONE, OPEN or INSUFFICIENT_EVIDENCE, with
+   RESOLVED refused by a field validator — and `resolution: Resolution | None`.
+2. `conflict_status` is a computed field: RESOLVED exactly when a resolution is present,
+   otherwise the stored state. It serialises under the TRS's key; `unresolved_status` is
+   excluded from serialisation. **The wire shape is unchanged**: eight TRS keys plus
+   `condition`, and `model_validate(model_dump())` round-trips both states.
+3. The contract's name is still accepted everywhere it was: a before-validator maps
+   `conflict_status=` onto the stored field for the constructor, `evolve` and
+   `model_validate`, refusing RESOLVED-with-no-resolution at the door; `model_construct` maps
+   it rather than dropping it silently; the property setter accepts an unresolved state and
+   refuses to move a resolved field off RESOLVED, since resolutions are append-only.
+4. **Deleted:** `_assert_resolution_matches_status`, the `model_validator`, and the
+   `model_construct`, `__setstate__`, `__copy__` and `__deepcopy__` overrides — the forbidden
+   combination has no representation, so there is nothing for them to check. The
+   `model_copy(update=)` refusal stays, because it is about the *other* invariant: an
+   unvalidated `update` could replace a recorded `Resolution` unseen.
+5. **What a raw `__dict__` write can still do** is clear `resolution`, which un-resolves the
+   field consistently; it can no longer fabricate a resolved one. That residual is recorded in
+   `tests/test_resolution_immutability.py` as a fact rather than an oversight.
+
+**Cost, measured.** Zero fixture change — neither committed fixture serialises a
+`CanonicalField`. Typed direct construction in code uses `unresolved_status=` and
+`resolution=`; the wire and `evolve` keep `conflict_status=`. The reducer passes the unresolved
+state and lets the decision derive RESOLVED, which is what D-16 point 4 already said in prose.
 
 ## Carried forward as genuinely unresolved
 

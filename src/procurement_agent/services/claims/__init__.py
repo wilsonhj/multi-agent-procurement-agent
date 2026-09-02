@@ -449,6 +449,7 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
     for key in sorted(groups, key=repr):
         group = groups[key]
         chosen = _preferred(group)
+        status = _status_for(group)
         projected.append(
             CanonicalField(
                 value=chosen.value,
@@ -458,11 +459,13 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
                 source_tier=chosen.source_tier,
                 source_ref=chosen.provenance(),
                 confidence=chosen.confidence,
-                conflict_status=_status_for(group),
-                # D-16: the stored field carries the decision that settled it.
-                # Status and decision both come from `_human_decision`, so a
-                # RESOLVED field always has its Resolution and a field with a
-                # Resolution is always RESOLVED.
+                # D-16: the stored field carries the decision that settled it,
+                # and D-18 makes RESOLVED derive from that decision - so the
+                # stored state is the *unresolved* one, and `_human_decision`
+                # deciding both `status` and `chosen` keeps them consistent.
+                unresolved_status=(
+                    ConflictStatus.NONE if status is ConflictStatus.RESOLVED else status
+                ),
                 resolution=chosen.resolution,
             )
         )

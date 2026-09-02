@@ -4,27 +4,26 @@
 This file covers the routes that skip validation entirely, and the one a
 validator structurally cannot see.
 
-**Why a separate file.** Review enumerated six ways to reach the forbidden
-RESOLVED-with-no-`Resolution` state and one way to silently overwrite a recorded
-decision, all of which passed against the version that claimed "two routes
-remain open". Each needs a named test rather than a line inside an existing one,
-because the useful failure message is *which route reopened*, and because two of
-the seven are deliberately not closed and have to say so out loud rather than
-being absent.
-
 The invariants:
 
   1. `conflict_status is RESOLVED` implies `resolution is not None` - a decision
-     with no record of who made it.
+     with no record of who made it. **Since D-18 this is structural**: RESOLVED
+     is derived from `resolution` being present and is not stored, so no route -
+     validated, unvalidated, or a raw `__dict__` write - can produce the
+     forbidden state. The tests below assert exactly that, on every route that
+     used to need its own override: `model_construct`, pickle, `copy.copy`,
+     `copy.deepcopy`, `model_copy(deep=True)` and `__dict__` itself.
   2. A recorded `Resolution` is never replaced or cleared. Every validator passes
      a swap, because the resulting state is perfectly legal; only a check that
-     can see the *transition* catches it. FR-HITL-06: "logged immutably".
+     can see the *transition* catches it. FR-HITL-06: "logged immutably". This
+     one is still a guard, in `__setattr__` and `evolve`.
 """
 
 from __future__ import annotations
 
 import copy
 import pickle
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -65,32 +64,30 @@ def _resolved() -> CanonicalField:
     return _field().evolve(conflict_status=ConflictStatus.RESOLVED, resolution=_resolution())
 
 
-def _poisoned() -> CanonicalField:
-    """A field in the forbidden state, reached the only way that still works.
+def _poked() -> CanonicalField:
+    """A field whose `__dict__` was written with the value that used to poison it.
 
-    Used as the *input* to the propagation tests below. Writing the instance
-    `__dict__` is not a route this type can close (see
-    `test_the_dict_write_route_is_documented_as_open`), so it is the honest way
-    to manufacture a corrupt object for the boundary tests without pretending the
-    supported API produced it.
+    Before D-18 this manufactured the forbidden state; it is kept as the input
+    to the route tests so they show the write is now inert rather than merely
+    guarded. `conflict_status` is a computed property, and a class data
+    descriptor wins over an instance `__dict__` entry, so the poke has no
+    effect on what the field reports.
     """
     field = _field()
     field.__dict__["conflict_status"] = ConflictStatus.RESOLVED
     return field
 
 
-# --- invariant 1: routes that skip validation ----------------------------------
+# --- invariant 1: the forbidden state has no representation --------------------
 
 
-def test_model_construct_still_runs_the_class_invariant() -> None:
-    """`model_construct` skips *field* parsing, which is its point, and skipped
-    model validators too, which is not. It produced a RESOLVED field with no
-    Resolution that then serialised into the audit trail with no complaint:
-
-        CanonicalField.model_construct(
-            ..., conflict_status=RESOLVED, resolution=None
-        ).model_dump()["conflict_status"]   # 'resolved'
-    """
+def test_the_forbidden_state_cannot_be_asked_for() -> None:
+    """The one place RESOLVED-with-no-resolution can still be *requested* is the
+    door, and the door refuses it - constructor, `evolve`, `model_construct`."""
+    with pytest.raises(ValueError, match="must carry its Resolution"):
+        _field(conflict_status=ConflictStatus.RESOLVED)
+    with pytest.raises(ValueError, match="must carry its Resolution"):
+        _field().evolve(conflict_status=ConflictStatus.RESOLVED)
     with pytest.raises(ValueError, match="must carry its Resolution"):
         CanonicalField.model_construct(
             value=650,
@@ -102,10 +99,25 @@ def test_model_construct_still_runs_the_class_invariant() -> None:
         )
 
 
-def test_model_construct_still_works_for_a_valid_field() -> None:
-    """The check must not cost `model_construct` its purpose: a well-formed
-    field still builds, and still without re-parsing its fields."""
+def test_resolved_is_not_a_storable_state() -> None:
+    """The stored field is the *unresolved* state. Writing RESOLVED into it
+    directly is refused, so the derivation has no back door."""
+    with pytest.raises(ValueError, match="RESOLVED is derived"):
+        _field(unresolved_status=ConflictStatus.RESOLVED)
+
+
+def test_model_construct_maps_the_contracts_name_rather_than_dropping_it() -> None:
+    """Stock `model_construct` ignores a keyword that is not a field. Dropping
+    `conflict_status` silently would downgrade OPEN to NONE on an audit path."""
     field = CanonicalField.model_construct(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+        conflict_status=ConflictStatus.OPEN,
+    )
+    assert field.conflict_status is ConflictStatus.OPEN
+    resolved = CanonicalField.model_construct(
         value=650,
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="doc-1"),
@@ -113,47 +125,65 @@ def test_model_construct_still_works_for_a_valid_field() -> None:
         conflict_status=ConflictStatus.RESOLVED,
         resolution=_resolution(),
     )
-    assert field.resolution is not None
+    assert resolved.conflict_status is ConflictStatus.RESOLVED
 
 
-def test_unpickling_a_corrupt_field_raises_rather_than_restoring_it() -> None:
-    """Pickle is a deserialisation boundary - a cache, a task queue, another
-    process - and stock pydantic restores `__dict__` wholesale with no validator
-    run, so a corrupt object crossed it and arrived looking freshly constructed.
+def test_a_dict_write_cannot_fabricate_a_resolved_field() -> None:
+    """The route that used to be documented as open, now closed by
+    construction: writing `__dict__` was the one primitive no override could
+    defend. It still runs; it no longer means anything, because RESOLVED is
+    not stored."""
+    poked = _poked()
+    assert poked.conflict_status is ConflictStatus.NONE
+    assert poked.resolution is None
 
-    This does not make the `__dict__` route defensible; it stops one component's
-    bug becoming another component's audit record."""
-    payload = pickle.dumps(_poisoned())
+    # `object.__setattr__` is not the same write as `__dict__[...]`: it still
+    # dispatches to the class's data descriptor, which is now the property
+    # setter, so this spelling is refused outright rather than ignored.
+    by_object_setattr = _field()
     with pytest.raises(ValueError, match="must carry its Resolution"):
-        pickle.loads(payload)
+        object.__setattr__(by_object_setattr, "conflict_status", ConflictStatus.RESOLVED)
+    assert by_object_setattr.conflict_status is ConflictStatus.NONE
 
 
-def test_a_valid_field_still_survives_a_pickle_round_trip() -> None:
+@pytest.mark.parametrize(
+    "route",
+    [
+        pytest.param(lambda f: pickle.loads(pickle.dumps(f)), id="pickle"),
+        pytest.param(copy.copy, id="copy"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda f: f.model_copy(deep=True), id="model_copy-deep"),
+        pytest.param(lambda f: f.model_copy(), id="model_copy-shallow"),
+    ],
+)
+def test_no_copy_or_boundary_route_yields_the_forbidden_state(
+    route: Callable[[CanonicalField], CanonicalField],
+) -> None:
+    """Every route that once needed its own override, asserted the same way:
+    what comes out is consistent, whether the input was poked or not."""
+    for field in (_poked(), _field(), _resolved()):
+        out = route(field)
+        assert (out.conflict_status is ConflictStatus.RESOLVED) == (out.resolution is not None)
+        assert out.conflict_status is field.conflict_status
+        assert out.resolution == field.resolution
+
+
+def test_the_wire_shape_is_unchanged() -> None:
+    """The TRS's eight keys plus `condition`, with `conflict_status` present and
+    the stored `unresolved_status` absent - and the round trip preserves both
+    an unresolved state and a resolved one."""
+    for field in (_field(conflict_status=ConflictStatus.OPEN), _resolved()):
+        dumped = field.model_dump(mode="json")
+        assert "conflict_status" in dumped and "unresolved_status" not in dumped
+        assert CanonicalField.model_validate(dumped).conflict_status is field.conflict_status
+
+
+def test_a_resolved_field_cannot_be_moved_off_resolved() -> None:
+    """Resolutions are append-only, so the derived status is too."""
     field = _resolved()
-    restored = pickle.loads(pickle.dumps(field))
-    assert restored.resolution == field.resolution
-    assert restored.conflict_status is ConflictStatus.RESOLVED
-
-
-def test_deepcopying_a_corrupt_field_raises_rather_than_duplicating_it() -> None:
-    """`copy.deepcopy` is the in-process twin of a pickle round trip, and the
-    ordinary way a corrupt object gets duplicated into a collection that is then
-    serialised."""
-    with pytest.raises(ValueError, match="must carry its Resolution"):
-        copy.deepcopy(_poisoned())
-
-
-def test_a_valid_field_still_survives_a_deepcopy() -> None:
-    field = _resolved()
-    assert copy.deepcopy(field).resolution == field.resolution
-
-
-def test_model_copy_deep_also_revalidates() -> None:
-    """`model_copy(deep=True)` routes through `__deepcopy__`, so the guard has to
-    hold there too - otherwise the one `model_copy` form this class still allows
-    becomes the replacement for the `update=` form it refuses."""
-    with pytest.raises(ValueError, match="must carry its Resolution"):
-        _poisoned().model_copy(deep=True)
+    with pytest.raises(ValueError, match="append-only"):
+        field.conflict_status = ConflictStatus.OPEN
+    assert field.conflict_status is ConflictStatus.RESOLVED
 
 
 # --- invariant 2: a recorded decision is never overwritten ---------------------
@@ -211,36 +241,7 @@ def test_reassigning_an_equal_resolution_is_not_an_error() -> None:
     assert field.evolve(resolution=_resolution()).resolution == _resolution()
 
 
-# --- what is deliberately NOT closed --------------------------------------------
-
-
-def test_the_dict_write_route_is_documented_as_open() -> None:
-    """The one remaining route, asserted as open on purpose.
-
-    Writing the instance `__dict__` - directly, or via `object.__setattr__`,
-    which is the same write in a different spelling - reaches the forbidden state
-    and cannot be defended against by any Python object: it is the same primitive
-    the language uses to build the object in the first place.
-
-    This test exists so the gap is a recorded fact rather than an oversight, and
-    so that if a future pydantic release *does* close it, this goes red and the
-    claim in `CanonicalField`'s docstring and in
-    docs/requirements-traceability.md gets updated rather than quietly becoming
-    over-cautious."""
-    by_dict = _field()
-    by_dict.__dict__["conflict_status"] = ConflictStatus.RESOLVED
-    assert by_dict.conflict_status is ConflictStatus.RESOLVED
-    assert by_dict.resolution is None
-
-    by_object_setattr = _field()
-    object.__setattr__(by_object_setattr, "conflict_status", ConflictStatus.RESOLVED)
-    assert by_object_setattr.conflict_status is ConflictStatus.RESOLVED
-    assert by_object_setattr.resolution is None
-
-    # And the same route clears a recorded resolution.
-    cleared = _resolved()
-    cleared.__dict__["resolution"] = None
-    assert cleared.resolution is None
+# --- invariant 2, continued: replay and coercion ---------------------------------
 
 
 def test_replaying_an_equal_resolution_from_its_serialised_form_is_not_an_error() -> None:
@@ -286,15 +287,13 @@ def test_an_uncoercible_resolution_is_still_refused() -> None:
         field.resolution = not_a_resolution
 
 
-def test_shallow_copying_a_corrupt_field_raises_rather_than_duplicating_it() -> None:
-    """A-56. `copy.copy` was the route the inventory missed: pydantic implements
-    it by copying `__dict__` exactly as `__deepcopy__` does, so a poisoned field
-    shallow-copied into a collection carried the forbidden state across while
-    the deep copy of the same object refused it."""
-    with pytest.raises(ValueError, match="must carry its Resolution"):
-        copy.copy(_poisoned())
-
-
-def test_a_valid_field_still_survives_a_shallow_copy() -> None:
-    field = _resolved()
-    assert copy.copy(field) == field
+def test_a_dict_write_can_still_erase_a_decision_and_that_is_recorded() -> None:
+    """What a raw `__dict__` write can still do: clear `resolution`, which
+    un-resolves the field consistently. No Python object can defend that
+    primitive; it is recorded here so the residual is a fact rather than an
+    oversight, and so that it can no longer *fabricate* a decision is the line
+    that moved."""
+    cleared = _resolved()
+    cleared.__dict__["resolution"] = None
+    assert cleared.resolution is None
+    assert cleared.conflict_status is not ConflictStatus.RESOLVED

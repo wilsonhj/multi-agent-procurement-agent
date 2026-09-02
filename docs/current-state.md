@@ -9,12 +9,12 @@ substrate landed, and the contract section was rewritten again when D-13, D-14 a
 adopted on 2026-08-07. It answers the practical question a new contributor has first: what can
 the repository do today?
 
-The local verification baseline is 523 passing tests and 24 skipped, a clean Ruff check, a clean
+The local verification baseline is 524 passing tests and 24 skipped, a clean Ruff check, a clean
 `ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
 24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
 disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
 was 229 passing when this audit was first written, then 470, then 481 before the implementation
-review added 19 and the three decisions it forced added 23 more.
+review added 19 and the three decisions it forced added 24 more.
 
 > **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
 > C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
@@ -36,8 +36,9 @@ review added 19 and the three decisions it forced added 23 more.
 >   test. See [Source authority](#source-authority).
 > - **D-17 (was A-53, High).** `ToleranceRule.SET_EQUAL` and a row for every `list[str]` key,
 >   so a reordered certification list is no longer a CRITICAL conflict.
-> - **D-18 (was A-56).** `copy.copy` now revalidates like `copy.deepcopy`; the structural
->   encoding that removes the class of hole is recommended to the C5 owner, not adopted.
+> - **D-18 (was A-56).** RESOLVED is now derived from `resolution` rather than stored, so a
+>   resolved field with no decision has no representation; five pydantic overrides are gone and
+>   the wire shape is unchanged. Adopted in full on the maintainer's instruction.
 >
 > **No status word in this document moved because of it.** Nothing new is implemented end to
 > end and nothing was withdrawn; the counts below are unchanged.
@@ -76,8 +77,8 @@ Closed enums cover component categories, document types, source tiers, conflict 
 conditions, severity, resolution actions, workbook tabs, and cell flags.
 
 Important validators already reject unsourced values, invalid confidence values,
-non-finite conditions and bands, malformed declared bands, and “resolved” fields without a
-resolution.
+non-finite conditions and bands, and malformed declared bands. A “resolved” field without a
+resolution is not rejected but *unrepresentable*: RESOLVED derives from the decision (D-18).
 
 ### Deterministic identity and ordering
 

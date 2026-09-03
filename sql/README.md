@@ -34,6 +34,7 @@ gets the dependency order right automatically:
 | `06_resolution.sql` | `resolution` + RLS | `04`, `05` |
 | `07_audit_event.sql` | `audit.event` + RLS, hash-chain columns, both trigger tripwires | `01`, `02` |
 | `08_job.sql` | `job` (stage state machine) + RLS | `02` |
+| `09_claim_natural_key_condition.sql` | fold `condition` into `claim_natural_key` | `04` |
 
 Two shared helpers cross file boundaries: `02_document.sql` defines
 `public.document_is_restricted(text)`, the confidentiality derivation every table

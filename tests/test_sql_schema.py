@@ -79,7 +79,30 @@ def test_the_expected_files_are_all_present() -> None:
         "06_resolution.sql",
         "07_audit_event.sql",
         "08_job.sql",
+        "09_claim_natural_key_condition.sql",
     ]
+
+
+def test_claim_natural_key_includes_condition() -> None:
+    """Python `FieldClaim.claim_key()` includes `grouping_key()`. SQL unique did
+    not, so the first production writer `ON CONFLICT`s the Sungrow trio into
+    `_existing_claim_id` and cannot persist D-1.
+
+    Asserted on the create-time constraint *and* the forward migration, because
+    a live database that already applied `04` will not re-run it.
+    """
+    create = _sql("04_claim.sql")
+    match = re.search(
+        r"CONSTRAINT claim_natural_key UNIQUE\s*\((.*?)\)",
+        create,
+        re.DOTALL,
+    )
+    assert match is not None
+    columns = [part.strip() for part in match.group(1).split(",")]
+    assert "condition" in columns
+    migration = _sql("09_claim_natural_key_condition.sql")
+    assert "claim_natural_key" in migration
+    assert re.search(r"\bcondition\b", migration) is not None
 
 
 # --- S9: a pre-existing over-privileged role must not survive a re-run ---------

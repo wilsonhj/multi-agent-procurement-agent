@@ -25,10 +25,12 @@ without `condition` defeats the condition gate on the only path that reaches it.
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import Callable, Iterable, Sequence
+from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...schema import (
     CanonicalField,
@@ -36,11 +38,26 @@ from ...schema import (
     Condition,
     ConflictCandidate,
     ConflictStatus,
+    Resolution,
     SourceRef,
     SourceTier,
+    ToleranceRule,
+    UnresolvedStatus,
+    encode_value,
 )
 from ...schema.registry import OffContractFieldError, require_contract_key
-from ..conflict_hitl import assert_no_autonomous_overwrite
+from ..conflict_hitl import (
+    _as_number,
+    _editions_by_base,
+    assert_no_autonomous_overwrite,
+    tolerance_for,
+    values_conflict,
+)
+
+#: The `extractor_version` prefix that marks a reviewer's decision recorded as a
+#: claim (D-16). `sql/06_resolution.sql` proposes `human:<resolved_by>`; the
+#: validator on `FieldClaim` is what makes the convention real.
+HUMAN_PREFIX = "human:"
 
 
 class FieldClaim(BaseModel):
@@ -85,6 +102,74 @@ class FieldClaim(BaseModel):
     source_tier: SourceTier
     source_ref: SourceRef
     confidence: float = Field(ge=0.0, le=1.0)
+    resolution: Resolution | None = Field(
+        default=None,
+        description=(
+            "Present on a **human claim** and on nothing else (D-16). A reviewer's "
+            "SELECT_VALUE, ENTER_OVERRIDE or KEEP_SYSTEM_OF_RECORD decision is "
+            "recorded as a claim carrying its Resolution, so the reducer sees a "
+            "human decision as the highest-priority claim rather than reading the "
+            "resolution table - which keeps 'the canonical value is a projection "
+            "over claims' (C8) true for human overrides too. sql/06 recommends "
+            "exactly this convention and says it cannot enforce it; this validator "
+            "is the enforcement."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _human_claims_carry_their_decision(self) -> FieldClaim:
+        """The D-16 convention, in both directions.
+
+        A claim whose `extractor_version` starts with `human:` is a reviewer's
+        decision and must carry the `Resolution` that produced it; a claim
+        carrying a `Resolution` must be marked as human. One without the other is
+        a decision with nobody behind it, or a person's name on a machine value.
+
+        Only value-asserting actions may be claims. DEFER and
+        REQUEST_MORE_WEB_SEARCH assert nothing about the world - they are events
+        against the *conflict*, recorded in `resolution` and `audit.event`, and a
+        claim for one would put a non-value in the value store.
+
+        `value_after`, when the reviewer recorded one, must be the claim's value:
+        a decision recorded against one number and a claim asserting another is
+        the drift this whole module exists to make impossible.
+        """
+        if self.is_human and self.resolution is None:
+            raise ValueError(
+                f"a human claim ({self.extractor_version!r}) must carry its Resolution; a "
+                "reviewer's value with no recorded decision is a decision with nobody "
+                "behind it (FR-HITL-06)"
+            )
+        if self.resolution is not None:
+            if not self.is_human:
+                raise ValueError(
+                    f"a claim carrying a Resolution must be a human claim: extractor_version "
+                    f"{self.extractor_version!r} does not start with {HUMAN_PREFIX!r}"
+                )
+            if not self.resolution.action.asserts_a_value:
+                raise ValueError(
+                    f"{self.resolution.action.value} asserts no value and cannot be a claim; "
+                    "it is recorded against the conflict, not in the value store (D-16)"
+                )
+            recorded = self.resolution.value_after
+            if recorded is not None and recorded != self.value:
+                raise ValueError(
+                    "the Resolution's value_after must be the claim's value: "
+                    f"{self.resolution.value_after!r} != {self.value!r}"
+                )
+        return self
+
+    @property
+    def is_human(self) -> bool:
+        """Whether this claim records a reviewer's decision (D-16).
+
+        The `human:` prefix is the primary encoding - it is the marker `sql/06`
+        proposes, and the only one the `claim` table can hold until it gains a
+        resolution column - so the property reads it, and the validator above
+        checks that `resolution` agrees rather than defining the fact a second
+        way.
+        """
+        return self.extractor_version.startswith(HUMAN_PREFIX)
 
     def claim_key(self) -> tuple[object, ...]:
         """The uniqueness key. Two claims sharing it are the same assertion.
@@ -92,12 +177,18 @@ class FieldClaim(BaseModel):
         `condition.grouping_key()` is in it because without it the Sungrow trio -
         one document, one field, one extractor version, three ambients - is
         indistinguishable from an extractor emitting three answers for one field.
+
+        A human claim's key also carries `resolved_at`: one reviewer may settle
+        the same field twice - a reopened conflict records a *new* decision, it
+        does not rewrite the old one - and without the timestamp the second
+        decision would collide with the first as "one extractor, two answers".
         """
         return (
             self.document_id,
             self.field_name,
             self.extractor_version,
             self.condition.grouping_key(),
+            None if self.resolution is None else self.resolution.resolved_at,
         )
 
     def provenance(self) -> SourceRef:
@@ -189,12 +280,13 @@ def _render(value: object, _containers: tuple[int, ...] = (), *, fold_equal: boo
       exactly this reason - a stray boolean must not read as a nameplate of 1.
       `encode_value` tests `bool` before `int` one layer down for the same
       reason. `repr` already separates them and no branch below rejoins them.
-    * `Decimal`. `Decimal("22.00") == Decimal("22")` and the two hash alike, but
-      `encoding.py` encodes a Decimal by `str()` and never `normalize()` because
-      `conflict_hitl._decimals` reads D-2's rounding floor off that exact text -
-      0 places gives 0.5, 1 place gives 0.05. Folding them would pick one
-      precision silently and move the floor, which is a behaviour change rather
-      than a formatting one. So a `Decimal` reaches `repr` in both modes.
+
+    Decimal printed precision is *not* folded away from the *record* (`_identity`
+    still `repr`s it) but *is* folded for the assertion: `values_conflict` already
+    treats `650`, `650.0` and `Decimal("650")` as one number via `_as_number`, and
+    D-2's rounding floor is read from `verbatim_value` / `encode_value`, not from
+    `_asserted`. Folding here at every depth closes the nested
+    `{"ONAN": 30}` vs `30.0` split.
 
     A `list` against a `tuple` needs no rule at all: `[1] != (1,)`, so the type
     tag telling them apart *is* `==`'s verdict rather than a departure from it.
@@ -227,12 +319,17 @@ def _render(value: object, _containers: tuple[int, ...] = (), *, fold_equal: boo
         tag = "set" if fold_equal else type(value).__name__
         sorted_members = sorted(_render(v, nested, fold_equal=fold_equal) for v in value)
         return f"{tag}[" + ", ".join(sorted_members) + "]"
-    if fold_equal and isinstance(value, float) and value.is_integer():
-        # The exact `int` is the one spelling every `==`-equal int and float
-        # share, and it stays exact where `repr` goes exponential (`1e+20`).
-        # `is_integer()` is false for both infinities and for NaN, so those keep
-        # `repr` - and NaN is not equal to itself, so it has no fold to join.
-        return repr(int(value))
+    if fold_equal:
+        # `_as_number` is the gate `values_conflict` uses: bool and non-finite
+        # out, int / float / Decimal in. `normalize()` folds the trailing zero
+        # `:f` would keep, so `650.0` and `Decimal("650")` are one answer.
+        # Rendered from the original rather than from the float `_as_number`
+        # returns, so an exact Decimal is not first rounded through binary.
+        if _as_number(value) is not None:
+            folded = Decimal(str(value))
+            if folded.is_signed() and folded == 0:
+                folded = folded.copy_abs()
+            return f"num:{folded.normalize():f}"
     return repr(value)
 
 
@@ -253,11 +350,32 @@ def _asserted(claim: FieldClaim) -> tuple[str, str]:
     **`fold_equal=True` for the same reason `verbatim_value` is excluded.** How
     a number was typed is not what the claim says: `650` from a table cell and
     `650.0` from a unit normaliser are one reading, and the spelling belongs to
-    the record - `_identity` - rather than to the assertion. See `_render` for
-    where the fold stops short of `==`, and for why the two must not share one
-    rendering.
+    the record - `_identity` - rather than to the assertion. SET_EQUAL fields
+    (D-17) are compared as a set of normalised bases, not as list order.
     """
-    return (_render(claim.value, fold_equal=True), claim.unit or "")
+    rendered = (
+        _set_answer(claim.value)
+        if tolerance_for(claim.field_name).rule is ToleranceRule.SET_EQUAL
+        else _render(claim.value, fold_equal=True)
+    )
+    return (rendered, claim.unit or "")
+
+
+def _set_answer(value: object) -> str:
+    """Canonical assertion for a SET_EQUAL field: order is typography.
+
+    Same split `_compare_sets` uses, so `project()` agrees with the detector.
+    Lists are not sorted in `_render` / `render_value`: those must keep agreeing
+    with `==` for `_identity`.
+    """
+    if not isinstance(value, list | tuple | set | frozenset):
+        return _render(value, fold_equal=True)
+    editions = _editions_by_base(value)
+    parts: list[str] = []
+    for base in sorted(editions):
+        years = tuple(sorted(year for year in editions[base] if year is not None))
+        parts.append(f"{base}:{','.join(years)}")
+    return "set[" + "|".join(parts) + "]"
 
 
 def _identity(claim: FieldClaim) -> tuple[str, ...]:
@@ -283,13 +401,24 @@ def _identity(claim: FieldClaim) -> tuple[str, ...]:
         claim.document_id,
         claim.field_name,
         claim.extractor_version,
-        repr(claim.condition.grouping_key()),
+        json.dumps(
+            encode_value(claim.condition.grouping_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         _render(claim.value),
         claim.unit or "",
         claim.verbatim_value or "",
         claim.source_tier.value,
         repr(claim.source_ref.model_dump(mode="json")),
         repr(claim.confidence),
+        ""
+        if claim.resolution is None
+        else json.dumps(
+            encode_value(claim.resolution.model_dump(mode="json")),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     )
 
 
@@ -338,8 +467,46 @@ def _status_for(group: Sequence[FieldClaim]) -> ConflictStatus:
     pair as agreement, which is the unit conflict FR-ING-08 says tolerance may
     never absorb.
     """
-    answers = {_asserted(claim) for claim in group}
+    if _human_decision(group) is not None:
+        # D-16: a reviewer's decision settles the group. A later extraction that
+        # disagrees does not reopen it - reopening is a human action
+        # (REQUEST_MORE_WEB_SEARCH, capped by task F.3), not a side effect of
+        # re-running an extractor.
+        return ConflictStatus.RESOLVED
+    members = list(group)
+    # SET_EQUAL's "missing edition is unknown" is not an equivalence, so a
+    # canonical string cannot be the status. Pairwise `values_conflict` is the
+    # detector, and Open Items must agree with the queue.
+    if tolerance_for(members[0].field_name).rule is ToleranceRule.SET_EQUAL:
+        field_name = members[0].field_name
+        row = tolerance_for(field_name)
+        for index, left in enumerate(members):
+            for right in members[index + 1 :]:
+                if values_conflict(
+                    left.as_candidate(),
+                    right.as_candidate(),
+                    tolerance=row,
+                    field_name=field_name,
+                ).conflicts:
+                    return ConflictStatus.OPEN
+        return ConflictStatus.NONE
+    answers = {_asserted(claim) for claim in members}
     return ConflictStatus.OPEN if len(answers) > 1 else ConflictStatus.NONE
+
+
+def _human_decision(group: Sequence[FieldClaim]) -> FieldClaim | None:
+    """The reviewer's claim that settles this group, if there is one (D-16).
+
+    The latest `resolved_at` wins - stored data, not the clock - because a
+    reopened conflict records a new decision rather than rewriting the old one.
+    `_status_for` and `_preferred` both go through this, so a RESOLVED status
+    and the claim whose decision is copied onto the field come from one
+    computation and cannot disagree.
+    """
+    humans = [claim for claim in group if claim.is_human]
+    if not humans:
+        return None
+    return max(humans, key=lambda c: (c.resolution.resolved_at, _identity(c)))  # type: ignore[union-attr]
 
 
 def _preferred(group: Sequence[FieldClaim]) -> FieldClaim:
@@ -354,7 +521,14 @@ def _preferred(group: Sequence[FieldClaim]) -> FieldClaim:
     This does not arbitrate a genuine disagreement: `_status_for` has already
     marked the group OPEN, so a human still decides. It only picks what to show
     beside the conflict.
+
+    **A human claim outranks everything** (D-16): the decision is the
+    reviewer's, so tier and confidence are irrelevant, and `_human_decision`
+    picks the latest.
     """
+    decided = _human_decision(group)
+    if decided is not None:
+        return decided
     return sorted(
         group,
         key=lambda c: (
@@ -406,6 +580,7 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
     for key in sorted(groups, key=repr):
         group = groups[key]
         chosen = _preferred(group)
+        status = _status_for(group)
         projected.append(
             CanonicalField(
                 value=chosen.value,
@@ -415,7 +590,12 @@ def project(claims: Sequence[FieldClaim]) -> list[CanonicalField]:
                 source_tier=chosen.source_tier,
                 source_ref=chosen.provenance(),
                 confidence=chosen.confidence,
-                conflict_status=_status_for(group),
+                unresolved_status=(
+                    UnresolvedStatus.NONE
+                    if status is ConflictStatus.RESOLVED
+                    else UnresolvedStatus(status.value)
+                ),
+                resolution=chosen.resolution,
             )
         )
     return projected

@@ -25,6 +25,7 @@ from ...schema import (
     CanonicalField,
     CellFlag,
     ComponentInstance,
+    ConflictStatus,
     WorkbookTab,
     encode_value,
 )
@@ -79,8 +80,8 @@ def normalize_archive(path: Path) -> Path:
        still differed while every other member was byte-identical.
     3. `docProps/app.xml`, which embeds the openpyxl version verbatim.
     4. Compression level. Decision 8c warns by name that `ZipFile(compresslevel=)`
-       is **silently ignored** for a hand-built `ZipInfo` - it must be set as
-       `_compresslevel` on the info object itself.
+       is **silently ignored** for a hand-built `ZipInfo`. `writestr` takes its
+       own `compresslevel` and is the public setter.
     5. `create_system` and `external_attr`, which otherwise vary by platform.
 
     Member order is normalised too: sorted, with `[Content_Types].xml` first per
@@ -115,14 +116,13 @@ def normalize_archive(path: Path) -> Path:
 
                 info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_TIMESTAMP)
                 info.compress_type = zipfile.ZIP_DEFLATED
-                # Private on purpose: Decision 8c records that
-                # `ZipFile(compresslevel=)` is silently ignored for a hand-built
-                # ZipInfo, and stdlib exposes no public setter. Untyped, hence
-                # the ignore.
-                info._compresslevel = DETERMINISTIC_COMPRESSLEVEL  # type: ignore[attr-defined]
                 info.create_system = _CREATE_SYSTEM_UNIX
                 info.external_attr = _EXTERNAL_ATTR
-                target.writestr(info, payload)
+                # Decision 8c warns that `ZipFile(compresslevel=)` is ignored for
+                # a hand-built ZipInfo. `writestr(..., compresslevel=)` is the
+                # public setter; it writes the private attribute itself, including
+                # the 3.13 rename `_compress_level`.
+                target.writestr(info, payload, compresslevel=DETERMINISTIC_COMPRESSLEVEL)
         # os.replace, not shutil.move: same directory, so this is an atomic
         # rename. shutil.move falls back to copy-then-unlink across filesystems,
         # and a copy that dies partway leaves the destination truncated - at
@@ -140,8 +140,6 @@ def flags_for(field: CanonicalField, *, confidence_threshold: float) -> set[Cell
     A cell can carry more than one: a web-supplemented value can also be
     low-confidence.
     """
-    from ...schema import ConflictStatus
-
     flags: set[CellFlag] = set()
     if field.is_missing():
         flags.add(CellFlag.MISSING_DATA)

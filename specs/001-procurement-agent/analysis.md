@@ -1065,6 +1065,28 @@ has the least margin for a *silent* gap in what it can attest to.
 whoever implements a process-pool orchestrator: keep audit emission inside each worker's own
 transaction, never behind a shared hook/observer.
 
+---
+
+# Round 7 — Phase 1 integration defects closed on `claude/phase-1-integration` (2026-09-02)
+
+IDs start at A-53 so they do not collide with this branch's existing A-51 / A-52 (policy-version
+label; advisory-lock accidental constraint). Findings that PR #39 numbered A-51–A-60 are
+remapped here. Unit-gate and `comparable_with(dimensions=)` stay as this branch already shipped
+them; the permissive variants from #39 are not carried.
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| A-53 | **C** | The reducer could not preserve or produce a RESOLVED field, so an idempotent re-run erased a human decision | **Fixed** — [D-16](clarifications.md) |
+| A-54 | **H** | One number in three Python types was three answers in `_asserted` | **Fixed** — `_render(..., fold_equal=True)` folds int/float/Decimal, including signed zero |
+| A-55 | **H** | Contract `list[str]` fields had no tolerance rule, so identical certification lists in different order were a CRITICAL conflict | **Fixed** — [D-17](clarifications.md) |
+| A-56 | **M** | Replaying a resolution from its serialised `dict` form was refused as tampering | **Fixed** — `_as_resolution` coerces before comparing |
+| A-57 | **M** | `claim_natural_key` omitted `condition`, so the Sungrow trio collided with "one extractor, two answers" | **Fixed** — unique includes `condition`; `sql/09_claim_natural_key_condition.sql` for live DBs |
+| A-58 | **M** | FR-HITL-06's RESOLVED invariant was guarded route by route; `evolve(conflict_status=OPEN)` on a resolved field hid remaining queue hits | **Fixed structurally** — [D-18](clarifications.md): `UnresolvedStatus`, derived RESOLVED, evolve raises |
+| A-59 | **L** | `normalize_archive` set private `ZipInfo._compresslevel`, a 3.13-renamed alias | **Fixed** — `writestr(..., compresslevel=...)` |
+| A-60 | **M** | In-memory vector `search(allowed_document_ids=None)` fail-opened | **Fixed** — omitting the allow-list returns nothing |
+| A-61 | **M** | `FieldClaim._identity` used `repr(grouping_key())`, the encoding D-14 bans | **Fixed** — `encode_value` JSON |
+| A-62 | **M** | Naive `resolved_at` / `detected_at` were accepted while `encode_value` refuses them | **Fixed** — `_aware_datetime` on both |
+
 ## Consistency checks that passed
 
 - All **32** FR IDs in spec.md match the TRS analysis; none invented, none dropped. (An earlier version of this line said 26, which is the count with FR-OUT-01..06 omitted — see A-27. The sweep itself was correct; the total was not.)

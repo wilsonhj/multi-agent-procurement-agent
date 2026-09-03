@@ -601,14 +601,22 @@ def test_a_verdict_explains_itself() -> None:
 # --- the table against the frozen contract ------------------------------------
 
 
-def _contract_keys() -> set[str]:
+def _contract_rows() -> dict[str, str]:
+    """Every `key` in the frozen contract's parameter tables, with its type column."""
     contract = pathlib.Path(__file__).parent.parent / (
         "specs/001-procurement-agent/contracts/canonical-parameters.md"
     )
     text = contract.read_text(encoding="utf-8")
-    keys = {m.group(1) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|", text, re.MULTILINE)}
-    assert len(keys) > 50, "the contract's parameter tables did not parse"
-    return keys
+    rows = {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|([^|]*)\|", text, re.MULTILINE)
+    }
+    assert len(rows) > 50, "the contract's parameter tables did not parse"
+    return rows
+
+
+def _contract_keys() -> set[str]:
+    return set(_contract_rows())
 
 
 def test_every_tolerance_key_is_a_contract_key() -> None:
@@ -862,3 +870,53 @@ def test_a_decimal_value_reports_its_own_precision() -> None:
     assert values_conflict(
         _c(Decimal("22.0"), unit="%"), _c(22.4, unit="%", doc="doc-b"), tolerance=efficiency
     ).conflicts
+
+
+def test_every_list_field_in_the_contract_has_a_set_rule() -> None:
+    """Bidirectional: every `list[str]` key has a SET_EQUAL row, and every
+    SET_EQUAL row is a `list[str]` key."""
+    list_keys = {key for key, kind in _contract_rows().items() if kind == "list[str]"}
+    assert len(list_keys) >= 10, "the contract's list[str] rows did not parse"
+    set_rows = {key for key, row in FIELD_TOLERANCES.items() if row.rule is ToleranceRule.SET_EQUAL}
+    assert set_rows == list_keys
+    for key in list_keys:
+        assert tolerance_for(key).rule is ToleranceRule.SET_EQUAL, key
+
+
+def test_identical_certifications_in_a_different_order_do_not_conflict() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215"], unit=None),
+        _c(["IEC 61215", "UL 1741"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert not verdict.conflicts, verdict.reason
+
+
+def test_containment_is_a_conflict_not_a_gap() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741"], unit=None),
+        _c(["UL 1741", "IEC 61215"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+
+
+def test_an_edition_difference_on_one_element_is_temporal() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215:2016"], unit=None),
+        _c(["UL 1741", "IEC 61215:2021"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.TEMPORAL
+
+
+def test_a_list_field_off_contract_still_compares_as_written_and_says_why() -> None:
+    verdict = values_conflict(
+        _c(["a", "b"], unit=None),
+        _c(["b", "a"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("some_field_nobody_has_specified"),
+    )
+    assert verdict.conflicts
+    assert "no SET_EQUAL tolerance row" in verdict.reason

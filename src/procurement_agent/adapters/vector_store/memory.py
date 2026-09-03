@@ -116,6 +116,9 @@ class InMemoryVectorStore:
         therefore leaks *insertion* order, which is arrival order wearing a
         deterministic mask - the defect `_ordering_key`'s docstring records
         shipping twice in this repository.
+
+        `allowed_document_ids=None` returns nothing. Omitting the allow-list is
+        a forgotten entitlement (NFR-03 / AC-8), not authorised-for-all.
         """
         hits = [
             StoredChunk(
@@ -127,7 +130,10 @@ class InMemoryVectorStore:
                 score=_cosine(vector, row.vector),
             )
             for chunk_id, row in self._rows.items()
-            if (allowed_document_ids is None or row.metadata["document_id"] in allowed_document_ids)
+            if (
+                allowed_document_ids is not None
+                and row.metadata["document_id"] in allowed_document_ids
+            )
             and (category is None or row.metadata["category"] is category)
             and (supplier is None or row.metadata["supplier"] == supplier)
             and (source_tier is None or row.metadata["source_tier"] is source_tier)

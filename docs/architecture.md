@@ -347,8 +347,9 @@ Use this order when artifacts disagree:
 2. `spec.md` for externally visible requirements;
 3. adopted resolutions in `clarifications.md`;
 4. technical decisions in `plan.md`;
-5. work decomposition in `tasks.md`; and
-6. explanatory code comments and contributor docs.
+5. ADRs under `docs/decisions/` (below the plan, above `tasks.md`);
+6. work decomposition in `tasks.md`; and
+7. explanatory code comments and contributor docs.
 
 If implementing the higher-ranked artifact would violate a lower-ranked decision, register the
 deviation rather than silently choosing one.

@@ -56,6 +56,12 @@ Not derived from source-tier pair alone (record-vs-web on a UL 9540A listing
 beats inter-document on module weight) and not from magnitude alone (the RPN
 error). Keep severity separate from queue priority, which folds in age and SLA.
 
+> **RATIFIED 2026-09-02**: item 1 stands as implemented. `severity.py` cites this
+> section as its specification and `CRITICALITY` is that table row for row, tested
+> bidirectionally against the frozen contract. The entry is retained (as item 7
+> was) rather than folded away, because the ±1 modifiers and floors are still the
+> lookup a later calibration will fill.
+
 ---
 
 ## 2. Condition defaulting — resolve before grouping

@@ -90,8 +90,21 @@ def test_canonical_field_has_the_eight_spec_keys_plus_condition() -> None:
         "conflict_status",
         "resolution",
     }
-    assert spec_keys <= set(CanonicalField.model_fields)
-    assert set(CanonicalField.model_fields) - spec_keys == {"condition"}
+    field = CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    on_the_wire = set(field.model_dump())
+    assert spec_keys <= on_the_wire
+    assert on_the_wire - spec_keys == {"condition"}
+    # D-18: `conflict_status` is computed from `resolution` and the stored
+    # `unresolved_status`, which is excluded from the dump. The contract's key
+    # set is the wire shape, not the storage layout.
+    assert "conflict_status" in CanonicalField.model_computed_fields
+    assert "unresolved_status" in CanonicalField.model_fields
+    assert "unresolved_status" not in on_the_wire
 
 
 def test_resolved_field_must_carry_its_resolution() -> None:
@@ -205,7 +218,7 @@ def test_resolution_invariant_survives_assignment() -> None:
         source_ref=SourceRef(document_id="doc-1"),
         confidence=0.9,
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="must carry its Resolution"):
         field.conflict_status = ConflictStatus.RESOLVED
 
 
@@ -247,7 +260,7 @@ def test_a_resolved_field_cannot_have_its_resolution_cleared() -> None:
         conflict_status=ConflictStatus.RESOLVED,
         resolution=_resolution("procurement.lead"),
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):
         field.resolution = None
 
 

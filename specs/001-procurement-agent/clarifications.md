@@ -1034,6 +1034,126 @@ on the two questions.
 
 ---
 
+## D-16 — A reviewer's decision is a claim, and it settles its group (contracts C5, C8)
+
+> **Status: ADOPTED 2026-09-02**, on the instruction to fix every verified defect. Closes
+> [A-53](analysis.md). Recommended shape **A** of what was `open-decisions.md` item 8, as
+> `sql/06_resolution.sql:29-38` proposed.
+
+**The defect.** `services.claims.project()` never read or wrote `resolution`, `_preferred()` had no
+human tier, and `_status_for()` reopened any group holding more than one distinct answer. So a
+recorded decision was discarded by the next reducer run, and a human's value recorded as a claim
+*reopened* the conflict it settled. Reproduced: re-committing the identical, complete claim set
+for a resolved field stored `OPEN` / `resolution=None`.
+
+**Adopted.**
+
+1. **A human claim is a `FieldClaim` whose `extractor_version` starts with `human:`** and which
+   carries its `Resolution`. The validator enforces both directions: a `human:` claim without a
+   `Resolution` is "a decision with nobody behind it"; a `Resolution` on a machine claim is "a
+   person's name on a machine value". `sql/06` recommended the convention and said it could not
+   enforce it; `FieldClaim._human_claims_carry_their_decision` is the enforcement.
+2. **Only value-asserting actions may be claims**: `SELECT_VALUE`, `ENTER_OVERRIDE`,
+   `KEEP_SYSTEM_OF_RECORD`. `DEFER` and `REQUEST_MORE_WEB_SEARCH` assert nothing about the
+   world; they are events against the *conflict*, recorded in `resolution` and `audit.event`.
+3. **`value_after`, when recorded, must equal the claim's value.** A decision logged against one
+   number and a claim asserting another is the drift the reducer exists to make impossible.
+4. **The reducer:** `_preferred` ranks a human claim above every tier and confidence, and among
+   human claims the latest `resolved_at` — stored data, not the clock — wins; `_status_for`
+   returns `RESOLVED` whenever a human claim is in the group; `project()` copies the decision
+   onto `CanonicalField.resolution`, so RESOLVED-with-resolution is produced by construction.
+5. **A settled group stays settled.** A later extraction that disagrees does not reopen it;
+   reopening is a human action (`REQUEST_MORE_WEB_SEARCH`, capped at 3 by task F.3). The
+   alternative — any new answer reopens — makes every re-extraction a silent appeal.
+6. **`claim_key` carries `resolved_at` for a human claim**, so one reviewer's second decision on
+   a field is a new assertion rather than a same-key contradiction that raises `ProposalError`.
+7. **`assert_no_autonomous_overwrite` passes a field carrying a `Resolution`.** The rule is against
+   *autonomous* overwrite; a reviewer choosing the web candidate is FR-HITL-04's `SELECT_VALUE`.
+   A web value with no decision behind it is still refused.
+8. **Provenance of a human claim** is the selected candidate's `source_ref` for `SELECT_VALUE`
+   and `KEEP_SYSTEM_OF_RECORD`, and the reviewer-cited source for `ENTER_OVERRIDE`. NFR-01's
+   "no value without a source" holds unchanged; `SourceRef` still requires a document or URL.
+
+**What it costs.** `FieldClaim` gains a key, so the two committed claim fixtures were
+regenerated with the canonical options (`tests/fixtures/README.md` § Regenerating);
+their behavioural assertions are unchanged. `sql/04_claim.sql` does not yet carry a
+`resolution` column — the Python record is ahead of the DDL, which is the mirror of
+C4 and C8's usual shape, and WP-H/WP-F own that migration.
+
+**Rejected: `project(claims, resolutions)`.** A second input keeps the reducer pure but breaks
+the sentence C8 is built on — "the canonical value is a projection over claims, never an
+in-place update" — and gives the store two write paths to keep consistent.
+
+## D-17 — List-valued fields are sets (amends D-2)
+
+> **Status: ADOPTED 2026-09-02**, on the same instruction. Closes [A-55](analysis.md).
+
+**The defect.** `values_conflict` compared numbers, then text, then fell through to
+`a.value == b.value` — order-sensitive — with the reason "values are not comparable as numbers or
+text". The contract's `list[str]` fields had no tolerance row and reached that fallback, so
+two datasheets listing identical certifications in a different order raised a conflict.
+`certifications` floors at `CRITICAL`, so `compose_gate_blocks()` refused the workbook over
+typography.
+
+**Adopted.**
+
+1. **`ToleranceRule.SET_EQUAL`**, a seventh member. D-2's table gains one rule, not a general
+   "unordered" flag on the others, because a set comparison changes the comparison rather than
+   its threshold — the same reason D-2's six were kept distinct.
+2. **Every `list[str]` key has a `SET_EQUAL` row** in `FIELD_TOLERANCES` (via `_set_equal`),
+   pinned bidirectionally against the contract by
+   `test_every_list_field_in_the_contract_has_a_set_rule`. None reaches `DEFAULT_TOLERANCE`.
+3. **Per-element normalisation is the single-string one**: `_normalise_text` and
+   `_editions_by_base`, so `IEC 61215:2016` against `:2021` is a `TEMPORAL` conflict on that
+   element rather than a set mismatch.
+4. **Containment is a conflict, not a gap.** For an attestation, absence is the finding
+   (FR-HITL-01): `{UL 1741}` against `{UL 1741, IEC 61215}` is one source claiming a
+   certification the other does not.
+5. **A scalar in a set field is a conflict that says so** — an extractor emitted a string where
+   the contract types a list — rather than a silent element-wise compare.
+6. The off-contract fallback still compares lists as written, and its reason now says that
+   element order counts because no `SET_EQUAL` row exists, instead of calling two lists
+   "not comparable".
+7. **`project()` status for SET_EQUAL is pairwise `values_conflict`**, not a
+   canonical string of years. A missing edition is unknown (`IEC 61215` vs
+   `:2021` is NONE); two dated editions still OPEN. `_asserted` still uses a set
+   rendering so same-key duplicates collapse; lists are not sorted in `_render`.
+
+## D-18 — The RESOLVED invariant is structural: RESOLVED is derived, not stored
+
+> **Status: ADOPTED IN FULL 2026-09-02.** Closes [A-58](analysis.md).
+
+**The defect.** `CanonicalField` forbids `conflict_status=RESOLVED` with `resolution=None` by
+overriding five pydantic entry points, and the inventory was already incomplete. A stored
+`ConflictStatus` that included RESOLVED also left `evolve(conflict_status=OPEN)` able to rewrite
+the enum while leaving the decision in place, so Open Items hid remaining queue hits.
+
+**Adopted, structural:** `RESOLVED` is *derived*, not stored.
+
+1. `CanonicalField` stores `unresolved_status: UnresolvedStatus` — NONE, OPEN or
+   INSUFFICIENT_EVIDENCE, with no RESOLVED member — and `resolution: Resolution | None`.
+2. `conflict_status` is a computed field: RESOLVED exactly when a resolution is present,
+   otherwise the stored state. It serialises under the TRS's key; `unresolved_status` is
+   excluded from serialisation. **The wire shape is unchanged**: eight TRS keys plus
+   `condition`, and `model_validate(model_dump())` round-trips both states.
+3. The contract's name is still accepted everywhere it was: a before-validator maps
+   `conflict_status=` onto the stored field for the constructor, `evolve` and
+   `model_validate`, refusing RESOLVED-with-no-resolution at the door **and refusing to move a
+   resolved field off RESOLVED** (the hole `evolve(conflict_status=OPEN)` used to take).
+   `model_construct` maps the contract name rather than dropping it silently; the property
+   setter shares the same two refusals.
+4. **Deleted:** `_assert_resolution_matches_status`, the after-validator, and the
+   `__setstate__` / `__deepcopy__` overrides — the forbidden combination has no representation.
+   The `model_copy(update=)` refusal stays, because it is about the *other* invariant: an
+   unvalidated `update` could replace a recorded `Resolution` unseen. `extra="forbid"` stays.
+5. **What a raw `__dict__` write can still do** is clear `resolution`, which un-resolves the
+   field consistently; it can no longer fabricate a resolved one. That residual is recorded in
+   `tests/test_resolution_immutability.py` as a fact rather than an oversight.
+
+**Cost, measured.** Zero fixture change — neither committed fixture serialises a
+`CanonicalField`. The wire and `evolve` keep `conflict_status=`. The reducer copies the human
+claim's `Resolution` onto the field and lets the decision derive RESOLVED.
+
 ## Carried forward as genuinely unresolved
 
 These could not be settled and are assigned in [tasks.md](tasks.md):

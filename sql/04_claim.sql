@@ -86,13 +86,19 @@ CREATE TABLE public.claim (
     -- not guaranteed. This is a known, narrow gap, not a solved one -- see
     -- sql/README.md.
     --
+    -- `condition` is in the key because Python `FieldClaim.claim_key()` includes
+    -- `grouping_key()`. Without it, one document / one field / one extractor
+    -- stating three ambients (the Sungrow trio; D-1) collides, and the writer
+    -- that `ON CONFLICT`s this constraint cannot persist them.
+    --
     -- This also assumes extractor_version is fine-grained enough to
     -- distinguish genuinely different extraction strategies for the same
     -- field (e.g. WP-B B.6's field-guided vs document-guided cross-read), so
     -- that the two produce distinct claim rows rather than colliding under
     -- this key -- also flagged in sql/README.md.
     CONSTRAINT claim_natural_key UNIQUE (
-        document_id, component_category, supplier, model, nameplate, field, extractor_version
+        document_id, component_category, supplier, model, nameplate, field, extractor_version,
+        condition
     )
 );
 

@@ -175,6 +175,10 @@ def _exact(key: str | None, basis: str) -> FieldTolerance:
     return FieldTolerance(key=key, rule=ToleranceRule.EXACT, basis=basis)
 
 
+def _set_equal(key: str, basis: str) -> FieldTolerance:
+    return FieldTolerance(key=key, rule=ToleranceRule.SET_EQUAL, basis=basis)
+
+
 def _table(*rows: FieldTolerance) -> dict[str, FieldTolerance]:
     """Index rows by the key each already carries.
 
@@ -279,6 +283,31 @@ FIELD_TOLERANCES: dict[str, FieldTolerance] = _table(
         "Same boundary only; a boundary shift is worth 2-7 pp. High",
     ),
     _exact("cycle_life", "An integer count quoted to an SOH threshold; a difference is real. High"),
+    # D-17. Every `list[str]` key in the frozen contract - 14 distinct keys
+    # across 18 rows. Before these rows they fell to DEFAULT_TOLERANCE's
+    # order-sensitive `==`, and `certifications` carries base severity CRITICAL.
+    *(
+        _set_equal(
+            key,
+            "Contract type list[str]; a list of attestations is a set (D-17). High [V]",
+        )
+        for key in (
+            "bess_integration",
+            "cell_certification",
+            "certifications",
+            "communication_protocols",
+            "cooling_classes",
+            "cybersecurity_standards",
+            "filtering_provisions",
+            "fire_safety_certifications",
+            "inverter_integration",
+            "pcs_certification",
+            "protocols",
+            "ride_through_standards",
+            "standards",
+            "ul_listing",
+        )
+    ),
 )
 
 #: Fields whose name is shared by genuinely different physical quantities.

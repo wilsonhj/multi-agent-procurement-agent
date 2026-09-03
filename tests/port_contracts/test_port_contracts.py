@@ -502,24 +502,32 @@ def _stocked(entry: AdapterEntry) -> tuple[VectorStorePort, int]:
     return store, dimensions
 
 
+_STOCKED_DOCUMENT_IDS = {f"doc-{rank}" for rank in range(6)}
+
+
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
 def test_a_stored_chunk_comes_back_from_search(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
-    hits = store.search(_query(dimensions), limit=3)
+    hits = store.search(
+        _query(dimensions), limit=3, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+    )
     assert [hit.chunk_id for hit in hits] == ["chunk-0", "chunk-1", "chunk-2"]
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
 def test_search_returns_no_more_than_the_limit(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
-    assert len(store.search(_query(dimensions), limit=2)) == 2
+    assert len(store.search(_query(dimensions), limit=2, allowed_document_ids=_STOCKED_DOCUMENT_IDS)) == 2
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
 def test_results_are_ordered_best_first(entry: AdapterEntry) -> None:
     """RRF (plan Decision 3b) fuses by rank, so rank has to mean something."""
     store, dimensions = _stocked(entry)
-    scores = [hit.score for hit in store.search(_query(dimensions), limit=6)]
+    scores = [
+        hit.score
+        for hit in store.search(_query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
+    ]
     assert scores == sorted(scores, reverse=True)
 
 
@@ -533,7 +541,12 @@ def test_the_source_tier_survives_the_round_trip(entry: AdapterEntry) -> None:
     auto-arbitration — is deciding on a default.
     """
     store, dimensions = _stocked(entry)
-    tiers = {hit.chunk_id: hit.source_tier for hit in store.search(_query(dimensions), limit=6)}
+    tiers = {
+        hit.chunk_id: hit.source_tier
+        for hit in store.search(
+            _query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    }
     assert tiers["chunk-0"] is SourceTier.SYSTEM_OF_RECORD
     assert tiers["chunk-1"] is SourceTier.WEB_SUPPLEMENT
 
@@ -568,7 +581,7 @@ def test_upserting_a_known_id_replaces_rather_than_duplicating(entry: AdapterEnt
             )
         ],
     )
-    hits = store.search(_query(dimensions), limit=6)
+    hits = store.search(_query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
     assert [hit.chunk_id for hit in hits] == [
         "chunk-0",
         "chunk-5",
@@ -584,7 +597,29 @@ def test_upserting_a_known_id_replaces_rather_than_duplicating(entry: AdapterEnt
 def test_a_deleted_chunk_stops_being_returned(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
     store.delete(["chunk-0"])
-    assert "chunk-0" not in {hit.chunk_id for hit in store.search(_query(dimensions), limit=6)}
+    assert "chunk-0" not in {
+        hit.chunk_id
+        for hit in store.search(
+            _query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    }
+
+
+@pytest.mark.parametrize("entry", cases(VectorStorePort, Capability.ACCESS_FILTERING))
+def test_omitting_the_allow_list_returns_nothing(entry: AdapterEntry) -> None:
+    """NFR-03 / AC-8: `None` is not authorised-for-all.
+
+    Contract tests used to pass an explicit set, so they stayed green while
+    `allowed_document_ids is None` returned every stored chunk - including
+    restricted documents. An omitted allow-list is a forgotten entitlement, not
+    a trusted internal path. Empty set and `None` both return nothing; a caller
+    who may see every document must pass that set.
+    """
+    store, dimensions = _stocked(entry)
+    omitted = store.search(_query(dimensions), limit=6, allowed_document_ids=None)
+    empty = store.search(_query(dimensions), limit=6, allowed_document_ids=set())
+    assert omitted == []
+    assert empty == []
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort, Capability.ACCESS_FILTERING))
@@ -623,13 +658,28 @@ def test_a_metadata_filter_is_applied_inside_the_search_too(entry: AdapterEntry)
     for, which looks like a sparse corpus rather than a bug.
     """
     store, dimensions = _stocked(entry)
-    hits = store.search(_query(dimensions), limit=1, category=ComponentCategory.PV_MODULES)
+    hits = store.search(
+        _query(dimensions),
+        limit=1,
+        category=ComponentCategory.PV_MODULES,
+        allowed_document_ids=_STOCKED_DOCUMENT_IDS,
+    )
     assert [hit.chunk_id for hit in hits] == ["chunk-3"]
 
-    tiered = store.search(_query(dimensions), limit=1, source_tier=SourceTier.WEB_SUPPLEMENT)
+    tiered = store.search(
+        _query(dimensions),
+        limit=1,
+        source_tier=SourceTier.WEB_SUPPLEMENT,
+        allowed_document_ids=_STOCKED_DOCUMENT_IDS,
+    )
     assert [hit.chunk_id for hit in tiered] == ["chunk-1"]
 
-    supplied = store.search(_query(dimensions), limit=1, supplier="trina")
+    supplied = store.search(
+        _query(dimensions),
+        limit=1,
+        supplier="trina",
+        allowed_document_ids=_STOCKED_DOCUMENT_IDS,
+    )
     assert [hit.chunk_id for hit in supplied] == ["chunk-3"]
 
 
@@ -656,8 +706,18 @@ def test_a_filtered_top_k_still_returns_k(entry: AdapterEntry) -> None:
 def test_search_is_deterministic_for_an_unchanged_store(entry: AdapterEntry) -> None:
     """AC-7 is byte-identity from an unchanged store; retrieval is upstream of it."""
     store, dimensions = _stocked(entry)
-    first = [hit.chunk_id for hit in store.search(_query(dimensions), limit=6)]
-    second = [hit.chunk_id for hit in store.search(_query(dimensions), limit=6)]
+    first = [
+        hit.chunk_id
+        for hit in store.search(
+            _query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    ]
+    second = [
+        hit.chunk_id
+        for hit in store.search(
+            _query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    ]
     assert first == second
 
 

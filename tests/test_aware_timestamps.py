@@ -19,9 +19,19 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from procurement_agent.schema import SourceDocument, SourceRef
+from procurement_agent.schema import (
+    ComponentCategory,
+    ConflictCandidate,
+    ConflictClass,
+    ConflictQueueEntry,
+    Resolution,
+    ResolutionAction,
+    SourceDocument,
+    SourceRef,
+    SourceTier,
+)
 from procurement_agent.schema.encoding import encode_value
-from procurement_agent.schema.enums import DocumentType
+from procurement_agent.schema.enums import DocumentType, Severity
 
 NAIVE = datetime(2026, 8, 4, 12, 0, 0)
 AWARE = datetime(2026, 8, 4, 12, 0, 0, tzinfo=UTC)
@@ -97,3 +107,52 @@ def test_the_same_constraint_holds_on_a_source_document() -> None:
         ingested_at=AWARE,
     )
     assert document.data_vintage is None
+
+
+def test_a_naive_resolved_at_is_refused() -> None:
+    """`SourceRef.retrieved_at` was closed; `Resolution.resolved_at` was not.
+    The decision log is hashed, so a naive timestamp is the same AC-7 hole."""
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        Resolution(
+            action=ResolutionAction.SELECT_VALUE,
+            resolved_by="procurement.lead",
+            resolved_at=NAIVE,
+            rationale="x",
+        )
+
+
+def test_a_naive_detected_at_is_refused() -> None:
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        ConflictQueueEntry(
+            entry_id="c-1",
+            field_name="nameplate_power",
+            supplier="Trina",
+            model="TSM",
+            component_category=ComponentCategory.PV_MODULES,
+            conflict_class=ConflictClass.RECORD_VS_WEB,
+            severity=Severity.HIGH,
+            candidates=[
+                ConflictCandidate(
+                    value=650,
+                    unit="Wp",
+                    source_tier=SourceTier.SYSTEM_OF_RECORD,
+                    source_ref=SourceRef(document_id="doc-1"),
+                    confidence=0.9,
+                )
+            ],
+            explanation="x",
+            detected_at=NAIVE,
+        )
+
+
+def test_an_aware_resolution_survives_the_encoder() -> None:
+    encoded = encode_value(
+        Resolution(
+            action=ResolutionAction.SELECT_VALUE,
+            resolved_by="procurement.lead",
+            resolved_at=AWARE,
+            rationale="x",
+        )
+    )
+    assert isinstance(encoded, dict)
+    assert encoded["resolved_at"] == {"$datetime": "2026-08-04T12:00:00.000000Z"}

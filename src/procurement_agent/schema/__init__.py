@@ -20,6 +20,7 @@ from .enums import (
     ToleranceCondition,
     ToleranceKind,
     ToleranceRule,
+    UnresolvedStatus,
     WorkbookTab,
 )
 from .field import (
@@ -67,6 +68,7 @@ __all__ = [
     "ToleranceKind",
     "ToleranceRule",
     "UnencodableValueError",
+    "UnresolvedStatus",
     "VocabularyError",
     "WorkbookTab",
     "encode_value",

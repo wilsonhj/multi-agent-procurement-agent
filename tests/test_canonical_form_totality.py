@@ -462,4 +462,16 @@ def test_finite_decimals_still_encode_and_keep_their_printed_precision() -> None
     is asked to review. `normalize()` stays banned."""
     assert encode_value(Decimal("22.00")) == {"$decimal": "22.00"}
     assert encode_value(Decimal("22")) == {"$decimal": "22"}
-    assert encode_value(Decimal("-0.0")) == {"$decimal": "-0.0"}
+
+
+def test_signed_zero_decimals_share_an_encoding() -> None:
+    """Same injectivity hole the float branch already closed with `+ 0.0`.
+
+    `Decimal("-0.0") == Decimal("0.0")` and the two hash alike, so they are one
+    value; `str()` still writes two spellings and C6 forks. Precision of a
+    *non-zero* trailing zero is data (`22.00` vs `22`); the sign of zero is not.
+    """
+    assert Decimal("-0.0") == Decimal("0.0")
+    assert encode_value(Decimal("-0.0")) == encode_value(Decimal("0.0"))
+    assert encode_value(Decimal("-0.0")) == {"$decimal": "0.0"}
+    assert encode_value(Decimal("-0.00")) == {"$decimal": "0.00"}

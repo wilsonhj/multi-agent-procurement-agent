@@ -362,7 +362,10 @@ def test_document_hash_is_independent_of_row_arrival_order() -> None:
     assert original.audit_events == permuted.audit_events
 
 
-def test_review_refuses_to_hide_an_unresolved_sibling_pair() -> None:
+def test_review_resolves_one_pair_without_hiding_a_sibling() -> None:
+    """Non-transitive comparability yields two queue entries for one field.
+    Resolving one pair must succeed and leave the sibling open - fail-closed
+    on hiding, not on progress."""
     third = (
         b"syn-pv-third,file:///sanitized/example-solar-pv650-third.pdf,spec_sheet,"
         b"Example Solar Ltd.,PV-SAN-650,650,nameplate_power,660,Wp,660 Wp,stc,"
@@ -375,6 +378,7 @@ def test_review_refuses_to_hide_an_unresolved_sibling_pair() -> None:
         actor="integration-test",
     )
     persisted, _ = _acknowledged(result)
+    assert len([entry for entry in persisted.conflicts if entry.resolution is None]) >= 2
     target = persisted.conflicts[0]
     resolution = Resolution(
         action=ResolutionAction.SELECT_VALUE,
@@ -385,10 +389,18 @@ def test_review_refuses_to_hide_an_unresolved_sibling_pair() -> None:
         value_after=target.candidates[1].value,
     )
 
-    with pytest.raises(ValueError, match="sibling conflicts"):
-        review_conflict(persisted, entry_id=target.entry_id, resolution=resolution)
-
+    reviewed = review_conflict(persisted, entry_id=target.entry_id, resolution=resolution)
+    assert reviewed.conflicts[0].resolution is not None or any(
+        entry.entry_id == target.entry_id and entry.resolution is not None
+        for entry in reviewed.conflicts
+    )
+    assert any(
+        entry.entry_id != target.entry_id and entry.resolution is None
+        for entry in reviewed.conflicts
+        if entry.field_name == target.field_name
+    )
     assert persisted.components[0].unresolved_conflicts() == ["nameplate_power"]
+    assert reviewed.components[0].unresolved_conflicts() == ["nameplate_power"]
 
 
 def test_workbook_escapes_formula_shaped_supplier_and_model_text(tmp_path: Path) -> None:

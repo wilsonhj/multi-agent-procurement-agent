@@ -134,6 +134,14 @@ def encode_value(value: object) -> object:
         # 1 place gives 0.05. Against a competing 22.4 that is the difference
         # between no conflict and a human being asked to review, so collapsing
         # the trailing zero is a behaviour change, not a formatting one.
+        #
+        # The sign of zero is not precision. `Decimal("-0.0") == Decimal("0.0")`
+        # and the two hash alike, so they are one value; `str()` still writes
+        # two spellings and C6 forks. Same injectivity hole the float branch
+        # closed with `+ 0.0`. `copy_abs()` keeps the exponent, so `-0.00`
+        # still encodes as `0.00`.
+        if value.is_signed() and value == 0:
+            value = value.copy_abs()
         return {"$decimal": str(value)}
 
     if isinstance(value, datetime):  # before date - datetime is a date subclass

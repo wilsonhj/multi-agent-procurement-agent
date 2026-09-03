@@ -77,6 +77,20 @@ class ConflictStatus(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class UnresolvedStatus(StrEnum):
+    """The conflict states a field can *store* (D-18).
+
+    RESOLVED is not a member: it is derived from `CanonicalField.resolution`
+    being present. Typing the stored field as `ConflictStatus` left RESOLVED
+    representable, so `evolve(conflict_status=OPEN)` could rewrite the stored
+    enum while leaving the decision in place.
+    """
+
+    NONE = "none"
+    OPEN = "open"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
 class MeasurementBasis(StrEnum):
     """What a rating is measured against (contract, Conditions table).
 
@@ -194,6 +208,11 @@ class ToleranceRule(StrEnum):
     """Different physical quantities that share a field name in careless sources -
     inverter kVA against kW. Not a wide tolerance: not a comparison."""
 
+    SET_EQUAL = "set_equal"
+    """`list[str]` contract fields (D-17). Order is typography; compare as a set
+    of normalised elements. Containment is a conflict: for an attestation,
+    absence is the finding."""
+
 
 class ToleranceCondition(StrEnum):
     """Discriminators for the D-2 rows that state two bands, not one.
@@ -309,6 +328,19 @@ class ResolutionAction(StrEnum):
     KEEP_SYSTEM_OF_RECORD = "keep_system_of_record"
     REQUEST_MORE_WEB_SEARCH = "request_more_web_search"
     DEFER = "defer"
+
+
+    @property
+    def asserts_a_value(self) -> bool:
+        """Whether this action states what the field's value *is* (D-16).
+
+        Three do, and may therefore be recorded as a human claim. The two that
+        do not - REQUEST_MORE_WEB_SEARCH and DEFER - are events against the
+        conflict, recorded in `resolution` and `audit.event` but never in the
+        value store. Spelled as the complement so that a sixth action added
+        here is settling by default and its author has to say otherwise.
+        """
+        return self not in (ResolutionAction.REQUEST_MORE_WEB_SEARCH, ResolutionAction.DEFER)
 
 
 class WorkbookTab(StrEnum):

@@ -13,7 +13,7 @@ import csv
 import hashlib
 import io
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +21,7 @@ from typing import Protocol, cast
 
 from ..audit import AuditConnection, AuditEvent, JsonObject, append_event
 from ..schema import (
+    CanonicalField,
     ComponentCategory,
     ComponentInstance,
     Condition,
@@ -58,6 +59,7 @@ __all__ = [
     "persist_vertical_slice",
     "review_conflict",
     "run_sanitized_pv_csv",
+    "stamp_queue_hits",
     "write_vertical_slice_rows",
 ]
 
@@ -79,6 +81,44 @@ REQUIRED_COLUMNS = frozenset(
         "confidence",
     }
 )
+
+
+def stamp_queue_hits(
+    fields: Sequence[CanonicalField],
+    pairs: Sequence[tuple[ConflictCandidate, ConflictCandidate]],
+    *,
+    clear_absent: bool = False,
+) -> list[CanonicalField]:
+    """Copy cross-condition queue hits onto the matching `CanonicalField`s.
+
+    `project()` statuses only inside a `grouping_key()`. `comparison_pairs`
+    still compares unstated vs stated (D-1). Without this copy, the queue sees
+    the disagreement and `flags_for` / C6 / Open Items do not.
+
+    `clear_absent` drops a stamp after the last queue pair involving that
+    condition is resolved, so a sequential review does not leave a ghost OPEN.
+    """
+    involved = {
+        candidate.condition.grouping_key()
+        for left, right in pairs
+        for candidate in (left, right)
+    }
+    stamped: list[CanonicalField] = []
+    for field in fields:
+        key = field.condition.grouping_key()
+        status = field.conflict_status
+        if key in involved and status is ConflictStatus.NONE:
+            stamped.append(field.evolve(conflict_status=ConflictStatus.OPEN))
+        elif (
+            clear_absent
+            and key not in involved
+            and status is ConflictStatus.OPEN
+            and field.resolution is None
+        ):
+            stamped.append(field.evolve(conflict_status=ConflictStatus.NONE))
+        else:
+            stamped.append(field)
+    return stamped
 
 
 class SanitizedCSVError(ValueError):
@@ -232,17 +272,6 @@ def run_sanitized_pv_csv(
     for claim in relevant:
         by_field.setdefault(claim.field_name, []).append(claim)
     fields = {name: project(field_claims) for name, field_claims in sorted(by_field.items())}
-    keys = identity_keys(supplier, model, nameplate)
-    component = ComponentInstance(
-        supplier=supplier,
-        model=model,
-        component_category=ComponentCategory.PV_MODULES,
-        nameplate=nameplate,
-        surrogate_id=keys.surrogate_id,
-        manufacturer_key=keys.manufacturer_key,
-        model_family=keys.model_family,
-        fields=fields,
-    )
     conflicts = tuple(
         _detect_conflicts(
             supplier=supplier,
@@ -254,6 +283,30 @@ def run_sanitized_pv_csv(
         for field_name, field_claims in sorted(by_field.items())
     )
     flattened_conflicts = tuple(entry for group in conflicts for entry in group)
+    fields = {
+        name: stamp_queue_hits(
+            values,
+            [
+                (entry.candidates[0], entry.candidates[1])
+                for entry in flattened_conflicts
+                if entry.field_name == name
+                and entry.resolution is None
+                and len(entry.candidates) >= 2
+            ],
+        )
+        for name, values in fields.items()
+    }
+    keys = identity_keys(supplier, model, nameplate)
+    component = ComponentInstance(
+        supplier=supplier,
+        model=model,
+        component_category=ComponentCategory.PV_MODULES,
+        nameplate=nameplate,
+        surrogate_id=keys.surrogate_id,
+        manufacturer_key=keys.manufacturer_key,
+        model_family=keys.model_family,
+        fields=fields,
+    )
     audit_events = _audit_events(
         sources=sources,
         claims=relevant,
@@ -717,20 +770,6 @@ def review_conflict(
     target = matches[0]
     if target.resolution is not None:
         raise ValueError(f"conflict {entry_id!r} already has an immutable resolution")
-    unresolved_siblings = [
-        entry
-        for entry in result.conflicts
-        if entry.entry_id != entry_id
-        and entry.resolution is None
-        and entry.supplier == target.supplier
-        and entry.model == target.model
-        and entry.field_name == target.field_name
-    ]
-    if unresolved_siblings:
-        raise ValueError(
-            "the minimal review path cannot resolve one pair while sibling conflicts "
-            "for the same field remain open"
-        )
     eligible = [
         candidate
         for candidate in target.candidates
@@ -757,6 +796,17 @@ def review_conflict(
             continue
         fields = {name: list(values) for name, values in component.fields.items()}
         current = fields[target.field_name]
+        remaining_pairs = [
+            (entry.candidates[0], entry.candidates[1])
+            for entry in result.conflicts
+            if entry.entry_id != entry_id
+            and entry.resolution is None
+            and entry.supplier == target.supplier
+            and entry.model == target.model
+            and entry.field_name == target.field_name
+            and len(entry.candidates) >= 2
+        ]
+        still_open = bool(remaining_pairs)
         fields[target.field_name] = [
             field.evolve(
                 value=selected.value,
@@ -766,13 +816,18 @@ def review_conflict(
                 source_tier=selected.source_tier,
                 source_ref=selected.source_ref,
                 confidence=selected.confidence,
-                conflict_status=ConflictStatus.RESOLVED,
-                resolution=resolution,
+                conflict_status=(
+                    ConflictStatus.OPEN if still_open else ConflictStatus.RESOLVED
+                ),
+                resolution=None if still_open else resolution,
             )
             if field.condition.grouping_key() == selected.condition.grouping_key()
             else field
             for field in current
         ]
+        fields[target.field_name] = stamp_queue_hits(
+            fields[target.field_name], remaining_pairs, clear_absent=True
+        )
         snapshot = {name: getattr(component, name) for name in type(component).model_fields}
         components.append(ComponentInstance.model_validate({**snapshot, "fields": fields}))
     conflicts = tuple(

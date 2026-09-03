@@ -8,6 +8,7 @@ changelog, because each one passed a green suite.
 import inspect
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -15,24 +16,31 @@ from pydantic import ValidationError
 
 from procurement_agent.schema import (
     CanonicalField,
+    CellFlag,
     Condition,
     ConflictStatus,
     MeasurementBasis,
+    PowerSide,
+    Resolution,
+    ResolutionAction,
     SourceRef,
     SourceTier,
     encode_value,
 )
 from procurement_agent.services import claims as claims_module
 from procurement_agent.services.claims import (
+    HUMAN_PREFIX,
     ClaimWriter,
     FieldClaim,
     ProposalError,
+    _identity,
     canonical_claims,
     commit_claims,
     project,
     takes_a_write_handle,
 )
 from procurement_agent.services.conflict_hitl import AutonomousOverwriteError, comparison_pairs
+from procurement_agent.services.output import flags_for
 
 
 class _Store:
@@ -60,19 +68,23 @@ def _claim(
     page: int | None = None,
     unit: str | None = "Wp",
     verbatim: str | None = None,
+    resolution: Resolution | None = None,
 ) -> FieldClaim:
-    return FieldClaim(
-        document_id=doc,
-        field_name=field,
-        extractor_version=version,
-        condition=condition or Condition(),
-        value=value,
-        unit=unit,
-        verbatim_value=verbatim,
-        source_tier=tier,
-        source_ref=SourceRef(document_id=doc, page=page),
-        confidence=confidence,
-    )
+    payload: dict[str, object] = {
+        "document_id": doc,
+        "field_name": field,
+        "extractor_version": version,
+        "condition": condition or Condition(),
+        "value": value,
+        "unit": unit,
+        "verbatim_value": verbatim,
+        "source_tier": tier,
+        "source_ref": SourceRef(document_id=doc, page=page),
+        "confidence": confidence,
+    }
+    if resolution is not None:
+        payload["resolution"] = resolution
+    return FieldClaim(**payload)  # type: ignore[arg-type]
 
 
 def _sungrow() -> list[FieldClaim]:
@@ -373,17 +385,15 @@ def test_the_fold_stops_where_python_equality_stops() -> None:
       excludes `bool` for exactly this reason - a stray boolean must not read as
       a nameplate of 1. `encode_value` tests `bool` before `int` for the same
       reason one type layer down.
-    * **A `Decimal`'s printed precision is data.** `Decimal("22.00") ==
-      Decimal("22")` and the two hash alike, but `encoding.py` encodes them by
-      `str()` and never `normalize()` because `conflict_hitl._decimals` reads
-      D-2's rounding floor off that text: 0 places gives 0.5, 1 place gives
-      0.05. Folding them would pick one precision silently and move the floor.
     * **A list is not a tuple**, and Python agrees - so no fold is needed, and
       the container type tag that distinguishes them must survive one that is.
+    Decimal printed precision is *not* an asserted-value difference: the
+    detector already folds `Decimal("22.00")` with `Decimal("22")` via
+    `_as_number`, and D-2's rounding floor is read from `verbatim_value` /
+    `encode_value`, not from `_asserted`.
     """
     cases: list[tuple[object, object, bool]] = [
         (True, 1, True),
-        (Decimal("22.00"), Decimal("22"), True),
         ([1], (1,), False),
     ]
     for left, right, python_calls_them_equal in cases:
@@ -730,3 +740,285 @@ def test_the_claim_is_the_single_authority_for_it() -> None:
         confidence=0.9,
     )
     assert claim.provenance().extractor_version == "extract@3"
+
+
+def test_a_claim_identity_encodes_the_grouping_key_without_repr() -> None:
+    """A-50 closed enum `repr` on the HITL sort path; `_identity` still used it.
+    Member names then leak into the reducer order: renaming `PowerSide.AC` would
+    reorder claims without the data changing."""
+    claim = _claim(650.0, condition=Condition(basis=MeasurementBasis.STC, side=PowerSide.AC))
+    encoded_group = json.dumps(
+        encode_value(claim.condition.grouping_key()),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert _identity(claim)[3] == encoded_group
+    assert "<" not in _identity(claim)[3]
+
+
+def test_every_spelling_of_one_figure_is_one_answer() -> None:
+    """`values_conflict` already treats 650 / 650.0 / Decimal("650") as one
+    number. `_asserted` still `repr`s Decimal, so the reducer reports OPEN for a
+    pair the detector calls equal."""
+    claims = [
+        _claim(650, doc="d0"),
+        _claim(650.0, doc="d1"),
+        _claim(Decimal("650"), doc="d2"),
+        _claim(Decimal("650.0"), doc="d3"),
+    ]
+    assert [f.conflict_status for f in project(claims)] == [ConflictStatus.NONE]
+
+
+def test_nested_numeric_spellings_are_one_answer() -> None:
+    """Top-level fold is not enough: `rating_mva_by_cooling` stores the numbers
+    as dict values, including Decimal from parsed tables."""
+    projected = project(
+        [
+            _claim({"ONAN": 30, "ONAF": 40}, doc="d1", field="rating_mva_by_cooling"),
+            _claim(
+                {"ONAN": Decimal("30.0"), "ONAF": Decimal("40.0")},
+                doc="d2",
+                field="rating_mva_by_cooling",
+            ),
+        ]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_reordered_certifications_are_one_answer() -> None:
+    """D-17: order is typography for `list[str]` contract fields. SET_EQUAL in
+    the detector is not enough if `project()` still stores OPEN."""
+    projected = project(
+        [
+            _claim(["UL 1741", "IEC 61215"], doc="d1", field="certifications", unit=None),
+            _claim(["IEC 61215", "UL 1741"], doc="d2", field="certifications", unit=None),
+        ]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_an_unqualified_certification_matches_a_dated_one_in_the_projection() -> None:
+    """`_compare_sets` treats a missing edition as unknown, not different.
+    Canonicalising years into `_asserted` made `project()` OPEN for a pair the
+    detector calls no conflict - Open Items with no queue entry, on a CRITICAL
+    field."""
+    projected = project(
+        [
+            _claim(["IEC 61215"], doc="d1", field="certifications", unit=None),
+            _claim(["IEC 61215:2021"], doc="d2", field="certifications", unit=None),
+        ]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.NONE]
+
+
+def test_dated_edition_mismatch_is_still_open_in_the_projection() -> None:
+    """The unqualified-vs-dated fold must not hide 2016 vs 2021."""
+    projected = project(
+        [
+            _claim(["IEC 61215:2016"], doc="d1", field="certifications", unit=None),
+            _claim(["IEC 61215:2021"], doc="d2", field="certifications", unit=None),
+        ]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.OPEN]
+
+
+def test_cross_condition_queue_hits_mark_canonical_fields_open() -> None:
+    """`project()` statuses inside a grouping_key. `comparison_pairs` still
+    compares unstated vs stated. Copy those hits onto the matching
+    CanonicalFields so `flags_for` / Open Items see D-1."""
+    unstated = _claim(650.0, condition=Condition())
+    stated = _claim(
+        700.0,
+        doc="doc-b",
+        condition=Condition(basis=MeasurementBasis.STC),
+        tier=SourceTier.WEB_SUPPLEMENT,
+    )
+    fields = project([unstated, stated])
+    assert all(field.conflict_status is ConflictStatus.NONE for field in fields)
+    pairs = comparison_pairs(
+        [unstated.as_candidate(), stated.as_candidate()],
+        field_name="nameplate_power",
+    )
+    assert pairs
+    from procurement_agent.services.vertical_slice import stamp_queue_hits
+
+    stamped = stamp_queue_hits(fields, pairs)
+    assert {field.conflict_status for field in stamped} == {ConflictStatus.OPEN}
+    for field in stamped:
+        assert CellFlag.UNRESOLVED_CONFLICT in flags_for(field, confidence_threshold=0.8)
+
+
+# --- D-16: a reviewer's decision is a claim, and it settles the group ----------
+#
+# A recorded decision was discarded by the next reducer run and a human claim
+# reopened the conflict it settled. sql/06 recommended the human-as-claim
+# convention and said it could not enforce it; FieldClaim now does.
+
+
+def _decision(
+    value: object,
+    *,
+    action: ResolutionAction = ResolutionAction.SELECT_VALUE,
+    by: str = "procurement.lead",
+    at: datetime = datetime(2026, 8, 1, tzinfo=UTC),
+) -> Resolution:
+    return Resolution(
+        action=action,
+        resolved_by=by,
+        resolved_at=at,
+        rationale="datasheet revision C supersedes the PO",
+        value_after=value,
+    )
+
+
+def _human(
+    value: object,
+    *,
+    doc: str = "contract",
+    by: str = "procurement.lead",
+    at: datetime = datetime(2026, 8, 1, tzinfo=UTC),
+    tier: SourceTier = SourceTier.SYSTEM_OF_RECORD,
+    action: ResolutionAction = ResolutionAction.SELECT_VALUE,
+) -> FieldClaim:
+    return _claim(
+        value,
+        doc=doc,
+        tier=tier,
+        version=f"{HUMAN_PREFIX}{by}",
+        confidence=1.0,
+        resolution=_decision(value, action=action, by=by, at=at),
+    )
+
+
+def test_a_human_claim_settles_a_disagreement() -> None:
+    """The decision half of source authority. Two records disagree; a reviewer
+    picks one; the stored field is RESOLVED and carries the decision."""
+    projected = project(
+        [_claim(650.0, doc="contract"), _claim(700.0, doc="datasheet"), _human(650.0)]
+    )
+    assert [f.conflict_status for f in projected] == [ConflictStatus.RESOLVED]
+    assert projected[0].value == 650.0
+    assert projected[0].resolution is not None
+    assert projected[0].resolution.resolved_by == "procurement.lead"
+
+
+def test_an_idempotent_rerun_keeps_the_decision() -> None:
+    """Re-committing the identical, complete claim set must not turn a RESOLVED
+    field back into an OPEN one."""
+    store = _Store()
+    claims = [_claim(650.0, doc="contract"), _claim(700.0, doc="datasheet"), _human(650.0)]
+    first = commit_claims("nameplate_power", claims, writer=store)
+    second = commit_claims("nameplate_power", claims, writer=store)
+    assert first == second
+    assert store.committed["nameplate_power"][0].conflict_status is ConflictStatus.RESOLVED
+    assert store.committed["nameplate_power"][0].resolution is not None
+
+
+def test_a_later_extraction_does_not_reopen_a_settled_group() -> None:
+    """Reopening is a human action (REQUEST_MORE_WEB_SEARCH, task F.3), not a
+    side effect of re-running an extractor with a new version."""
+    projected = project(
+        [
+            _claim(650.0, doc="contract"),
+            _claim(700.0, doc="datasheet"),
+            _human(650.0),
+            _claim(710.0, doc="datasheet", version="extract@2"),
+        ]
+    )
+    assert projected[0].conflict_status is ConflictStatus.RESOLVED
+    assert projected[0].value == 650.0
+
+
+def test_the_latest_decision_wins() -> None:
+    """A reopened conflict records a NEW decision. `resolved_at` is stored data,
+    so the order is a function of the store and not of arrival."""
+    earlier = _human(650.0, at=datetime(2026, 8, 1, tzinfo=UTC))
+    later = _human(700.0, at=datetime(2026, 8, 9, tzinfo=UTC))
+    forward = project([_claim(650.0, doc="contract"), earlier, later])
+    backward = project([later, _claim(650.0, doc="contract"), earlier])
+    assert forward[0].value == backward[0].value == 700.0
+    assert forward[0].resolution is not None
+    assert forward[0].resolution.resolved_at == later.resolution.resolved_at  # type: ignore[union-attr]
+
+
+def test_two_decisions_by_one_reviewer_are_two_claims_not_a_contradiction() -> None:
+    """Without `resolved_at` in the claim key the second decision collided with
+    the first as 'one extractor, two answers' and raised ProposalError."""
+    earlier = _human(650.0, at=datetime(2026, 8, 1, tzinfo=UTC))
+    later = _human(700.0, at=datetime(2026, 8, 9, tzinfo=UTC))
+    assert earlier.claim_key() != later.claim_key()
+    assert len(canonical_claims([earlier, later])) == 2
+
+
+def test_a_human_may_select_the_web_value() -> None:
+    """The guard is against *autonomous* overwrite. A reviewer choosing the web
+    candidate in the queue is FR-HITL-04's SELECT_VALUE."""
+    store = _Store()
+    commit_claims("nameplate_power", [_claim(650.0, doc="contract")], writer=store)
+    committed = commit_claims(
+        "nameplate_power",
+        [
+            _claim(650.0, doc="contract"),
+            _claim(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT),
+            _human(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT),
+        ],
+        writer=store,
+    )
+    assert committed[0].value == 700.0
+    assert committed[0].source_tier is SourceTier.WEB_SUPPLEMENT
+    assert committed[0].conflict_status is ConflictStatus.RESOLVED
+
+
+def test_a_web_value_with_no_decision_behind_it_is_still_refused() -> None:
+    """The exception is for a decision, not for a tier."""
+    store = _Store()
+    commit_claims("nameplate_power", [_claim(650.0, doc="contract")], writer=store)
+    with pytest.raises(AutonomousOverwriteError):
+        commit_claims(
+            "nameplate_power",
+            [_claim(700.0, doc="web-1", tier=SourceTier.WEB_SUPPLEMENT)],
+            writer=store,
+        )
+
+
+def test_a_human_prefix_without_a_decision_is_rejected() -> None:
+    """A reviewer's value with no recorded decision is a decision with nobody
+    behind it (FR-HITL-06)."""
+    with pytest.raises(ValidationError, match="must carry its Resolution"):
+        _claim(650.0, version=f"{HUMAN_PREFIX}someone")
+
+
+def test_a_decision_on_a_machine_claim_is_rejected() -> None:
+    """A Resolution on an extract@1 claim is a person's name on a machine value."""
+    with pytest.raises(ValidationError, match="must be a human claim"):
+        _claim(650.0, version="extract@1", resolution=_decision(650.0))
+
+
+@pytest.mark.parametrize(
+    "action", [ResolutionAction.DEFER, ResolutionAction.REQUEST_MORE_WEB_SEARCH]
+)
+def test_an_action_that_asserts_no_value_cannot_be_a_claim(action: ResolutionAction) -> None:
+    """DEFER and REQUEST_MORE_WEB_SEARCH are events against the conflict."""
+    with pytest.raises(ValidationError, match="asserts no value"):
+        _human(650.0, action=action)
+
+
+def test_a_decision_recorded_against_a_different_value_is_rejected() -> None:
+    """value_after and the claim's value must agree."""
+    with pytest.raises(ValidationError, match="value_after must be the claim's value"):
+        _claim(650.0, version=f"{HUMAN_PREFIX}procurement.lead", resolution=_decision(655.0))
+
+
+def test_field_claim_still_forbids_an_undeclared_key() -> None:
+    """Keep extra=forbid: a typo on an optional field must not vanish."""
+    with pytest.raises(ValidationError):
+        FieldClaim(
+            document_id="doc-a",
+            field_name="nameplate_power",
+            extractor_version="extract@1",
+            value=650.0,
+            source_tier=SourceTier.SYSTEM_OF_RECORD,
+            source_ref=SourceRef(document_id="doc-a"),
+            confidence=0.9,
+            verbatim_valeu="650",  # type: ignore[call-arg]
+        )

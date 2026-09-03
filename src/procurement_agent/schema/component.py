@@ -15,7 +15,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .encoding import encode_value
-from .enums import ComponentCategory, DocumentType
+from .enums import ComponentCategory, ConflictStatus, DocumentType
 from .field import CanonicalField
 from .registry import require_contract_key
 
@@ -357,8 +357,6 @@ class ComponentInstance(BaseModel):
         FR-HITL-05: unresolved conflicts and insufficient-evidence fields are
         flagged in the output, never silently resolved or omitted.
         """
-        from .enums import ConflictStatus
-
         blocking = {ConflictStatus.OPEN, ConflictStatus.INSUFFICIENT_EVIDENCE}
         return sorted(
             {

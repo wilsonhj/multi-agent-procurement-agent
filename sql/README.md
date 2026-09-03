@@ -34,6 +34,7 @@ gets the dependency order right automatically:
 | `06_resolution.sql` | `resolution` + RLS | `04`, `05` |
 | `07_audit_event.sql` | `audit.event` + RLS, hash-chain columns, both trigger tripwires | `01`, `02` |
 | `08_job.sql` | `job` (stage state machine) + RLS | `02` |
+| `09_claim_natural_key_condition.sql` | fold `condition` into `claim_natural_key` | `04` |
 
 Two shared helpers cross file boundaries: `02_document.sql` defines
 `public.document_is_restricted(text)`, the confidentiality derivation every table
@@ -159,6 +160,10 @@ Run twice, against throwaway clusters:
   the one that actually exercises `01_extensions_and_settings.sql`'s version
   guard; it emits its `NOTICE` and skips, and all nine files apply with no error
   under `ON_ERROR_STOP=1`.
+- **PostgreSQL 16.10, pgvector 0.8.6** (the CI-pinned image), 2026-08-19 — the
+  run behind the `<table>_app_never_restricted` rows below. Both directions were
+  measured: the four declassification vectors against the files as they stood,
+  and again with the seven restrictive policies in place.
 
 **Every mutation check below was re-run with real rows present.** This is not a
 formality. Two ways this kind of checklist lies to you, both hit while running
@@ -201,6 +206,12 @@ it:
 | restricted `claim`/`conflict`/`resolution`/`job`/`audit.event` hidden from `procurement_app` | NFR-03, AC-8 | 0 rows each |
 | unrestricted rows in those tables stay visible | — | visible |
 | an entitled session (`app.allow_restricted`) sees them again | Decision 3c | visible |
+| ~~`procurement_app` can set `app.allow_restricted` itself~~ | NFR-03, AC-8 | **was 1→2 rows on all seven tables**; now 1 |
+| …by `set_config(...)`, and by `SET LOCAL` in a transaction | NFR-03 | was 2, now 1 |
+| …by `options='-c app.allow_restricted=true'` in the **connection string** | NFR-03 | was 2 *with no statement issued*, now 1 |
+| the app role can still `INSERT` a row it is labelling restricted | 00_roles.sql | allowed — the safe action must not be the failing one |
+| a mis-granted `procurement_ingest` membership needs **no `SET ROLE`** | Decision 9 | 1→2 rows without it; restrictive policy holds it at 1 |
+| a `SECURITY DEFINER` accessor owned by a superuser ignores every policy | Decision 3c | owned by `procurement_owner`: 1 row; by `postgres`: **2, silently** |
 | reclassifying a document takes effect immediately, no backfill | — | confirmed |
 | `procurement_ingest` can `INSERT ... ON CONFLICT`/`RETURNING` a restricted row | NFR-05 | allowed |
 | `procurement_app` cannot rewrite `job.idempotency_key`/`stage`/`payload`/`created_at` | I.2 | refused |
@@ -216,12 +227,25 @@ above is reverted. The behaviour is proven here; the regression guard is there.
 
 ### Still unproven by the above
 
-Concurrency. Decision 9's measured failure — 8 concurrent writers producing 42
-silent forks — is a property of the *caller's* advisory-lock discipline, not of
-this DDL, and nothing here exercises it. `audit_event_no_fork` converts such a
-fork from silent to loud, which is necessary and explicitly not sufficient. The
-pre-INSERT advisory lock still has to be written in Python, as its own statement
-before the INSERT, and load-tested.
+~~Concurrency.~~ **Proven 2026-08-12**, outside this DDL as predicted. Decision 9's
+measured failure — 8 concurrent writers producing 42 silent forks — is a property
+of the *caller's* advisory-lock discipline, and `audit/writer.py` now supplies it
+as its own statement before the INSERT. `tests/test_audit_live.py` reproduces all
+three arms against a live server: locked gives 48/48 rows and no forks; unlocked
+with these constraints in place gives 6/48 rows and 42 unique-violation errors,
+so the DDL converts silent to loud exactly as claimed; unlocked with the fork
+constraints dropped gives 48/48 rows and **41 silent forks that fail
+verification** — Decision 9's original setup, reproduced within one.
+
+What the `<table>_app_never_restricted` policies do **not** cover, stated so the
+scope is not read wider than it is. They bind `procurement_app` and every role
+that inherits it. They are inert for an actual superuser and for any role holding
+`BYPASSRLS`, which is why `00_roles.sql` re-asserts `NOSUPERUSER NOBYPASSRLS` on
+every apply and raises if either survived; and they stop applying to a session
+that has `SET ROLE`d to a role outside `procurement_app`'s membership, which is
+why the same file revokes every project-role membership unconditionally and two
+tests assert the result. The policy is the layer that holds when those fail — it
+is not a replacement for them.
 
 Performance of the confidentiality derivation. `document_is_restricted` and
 `conflict_is_restricted` are `STABLE` SQL functions called from RLS policies, so
@@ -477,6 +501,29 @@ can check exactly these choices rather than re-deriving the whole schema.
    Pydantic schema already commits to — `SourceDocument.access_restricted` — 
    gated by a session boolean GUC (`app.allow_restricted`) the application must
    `SET LOCAL` per transaction based on the caller's real authorization.
+
+   **Nothing enforces "real", and nothing can.** The GUC is an assertion the
+   application makes *about its caller*; the database has no way to check it,
+   and until 2026-08-19 there was nothing stopping the application asserting it
+   about itself. Measured, `procurement_app` set the GUC and read every
+   restricted row on all seven tables — by `SET`, by `set_config`, by `SET
+   LOCAL`, and, worst, by `options='-c app.allow_restricted=true'` in the
+   connection string, which arrives during startup and so declassifies the
+   session **before it issues a statement**. That last vector is why the fix
+   could not be an application-side "RESET on pool checkout" guard: there is no
+   moment at which such a guard runs first.
+
+   What now holds the line is a second, `AS RESTRICTIVE` policy per table
+   scoped `TO procurement_app` (`<table>_app_never_restricted`). Permissive
+   policies are OR'd, so nothing added to the eleven existing ones could ever
+   narrow them; a restrictive policy is AND'd, and closes the escape without
+   touching any of them and without disturbing ingest. So the GUC's honest
+   reading is now: it is what entitles `procurement_ingest`, the two owner
+   roles, and an operator identity — never the serving role, which cannot
+   assert it about itself no matter how it is delivered. The full argument, and
+   why editing the existing policies instead *breaks ingest*, is on
+   `document_app_never_restricted` in `02_document.sql`.
+
    `VectorStorePort.search`'s fine-grained `allowed_document_ids` allowlist
    remains a WHERE-clause concern in the store adapter, not RLS, because RLS
    is a poor mechanism for a large, dynamic, per-request ID set.

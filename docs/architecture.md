@@ -190,11 +190,11 @@ level security with a non-owner application role.
 | `services.indexing` | structure-aware chunks and incremental indexing | Stub |
 | `services.retrieval` | filtered hybrid retrieval and reranking | Stub |
 | `services.web_search` | gap-only public-source lookup and authority ranking | Stub |
-| `services.claims` | append-only claim record, canonical projection, single-reducer commit | Implemented; no production caller |
+| `services.claims` | append-only claim record, canonical projection, single-reducer commit | Implemented; used by the sanitized-PV slice |
 | `services.confidence` | signal fusion into a confidence score, and the Tier A review gate | Implemented; used by `conflict_hitl.severity` |
-| `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; no production caller |
+| `services.identity` | deterministic supplier and model-number matching (D-4) | Implemented; used by the sanitized-PV slice |
 | `services.conflict_hitl` | comparison pairs, overwrite guard, tolerance verdicts, severity assignment | Implemented policy core |
-| `services.output` | flags, canonical workbook rendering, archive normalization | Flags and normalization only |
+| `services.output` | flags, canonical workbook rendering, archive normalization | Flags, normalization, C6 projection, and the initial deterministic suppliers-as-rows xlsx writer |
 | `orchestrator` | jobs, retries, stage state, compose gate | Gate only |
 
 The six external swap points are synchronous structural Protocols:
@@ -207,10 +207,10 @@ pools; embedding and reranking adapters batch internally.
 
 ## Persistence and execution
 
-**The schema half of this section is built; the Python half is not.** `sql/00`–`08` define every
-table described below and are applied to a live server on every CI run, while nothing in `src/`
-opens a connection to them. Read each claim here for which half it belongs to — the design is
-target-state, the DDL is not.
+**The schema is built and the narrow Python slice now uses it.** `sql/00`–`08` define every table
+described below and are applied to a live server on every CI run. The sanitized-PV writer persists
+its documents, claims, conflicts/candidates, resolutions, and audit events transactionally; the
+general repository and stage paths remain target-state.
 
 The target deployment uses one PostgreSQL instance, with pgvector, for:
 
@@ -233,12 +233,29 @@ self-referencing foreign key from each event to its parent. The chain is walked 
 server by `test_a_valid_chain_appends`, `test_a_fabricated_parent_is_refused`,
 `test_a_second_disconnected_root_is_refused` and `test_a_chain_loop_is_refused`.
 
-**The advisory lock is the part that is not implemented, and it is deliberately not in the DDL.**
-Decision 9's measured finding is that a lock taken inside a trigger on this table is acquired too
-late to serialise the read of the previous hash, so `pg_advisory_xact_lock` must be its own
-statement issued by the caller *before* the `INSERT`. That caller does not exist yet — nothing in
-`src/` writes an audit event — so the constraints above are currently the whole of the
-enforcement, and they turn a lost race into a loud failure rather than preventing one.
+**The advisory lock is implemented, in Python and as its own statement, deliberately not in the
+DDL.** Decision 9's measured finding is that a lock taken inside a trigger on this table is
+acquired too late to serialise the read of the previous hash, so `pg_advisory_xact_lock` must be
+issued by the caller *before* the `INSERT`. `audit/writer.py`'s `append_event` is that caller: lock
+the stream, read the tip, build the envelope, insert — all in the caller's own transaction. The
+sequence is asserted without a server (`tests/test_audit_writer.py`) and measured with one
+(`tests/test_audit_live.py`). The sanitized-PV persistence service is now a production caller for
+the narrow path; the general services and orchestrator still do not invoke `append_event`.
+
+**A future parallel worker must call `append_event` itself, per transaction — never through a
+shared observer.** Nothing about `append_event` assumes it has a single caller; each write commits
+independently under its own per-stream lock. If a process-pool worker mode is added to
+`orchestrator.run()` (see "Services and boundaries" above), each worker process must open its own
+connection and call `append_event` from inside its own transaction — not route emission through a
+callback or hook registered on some central, single-process manager. An observer that only sees
+what its own process holds cannot see what a sibling process just committed, which is the same
+class of bug the advisory lock already exists to prevent, one layer up. Kedro's `ParallelRunner` is
+a concrete example of the failure mode: its docstring claims it "will not execute node and dataset
+hooks," but its `Task` class actually rebuilds a fresh, unshared `PluginManager` inside every worker
+process instead (`kedro-org/kedro@c3e1c9c`, `kedro/runner/parallel_runner.py:46-49` and
+`kedro/runner/task.py:115-143`) — any hook that accumulates state across calls silently fragments
+across workers with no reconciliation. `append_event`'s design already avoids this: there is no
+shared accumulator to fragment, because every write is independently transactional.
 
 ## Retrieval design
 
@@ -318,8 +335,9 @@ state is carried in hidden parallel columns. Visual channels are orthogonal:
 - border communicates conflict.
 
 `normalize_archive()` already removes clock, library-version, compression, member-order, and
-platform variance from an XLSX archive. `write_workbook()` is not implemented. Desktop Excel
-and LibreOffice validation remains a release gate once the writer exists.
+platform variance from an XLSX archive. `write_workbook()` now emits the initial deterministic
+suppliers-as-rows workbook. Desktop Excel and LibreOffice validation remains a release gate for
+the remaining workbook work.
 
 ## Specification authority
 
@@ -329,8 +347,9 @@ Use this order when artifacts disagree:
 2. `spec.md` for externally visible requirements;
 3. adopted resolutions in `clarifications.md`;
 4. technical decisions in `plan.md`;
-5. work decomposition in `tasks.md`; and
-6. explanatory code comments and contributor docs.
+5. ADRs under `docs/decisions/` (below the plan, above `tasks.md`);
+6. work decomposition in `tasks.md`; and
+7. explanatory code comments and contributor docs.
 
 If implementing the higher-ranked artifact would violate a lower-ranked decision, register the
 deviation rather than silently choosing one.

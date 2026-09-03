@@ -1,6 +1,7 @@
 """Canonical data model. TRS sections 5 and 7."""
 
 from .component import ComponentInstance, SourceDocument
+from .encoding import UnencodableValueError, encode_value
 from .enums import (
     CATEGORY_TO_TAB,
     CellFlag,
@@ -19,15 +20,18 @@ from .enums import (
     ToleranceCondition,
     ToleranceKind,
     ToleranceRule,
+    UnresolvedStatus,
     WorkbookTab,
 )
 from .field import (
+    CONDITION_DIMENSION_NAMES,
     CanonicalField,
     Condition,
     ConditionDimensions,
     ConflictCandidate,
     ConflictQueueEntry,
     DeclaredBand,
+    DeclaredBandUnitError,
     Resolution,
     SourceRef,
     VocabularyError,
@@ -35,6 +39,7 @@ from .field import (
 
 __all__ = [
     "CATEGORY_TO_TAB",
+    "CONDITION_DIMENSION_NAMES",
     "CanonicalField",
     "CellFlag",
     "ComponentCategory",
@@ -46,6 +51,7 @@ __all__ = [
     "ConflictQueueEntry",
     "ConflictStatus",
     "DeclaredBand",
+    "DeclaredBandUnitError",
     "DocumentType",
     "EfficiencyWeighting",
     "MeasurementBasis",
@@ -61,6 +67,9 @@ __all__ = [
     "ToleranceCondition",
     "ToleranceKind",
     "ToleranceRule",
+    "UnencodableValueError",
+    "UnresolvedStatus",
     "VocabularyError",
     "WorkbookTab",
+    "encode_value",
 ]

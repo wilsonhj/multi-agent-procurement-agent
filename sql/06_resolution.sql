@@ -82,6 +82,29 @@ CREATE POLICY resolution_write_insert ON public.resolution
 CREATE POLICY resolution_tripwire_update ON public.resolution FOR UPDATE USING (true);
 CREATE POLICY resolution_tripwire_delete ON public.resolution FOR DELETE USING (true);
 
+-- procurement_app cannot switch its own confidentiality off. See the equivalent
+-- policy in 02_document.sql for the measured attack matrix, why this is a new
+-- RESTRICTIVE policy rather than an edit to the permissive ones, and why
+-- `WITH CHECK (true)` is spelled out.
+--
+-- Keyed on conflict_is_restricted(entry_id), matching
+-- resolution_confidentiality_select above: `rationale` is a human's prose about
+-- the disputed values and `value_before`/`value_after` are those values
+-- themselves.
+--
+-- The two tripwire policies above are permissive `USING (true)` for UPDATE and
+-- DELETE, so that a mis-grant of either verb reaches the append-only trigger and
+-- raises instead of returning a silent zero. Being AND'd rather than OR'd, the
+-- policy below does not undo that for the rows this role may see: an unentitled
+-- UPDATE on an *open* resolution still reaches the trigger and still raises
+-- loudly. It only removes restricted rows from that role's reach, which is the
+-- one case where a silent zero is the correct answer anyway -- the role is not
+-- supposed to know the row exists.
+CREATE POLICY resolution_app_never_restricted ON public.resolution
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT public.conflict_is_restricted(entry_id))
+    WITH CHECK (true);
+
 CREATE POLICY resolution_ingest_select ON public.resolution
     FOR SELECT TO procurement_ingest USING (true);
 

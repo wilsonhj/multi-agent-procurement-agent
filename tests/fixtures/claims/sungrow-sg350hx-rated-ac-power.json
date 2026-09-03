@@ -18,6 +18,7 @@
     "document_id": "sungrow-eu-ds",
     "extractor_version": "fixture@1",
     "field_name": "rated_ac_power",
+    "resolution": null,
     "source_ref": {
       "bounding_box": null,
       "document_id": "sungrow-eu-ds",
@@ -53,6 +54,7 @@
     "document_id": "sungrow-eu-ds",
     "extractor_version": "fixture@1",
     "field_name": "rated_ac_power",
+    "resolution": null,
     "source_ref": {
       "bounding_box": null,
       "document_id": "sungrow-eu-ds",
@@ -88,6 +90,7 @@
     "document_id": "sungrow-eu-ds",
     "extractor_version": "fixture@1",
     "field_name": "rated_ac_power",
+    "resolution": null,
     "source_ref": {
       "bounding_box": null,
       "document_id": "sungrow-eu-ds",

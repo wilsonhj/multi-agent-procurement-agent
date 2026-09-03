@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from procurement_agent.schema import (
+    CONDITION_DIMENSION_NAMES,
     Condition,
     ConditionDimensions,
     EfficiencyWeighting,
@@ -26,6 +27,13 @@ from procurement_agent.schema import (
     WorkbookTab,
 )
 from procurement_agent.schema.field import _normalise_token
+
+#: The dimensions these cases ask about. Every one of them is about the
+#: relation itself - transitivity, order-dependence, whether a promoted dimension
+#: gates at all - rather than about one parameter, so the unqualified set is the
+#: right argument. Which dimensions gate which *field* is FN-2, and
+#: `tests/test_condition_gate_scope.py` owns it.
+ALL = CONDITION_DIMENSION_NAMES
 
 #: The Sungrow SG350HX case: an EU sheet at 30 degC, a distributor page stating
 #: no condition at all, and the CEC listing at 40 degC.
@@ -39,7 +47,7 @@ def _first_fit_buckets(conditions: list[Condition]) -> list[list[Condition]]:
     buckets: list[list[Condition]] = []
     for candidate in conditions:
         for bucket in buckets:
-            if all(candidate.comparable_with(member) for member in bucket):
+            if all(candidate.comparable_with(member, dimensions=ALL) for member in bucket):
                 bucket.append(candidate)
                 break
         else:
@@ -57,9 +65,9 @@ def _key_buckets(conditions: list[Condition]) -> list[list[Condition]]:
 
 def test_comparable_with_is_not_transitive() -> None:
     """Pinned deliberately: this is why `comparable_with` must not group."""
-    assert EU.comparable_with(SILENT)
-    assert SILENT.comparable_with(CEC)
-    assert not EU.comparable_with(CEC)
+    assert EU.comparable_with(SILENT, dimensions=ALL)
+    assert SILENT.comparable_with(CEC, dimensions=ALL)
+    assert not EU.comparable_with(CEC, dimensions=ALL)
 
 
 def test_pairwise_bucketing_is_order_dependent() -> None:
@@ -211,8 +219,10 @@ def test_a_ptc_rating_has_an_honest_encoding() -> None:
     conflict on every CEC-sourced row — or `note`, which comparison ignores."""
     ptc = Condition(basis=MeasurementBasis.PTC)
     stc = Condition(basis=MeasurementBasis.STC)
-    assert not ptc.comparable_with(stc)
-    assert Condition().comparable_with(stc), "an unrecorded basis is still unknown, not a rating"
+    assert not ptc.comparable_with(stc, dimensions=ALL)
+    assert Condition().comparable_with(stc, dimensions=ALL), (
+        "an unrecorded basis is still unknown, not a rating"
+    )
 
 
 def test_printed_synonyms_fold_to_their_member() -> None:
@@ -477,7 +487,7 @@ def test_rte_boundary_gates_comparison() -> None:
     91% AC-AC-including-auxiliaries one and fabricated a 4 pp conflict."""
     dc = Condition(duration_h=4.0, rte_boundary=RteBoundary.DC_DC_TERMINALS)
     ac = Condition(duration_h=4.0, rte_boundary=RteBoundary.AC_AC_MV_INCL_AUX)
-    assert not dc.comparable_with(ac)
+    assert not dc.comparable_with(ac, dimensions=ALL)
     assert dc.grouping_key() != ac.grouping_key()
 
 
@@ -507,7 +517,7 @@ def test_tap_position_gates_comparison() -> None:
     the comparison and the display partition have to know it."""
     nominal = Condition(tap_position_pct=0.0)
     raised = Condition(tap_position_pct=5.0)
-    assert not nominal.comparable_with(raised)
+    assert not nominal.comparable_with(raised, dimensions=ALL)
     assert nominal.grouping_key() != raised.grouping_key()
 
 

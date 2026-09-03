@@ -141,6 +141,10 @@ class VectorStorePort(Protocol):
         allowed_document_ids carries NFR-03 access control. It is a search
         parameter rather than a post-filter because the requirement is that
         access control is enforced at retrieval time.
+
+        `None` is not authorised-for-all. An omitted allow-list is a forgotten
+        entitlement and must return nothing (the same as an empty set). A caller
+        who may see every document has to pass that set.
         """
         ...
 

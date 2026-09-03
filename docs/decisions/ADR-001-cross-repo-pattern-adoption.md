@@ -1,7 +1,13 @@
 # ADR-001 — Cross-repo pattern adoption: avalanche and predict-rlm
 
-**Status:** Proposed · **Date:** 2026-08-06 · **CI:** not run on this branch (zero Actions
-runs, empty status-check rollup) — a docs-only diff, but not a green build
+**Status:** Ratified 2026-09-02 · **Date:** 2026-08-06 ·
+**Rank:** below `plan.md`, above `tasks.md` — by its own text ("nothing here amends" the plan's
+Decisions 1–10; ADRs record decisions made after the plan froze), now written into
+[architecture.md](../architecture.md#specification-authority).
+
+> **History of this line.** The ADR sat at `Proposed` while Phase 1 Track 4 was assigned to
+> *implement* its Decision 2. A track cannot implement a proposal. Ratification and ranking
+> closed that gap rather than by editing the date above.
 
 This is the first ADR, so the relationship to the existing record needs stating once.
 [plan.md](../../specs/001-procurement-agent/plan.md) Decisions 1–10 remain the architectural

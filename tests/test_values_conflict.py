@@ -81,6 +81,38 @@ def test_a_unit_mismatch_is_never_resolved_by_tolerance() -> None:
     assert verdict.conflict_class is ConflictClass.UNIT_NORMALIZATION
 
 
+def test_one_missing_unit_does_not_suppress_the_disagreement() -> None:
+    """The gate read `a.unit is not None and b.unit is not None and they differ`,
+    so **the permissive branch sat on the suppressing side**.
+
+    A dropped unit is representable — `ConflictCandidate.unit` is `str | None` —
+    and with one side missing, the whole check was skipped and the pair fell
+    through to a numeric comparison in whatever unit each side happened to be in.
+    `0.35` against `0.35 USD/kW` came back "no conflict" on a 1000x price error,
+    on a Tier A field, with no queue entry and the compose gate never firing.
+
+    Note the inversion the old form produced: `Wp` vs `W` was *raised* (a false
+    positive) while `None` vs `kW` was *silently accepted*. The module's stated
+    priority is the other way round — suppression is a spec violation under
+    tasks.md E.3a, noise is not.
+    """
+    verdict = values_conflict(_c(0.35, unit=None), _c(0.35, unit="USD/kW"), tolerance=NAMEPLATE)
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.UNIT_NORMALIZATION
+    assert "no unit" in verdict.reason
+
+
+def test_two_missing_units_are_still_one_unitless_quantity() -> None:
+    """The other side of the same change, and the reason it cannot simply
+    compare `a.unit != b.unit`: every text-valued contract field carries
+    `unit=None` on both sides, and those must keep comparing normally rather
+    than becoming a unit conflict apiece."""
+    verdict = values_conflict(
+        _c("China", unit=None), _c("China", unit=None), tolerance=DEFAULT_TOLERANCE
+    )
+    assert not verdict.conflicts
+
+
 def test_an_edition_difference_is_temporal_not_a_string_mismatch() -> None:
     """`IEC 61215:2021` vs `IEC 61215:2016` is the same standard at two editions.
     Dropping the year would equate them — a compliance claim nobody made."""
@@ -138,6 +170,95 @@ def test_the_rounding_floor_protects_the_coarser_source() -> None:
     assert not values_conflict(coarse, fine, tolerance=GAMMA).conflicts
     # Beyond the floor and beyond the band, it is a real disagreement.
     assert values_conflict(coarse, _c(-0.33, unit="%/degC", doc="doc-b"), tolerance=GAMMA).conflicts
+
+
+def test_percent_per_kelvin_is_the_same_unit_as_percent_per_degree_celsius() -> None:
+    """FN-5. A temperature *coefficient* is per-degree-*interval*, and one degree
+    Celsius is one kelvin as an interval — so `%/degC`, `%/K` and `%/°C` are
+    three spellings of one unit needing **no conversion**.
+
+    Three documents say so: the frozen contract's Conditions table
+    ("`%/degC` ≡ `%/K`"), tasks.md B.3 (⚠️-marked), and clarifications.md under
+    the heading "The unit conversion that must NOT happen".
+
+    `_normalise_text` is NFKC, case and whitespace only, so `'%/degc' != '%/k'`
+    and **every** temperature-coefficient comparison between a K-quoting source
+    and a degC-quoting one came back a `UNIT_NORMALIZATION` conflict. All three
+    coefficients are on contract and every PV datasheet carries them, so this is
+    a per-module, per-pair queue item on a field that never disagreed.
+
+    ⚠️ Aliased, never converted. A generic unit library applies the +273.15
+    offset and silently destroys the value — `-0.29 %/K` becoming `272.86` is a
+    number that passes every plausibility gate B.5 states except the sign.
+    """
+    for kelvin in ("%/K", "%/k", "% / K"):
+        verdict = values_conflict(
+            _c(-0.29, unit="%/degC"),
+            _c(-0.29, unit=kelvin, doc="doc-b"),
+            tolerance=GAMMA,
+            field_name="temp_coeff_pmax",
+        )
+        assert not verdict.conflicts, kelvin
+        assert verdict.conflict_class is not ConflictClass.UNIT_NORMALIZATION, kelvin
+
+
+def test_the_degree_sign_spelling_is_the_same_unit_too() -> None:
+    """`%/°C` is what a datasheet actually prints, and `℃` (U+2103) is what OCR
+    leaves behind. The second folds to the first under NFKC already; the first
+    has to reach `%/degC` through the alias, or a sheet printing the symbol and
+    one printing the word are a unit conflict."""
+    for printed in ("%/°C", "%/℃", "%/degC", "%/K"):
+        assert not values_conflict(
+            _c(-0.29, unit="%/degC"),
+            _c(-0.29, unit=printed, doc="doc-b"),
+            tolerance=GAMMA,
+            field_name="temp_coeff_pmax",
+        ).conflicts, printed
+
+
+def test_the_alias_is_not_a_licence_to_normalise_other_units() -> None:
+    """The alias closes one documented equivalence. It must not widen into
+    "units that look similar are the same": `W` against `kW` is a 1000x
+    extraction error and D-2 is explicit that a unit mismatch is never resolved
+    by tolerance. Kelvin *alone* is a temperature, not an interval — a value in
+    `K` is not a value in `%/K`, and `300 K` is not `300 degC`.
+
+    That last pair is the one that matters most, and it is the case a folding
+    rule reaches by accident: an implementation that rewrites `k` to `degc`
+    wherever it occurs, rather than looking up two whole spellings, makes `K`
+    and `degC` one unit - and the +273.15 those two really are apart is the
+    exact error the alias exists to keep out of this codebase. Verified against
+    that mutation: without this assertion it survives the whole suite."""
+    ambient = tolerance_for("rated_ac_power_temp")
+    assert values_conflict(
+        _c(300.0, unit="K"), _c(300.0, unit="degC", doc="doc-b"), tolerance=ambient
+    ).conflicts
+    assert values_conflict(
+        _c(-0.29, unit="%/degC"), _c(-0.29, unit="K", doc="doc-b"), tolerance=GAMMA
+    ).conflicts
+    assert values_conflict(
+        _c(-0.29, unit="%/degC"), _c(-0.29, unit="degC", doc="doc-b"), tolerance=GAMMA
+    ).conflicts
+    assert values_conflict(
+        _c(650.0, unit="W"), _c(650.0, unit="kW", doc="doc-b"), tolerance=NAMEPLATE
+    ).conflicts
+    assert values_conflict(
+        _c(0.35, unit="USD / W"), _c(0.35, unit="USD/kW", doc="doc-b"), tolerance=NAMEPLATE
+    ).conflicts
+
+
+def test_a_real_coefficient_disagreement_still_survives_the_alias() -> None:
+    """The direction the alias must not swallow. Folding the unit removes the
+    unit conflict and *hands the pair to the numeric comparison*, which is the
+    point — two sheets quoting -0.29 and -0.33 %/K still disagree."""
+    verdict = values_conflict(
+        _c(-0.29, unit="%/degC"),
+        _c(-0.33, unit="%/K", doc="doc-b"),
+        tolerance=GAMMA,
+        field_name="temp_coeff_pmax",
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
 
 
 def test_an_exact_rule_still_honours_the_rounding_floor() -> None:
@@ -480,14 +601,22 @@ def test_a_verdict_explains_itself() -> None:
 # --- the table against the frozen contract ------------------------------------
 
 
-def _contract_keys() -> set[str]:
+def _contract_rows() -> dict[str, str]:
+    """Every `key` in the frozen contract's parameter tables, with its type column."""
     contract = pathlib.Path(__file__).parent.parent / (
         "specs/001-procurement-agent/contracts/canonical-parameters.md"
     )
     text = contract.read_text(encoding="utf-8")
-    keys = {m.group(1) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|", text, re.MULTILINE)}
-    assert len(keys) > 50, "the contract's parameter tables did not parse"
-    return keys
+    rows = {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|([^|]*)\|", text, re.MULTILINE)
+    }
+    assert len(rows) > 50, "the contract's parameter tables did not parse"
+    return rows
+
+
+def _contract_keys() -> set[str]:
+    return set(_contract_rows())
 
 
 def test_every_tolerance_key_is_a_contract_key() -> None:
@@ -741,3 +870,53 @@ def test_a_decimal_value_reports_its_own_precision() -> None:
     assert values_conflict(
         _c(Decimal("22.0"), unit="%"), _c(22.4, unit="%", doc="doc-b"), tolerance=efficiency
     ).conflicts
+
+
+def test_every_list_field_in_the_contract_has_a_set_rule() -> None:
+    """Bidirectional: every `list[str]` key has a SET_EQUAL row, and every
+    SET_EQUAL row is a `list[str]` key."""
+    list_keys = {key for key, kind in _contract_rows().items() if kind == "list[str]"}
+    assert len(list_keys) >= 10, "the contract's list[str] rows did not parse"
+    set_rows = {key for key, row in FIELD_TOLERANCES.items() if row.rule is ToleranceRule.SET_EQUAL}
+    assert set_rows == list_keys
+    for key in list_keys:
+        assert tolerance_for(key).rule is ToleranceRule.SET_EQUAL, key
+
+
+def test_identical_certifications_in_a_different_order_do_not_conflict() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215"], unit=None),
+        _c(["IEC 61215", "UL 1741"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert not verdict.conflicts, verdict.reason
+
+
+def test_containment_is_a_conflict_not_a_gap() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741"], unit=None),
+        _c(["UL 1741", "IEC 61215"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.INTER_DOCUMENT
+
+
+def test_an_edition_difference_on_one_element_is_temporal() -> None:
+    verdict = values_conflict(
+        _c(["UL 1741", "IEC 61215:2016"], unit=None),
+        _c(["UL 1741", "IEC 61215:2021"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("certifications"),
+    )
+    assert verdict.conflicts
+    assert verdict.conflict_class is ConflictClass.TEMPORAL
+
+
+def test_a_list_field_off_contract_still_compares_as_written_and_says_why() -> None:
+    verdict = values_conflict(
+        _c(["a", "b"], unit=None),
+        _c(["b", "a"], unit=None, doc="doc-b"),
+        tolerance=tolerance_for("some_field_nobody_has_specified"),
+    )
+    assert verdict.conflicts
+    assert "no SET_EQUAL tolerance row" in verdict.reason

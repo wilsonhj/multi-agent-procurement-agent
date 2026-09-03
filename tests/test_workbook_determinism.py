@@ -192,7 +192,7 @@ def test_the_compression_level_is_pinned_not_inherited(
 
     Two assertions, because either alone is a tautology. Following the constant
     into the output proves the assignment is live (deleting
-    `info._compresslevel = ...` is otherwise invisible: zlib's default happens to
+    `writestr(..., compresslevel=...)` is otherwise invisible: zlib's default happens to
     be 6, the same value). Pinning the constant to 6 proves it is the value
     Decision 8c chose, which following it cannot.
     """

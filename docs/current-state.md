@@ -1,31 +1,29 @@
 # Current state
 
-This audit describes `main` at commit `6c52fba` on 2026-08-09. It was first written against
-`ee1503d`; the [database schema](#database-schema), [persistence](#persistence),
-[security](#security) and [contract status](#contracts-are-only-partially-frozen) sections were
-rewritten when the Phase 0 substrate landed, and the contract section was rewritten again when
-D-13, D-14 and D-15 were adopted on 2026-08-07. It answers the practical question a new
-contributor has first: what can the repository do today?
+This audit reflects the `claude/phase-1-integration` branch as verified on 2026-08-29. It
+answers the practical question a new contributor has first: what can the repository do today?
 
-The local verification baseline is 481 passing tests and 24 skipped, a clean Ruff check, a clean
-`ruff format --check`, and a clean strict-mypy check across `src/` and `tests/`. Every one of the
-24 skips is in `tests/test_sql_behaviour.py`, which needs `PROCUREMENT_TEST_DSN` pointed at a
-disposable PostgreSQL; CI supplies one, so they are skipped locally and run there. The baseline
-was 229 passing when this audit was first written, and 470 at the previous re-baseline.
+The local verification baseline is **1000 passing, 42 skipped, and 4 expected failures**, plus a
+clean Ruff check, a clean `ruff format --check`, and a clean strict-mypy check across `src/` and
+`tests/`. The skips are intentionally DSN-gated live tests: 32 in
+`tests/test_sql_behaviour.py` and 10 in `tests/test_audit_live.py`. With
+`PROCUREMENT_TEST_DSN` pointed at a disposable PostgreSQL, CI runs both suites separately and
+fails if either silently skips.
 
-> **What the 2026-08-07 decisions did and did not change.** They closed the *decision* half of
-> C4, C6 and C7. No implementation number moved: contracts remain 3 done / 4 partial / 1
-> untouched, requirements 10 enforced / 23 partial / 17 declared / 6 open, and the same ten
-> `NotImplementedError` stubs stand. The decisions were the binding constraint, so this is
-> progress — it is just not implementation. See
-> [phase-1-execution.md](../specs/001-procurement-agent/phase-1-execution.md).
+The implementation contains ten completely unimplemented entry points plus one explicit
+unsupported workbook orientation (`suppliers_as_rows=False`). Since the previous audit, the
+Python audit library and same-transaction boundary for C4, the canonical projection and initial
+13-tab writer for C6, and a sanitized-PV vertical slice have landed. The general pipeline is
+still not operational, but the fixture-scale slice now exercises claims, reduction, conflicts,
+review, audit intents, deterministic workbook output, and a PostgreSQL persistence round trip
+together.
 
 ## Executive assessment
 
-The project is a well-researched, test-heavy policy core inside an application scaffold.
-Its strongest work is the domain reasoning around provenance, conditions, tolerance,
-determinism, and human authority. It is not yet a usable procurement tool because no
-document can travel through the complete pipeline.
+The project is a well-researched, test-heavy policy core with one narrow executable integration
+slice inside an application scaffold. Its strongest work is the domain reasoning around
+provenance, conditions, tolerance, determinism, and human authority. It is not yet a usable
+procurement tool because general supplier documents cannot travel through the complete pipeline.
 
 The repository should currently be evaluated as:
 
@@ -38,7 +36,7 @@ It should not yet be evaluated as:
 - an installable end-user product;
 - a document ingestion or RAG service;
 - a secure store for confidential procurement data; or
-- an open-source release, because no license has been granted.
+- a completed end-to-end procurement application.
 
 ## Implemented and tested
 
@@ -88,16 +86,17 @@ be configured to disable the gate.
 ### Output primitives
 
 `flags_for()` computes missing-data, web-supplemented, low-confidence, and unresolved states.
-`expected_tabs()` exposes the fixed 13-tab order. `normalize_archive()` makes an already
-created XLSX archive deterministic across time and platforms.
+`expected_tabs()` exposes the fixed 13-tab order. `normalize_archive()` makes an XLSX archive
+deterministic across time and platforms. `write_workbook()` now emits all thirteen tabs in the
+initial suppliers-as-rows layout, with provenance comments/columns, flags, and open items.
 
-`expected_tabs()` had no test when this audit was first written, which put it under this
-heading falsely. Truncating its body to `list(WorkbookTab)[:3]` left all 228 tests green, so a
-writer emitting three tabs would have contradicted nothing in the suite. It is now pinned
-against the thirteen literal tab names by `test_expected_tabs_returns_all_thirteen_in_order`
-(`tests/test_schema_invariants.py`) — the test that takes the count from 228 to 229. Truncating
-or reordering the helper now fails. The two tests above it in that file check the `WorkbookTab`
-enum, which is a different thing from the helper that returns it.
+`expected_tabs()` is pinned against the thirteen literal tab names by
+`test_expected_tabs_returns_all_thirteen_in_order`; truncating or reordering the helper fails.
+The canonical projection in `services/output/projection.py` is implemented and pinned by a
+golden JSON fixture and digest. The vertical-slice tests pin the initial writer's tab set,
+provenance, open-item row, and byte-identical regeneration. Hidden state columns, advanced
+navigation and visual QA, desktop Excel/LibreOffice validation, and the columns-oriented layout
+remain open.
 
 ### Database schema
 
@@ -108,33 +107,66 @@ privilege separation across four roles, append-only triggers on `claim`, `resolu
 `audit.event`, and `audit.event`'s per-document hash chain with its fork, parent-exists and
 loop constraints.
 
-Two suites cover them, and the split is the point. `tests/test_sql_schema.py` asserts the DDL
-*text* and needs no server. `tests/test_sql_behaviour.py` re-runs the attacks each defence
-descends from against a real PostgreSQL — a role declassifying rows it cannot read, a chunk not
-inheriting its document's restriction, a `TRUNCATE` taking the decision log with it, a chain that
-was constrained but not walkable — and the `sql` job in `.github/workflows/ci.yml` supplies one
-from a `pgvector/pgvector` container. Those are the 24 tests that skip locally.
+Three suites cover this substrate, and the split is the point. `tests/test_sql_schema.py`
+asserts the DDL *text* and needs no server. `tests/test_sql_behaviour.py` re-runs the attacks each
+defence descends from against a real PostgreSQL. `tests/test_audit_live.py` separately exercises
+the Python append/verify path and concurrent writers against the same kind of server. The `sql`
+job in `.github/workflows/ci.yml` runs all 32 schema-behaviour tests and all 10 live audit and
+integration tests; those are the 42 tests that skip in a default local run.
+
+### Audit library
+
+`src/procurement_agent/audit/` implements RFC 8785 canonicalisation, the versioned event
+envelope and SHA-256 preimage, advisory-lock append sequencing, and chain verification with a
+CLI. Unit tests cover canonicalisation, envelope compatibility, writer statement order, and
+verification defects; the live suite covers real inserts and concurrency. What remains is the
+application integration beyond the narrow slice. `services.transactional_audit.write_and_append_event()` binds a
+business callback and its event to one caller-owned transaction, with rollback atomicity proved
+against live PostgreSQL. `services.vertical_slice.persist_vertical_slice()` applies the same
+transaction discipline to its concrete business writer and all applicable audit intents on one
+connection, owns the commit and rollback, and returns a cleared result only after a successful
+commit. The general
+ingestion, extraction, conflict, review, and composition stages remain unwired.
+
+### Sanitized PV vertical slice
+
+`services.vertical_slice` is an executable, fixture-backed path over a trusted sanitized CSV. It
+parses two source records, creates immutable claims, replays them idempotently in the in-memory
+reference store, reduces a canonical PV component, constructs an inter-document conflict queue
+entry, supports a minimal human resolution that selects an existing sourced candidate, builds
+the canonical workbook projection, and writes the 13-tab XLSX. Its concrete PostgreSQL writer
+persists documents, claims, conflicts and candidates, resolutions, and audit events in one
+service-owned transaction, rolling back all of them on failure.
+
+This does not implement general CSV intake, native PDF/Word/Excel parsing, OCR, a general
+PostgreSQL repository, a reviewer API/UI, or the stage runner. It is a narrow executable proof of
+the contracts, not a production ingestion route.
 
 ## Declared but not operational
 
 ### Integration ports
 
 Six Protocol interfaces define the intended parser, OCR, embedder, vector-store, reranker,
-and LLM boundaries. No concrete adapter exists and the Protocols are not currently covered
-by adapter contract tests.
+and LLM boundaries. Each has an **in-memory reference adapter** under `adapters/<port>/memory.py`
+and a capability-declaring conformance suite in `tests/port_contracts/`. No *vendor* adapter
+exists and no production path consumes a port, which is why NFR-04 is `partial` rather than
+`enforced`: a suite passing against a reference proves the contract is expressible, not that any
+real backend satisfies it.
 
 ### Service entry points
 
-The ingestion, indexing, retrieval, web-search, workbook-writing, and runner entry points
-raise `NotImplementedError`. Their signatures communicate design intent but cannot be used
-as a pipeline.
+The general ingestion, indexing, retrieval, web-search, and runner entry points raise
+`NotImplementedError`. The workbook writer now handles the initial suppliers-as-rows layout;
+the opposite orientation explicitly remains unsupported.
 
 ### Persistence
 
-The tables exist (see [Database schema](#database-schema)); nothing in Python reaches them.
-There is no repository layer, no connection or session management, and no store adapter, so no
-code path in `src/` reads or writes a row. `psycopg` is an optional `store` extra that only the
-live-schema test suite imports.
+The tables exist (see [Database schema](#database-schema)). The audit library reads and writes
+`audit.event` through a connection supplied by its caller, and the generic transactional-audit
+service binds that event to a callback on the same connection. Its live tests use `psycopg`.
+There is still no general repository layer, connection or session management, or store adapter
+for documents, chunks, and jobs. The sanitized-PV writer is the narrow exception: it persists
+documents, claims, conflicts/candidates, resolutions, and audit events transactionally.
 
 `sql/` is also not a migration tool. It is a numbered, forward-only file set applied by `psql` in
 lexical order, with no version tracking: re-running `02`–`08` against a database that already has
@@ -144,8 +176,10 @@ a project that wants rollback or a schema-version table still has to choose one.
 
 ### Human review
 
-The conflict and resolution data shapes exist. There is no queue lease service, reviewer
-API, authentication, or UI.
+The conflict and resolution data shapes exist, and the sanitized-PV slice constructs a queue
+entry and supports selecting an existing sourced candidate without mutating the input. There is
+no durable queue lease service, reviewer API, authentication, or UI, and the other resolution
+actions remain outside the slice.
 
 ### Security
 
@@ -162,7 +196,7 @@ C7's model. Retrieval-time filtering has no code, because no retrieval path exis
 Inference hosting is a deployment choice nothing in the repository makes.
 
 The distinction that matters: a defence enforced in the schema is only reached by a caller that
-connects, and no application code connects yet.
+connects. The audit library proves that one low-level path; no application service connects yet.
 
 ## Acceptance status
 
@@ -177,20 +211,19 @@ a signature exists, **open** means there is no home in the code yet.
 |---|---|---|---|
 | AC-1 | Scanned spec sheet yields sourced fields; low confidence routes to review | Nothing. No document reaches an extractor | open |
 | AC-2 | A web value contradicting a record value raises a conflict, record unchanged | `assert_no_autonomous_overwrite()` at unit level. Nothing drives a contradiction from ingestion through to a queue entry | partial |
-| AC-3 | All 13 tabs, with conditional formatting for the four cell states | Tab identity and order (`expected_tabs()`), and the four states (`flags_for()`). No workbook is generated, so no formatting is applied | partial |
+| AC-3 | All 13 tabs, with conditional formatting for the four cell states | The initial writer emits all thirteen tabs, provenance, flags, and an open-item row; unit tests cover all four states, while writer-level coverage does not yet exercise every style and desktop Excel/LibreOffice remains unrun | partial |
 | AC-4 | Every output cell resolves to a source | The `SourceRef` validator, at model level | enforced |
 | AC-5 | Re-ingesting an unchanged document creates no duplicates | `sql/02_document.sql`'s `UNIQUE (content_hash)`, exercised against a live server by `test_a_duplicate_content_hash_is_refused`. The store half only: `services/ingestion.ingest`, the thing that would re-ingest, raises `NotImplementedError` | partial |
 | AC-6 | Inverter TRD against the IEEE 2800 limit; tax status per supplier | Nothing | open |
-| AC-7 | Two generations from an unchanged store are byte-identical | `normalize_archive()`, at archive level only. Without a writer there is no complete workbook to regenerate, and the desktop Excel/LibreOffice gate is unrun | partial |
-| AC-8 | An uncleared user cannot influence any retrieved result | `VectorStorePort.search(allowed_document_ids=...)` declares the parameter. No adapter, no enforcement, no test imports `ports` | declared |
+| AC-7 | Two generations from an unchanged store are byte-identical | The sanitized-PV slice writes two byte-identical workbooks and persists its narrow store transactionally; archive normalization remains independently tested. No general production store is wired, and the desktop Excel/LibreOffice gate is unrun | partial |
+| AC-8 | An uncleared user cannot influence any retrieved result | Forced RLS is live-tested, and `VectorStorePort.search(allowed_document_ids=...)` is exercised against the in-memory reference — including that filtering happens inside top-k. No production retrieval path or vendor adapter exists | partial |
 
 Read that table as three groups, because they fail differently. AC-4 is genuinely covered.
-AC-2, AC-3, AC-5 and AC-7 each have a tested *half* and an unbuilt one — that split is the
+AC-2, AC-3, AC-5, AC-7 and AC-8 each have a tested *half* and an unbuilt one — that split is the
 pattern to distrust in any status claim about this repository, because the tested half is the
 one that gets quoted. AC-5 is the variant worth naming separately: its tested half is the
 *store*, not a policy function, so the thing under test is a live database constraint and the
-missing half is the caller. AC-1, AC-6 and AC-8 have no test at all; of those, only AC-8 has so
-much as a signature.
+missing half is the caller. AC-1 and AC-6 have no implementing path at all.
 
 > **Corrected 2026-08-05.** This row read "Nothing. `content_hash` exists but carries no
 > uniqueness constraint / **open**". The constraint had landed in `e7da9ad`, an ancestor of this
@@ -204,25 +237,23 @@ mapping behind these.
 
 ## Design and documentation debt
 
-### Public repository without a license
+### License and contributor governance
 
-`pyproject.toml` declares `UNLICENSED` and no `LICENSE` file exists. Public visibility alone
-does not permit reuse or redistribution. Selecting and adding an OSI-approved license is the
-largest non-code blocker to outside adoption.
+The repository is licensed under Apache-2.0. `pyproject.toml` declares it and the repository
+contains both `LICENSE` and `NOTICE`. Contributions use a DCO as documented in
+`CONTRIBUTING.md`.
 
-### No contributor governance
+### Remaining contributor governance
 
-Before a broad public launch, maintainers should add:
+Before a broad public launch, maintainers should still add:
 
-- a selected license;
 - a code of conduct;
 - a security reporting policy;
 - an issue and pull-request template;
-- a release and compatibility policy; and
-- a decision on DCO versus CLA for external contributions.
+- a release and compatibility policy.
 
-This documentation adds a contribution workflow but intentionally does not invent legal or
-governance choices for the maintainers.
+The license and DCO choices are settled; the remaining launch policies are still maintainer
+decisions.
 
 ### Specification drift
 
@@ -247,18 +278,18 @@ is filed there as A-24.
 ### Contracts are only partially frozen
 
 [`tasks.md` Phase 0](../specs/001-procurement-agent/tasks.md) enumerates eight shared contracts,
-C1–C8. **Five of the eight are unfinished**: C1, C3 and C5 are done, four are partial, and one is
-untouched. The distinction matters — a *partial* contract is the more dangerous kind, because
+C1–C8. **Five of the eight are unfinished**: C1, C3 and C5 are done and the other five are
+partial. The distinction matters — a *partial* contract is the more dangerous kind, because
 there is enough of it to build against and not enough to be stable:
 
 | ID | Contract | Status in `tasks.md` |
 |---|---|---|
 | C1 | Postgres schema (`document`, `chunk`, `claim`, `conflict`, `resolution`, `audit.event`) | **done** — all six, plus `job` and `conflict_candidate`, in `sql/00`–`08` |
-| C2 | Claim/extraction record | partial — `condition` has landed; per-category models still do not exist |
+| C2 | Claim/extraction record | partial — `condition` and the closed field registry have landed; per-category models still do not exist |
 | C3 | Provenance reference `(document_id, page, span, extractor_version)` | **done** — all four on `SourceRef`; `span` is the `section` field |
-| C4 | Audit event envelope and `event_type` taxonomy | partial — decision closed by **D-13** (2026-08-07); SQL half only, no Python envelope or canonicalisation *code* library |
+| C4 | Audit event envelope and `event_type` taxonomy | partial — D-13, the Python canonicalisation/envelope/writer/verifier library, and a same-transaction service boundary used by the narrow slice have landed; the general stages remain unwired |
 | C5 | Conflict record and the five resolution action shapes | **done** |
-| C6 | Canonical workbook projection | ☐ not started — format frozen by **D-14** (2026-08-07); no projection function, no golden fixture |
+| C6 | Canonical workbook projection | partial — D-14, the canonical projection and golden fixture, and an initial deterministic 13-tab writer have landed; advanced workbook gates remain |
 | C7 | Retrieval interface and ACL/labelling model | partial — RLS enforces the one label that exists; **D-15** (2026-08-07) adopts that model *provisionally*, contingent on two outstanding facts |
 | C8 | Stage runner contract, including the append-only claim invariant | partial — append-only enforced; job states are the DDL's own proposal, no runner |
 
@@ -282,12 +313,11 @@ about:
   `dict[str, list[CanonicalField]]`, and `schema/component.py`'s own docstring says the TRS
   section 7 field sets “are not yet enumerated here”.
 - **C4** — `sql/07_audit_event.sql` has the envelope columns, the seven-value `event_type`
-  CHECK and `payload_canonical`. Nothing in `src/` does. The file itself records that the
-  taxonomy is “this file's own proposal”. **D-13 (2026-08-07) closed the decision half**: the
-  scheme is RFC 8785, the preimage is one JCS object carrying `"v": 1`, and the digest is
-  SHA-256 — so the `hash` column now has a defined input. The taxonomy is version 1 with
-  additive-only amendment rather than frozen. What is missing is code, not a decision: WP-H's
-  envelope and canonicalisation library are unwritten, so nothing emits an event.
+  CHECK and `payload_canonical`. D-13 defines RFC 8785 canonicalisation, a versioned JCS
+  preimage, and SHA-256. `src/procurement_agent/audit/` implements that contract, appends under
+  a pre-insert advisory lock, and verifies chains. `services.transactional_audit` provides and
+  live-tests a same-transaction callback boundary. The sanitized-PV slice uses it; the general
+  business stages do not yet exist to use it.
 - **C7** — argued at length in `tasks.md`. RLS on seven tables, an `app.allow_restricted`
   entitlement, a `procurement_ingest` write role and a chunk-inheritance trigger are real
   enforcement, and they enforce exactly one boolean. `sql/README.md` states that this is C7 “at
@@ -301,18 +331,19 @@ about:
   `UNIQUE` idempotency key, but its own `COMMENT` says it is “this file's own C8-consistent
   design, not a mapping of an existing frozen type”, there is no Pydantic model for it, and
   `orchestrator.run()` raises `NotImplementedError`.
-- **C6** — **format frozen by D-14 (2026-08-07)**, nothing built. `write_workbook()` still
-  raises `NotImplementedError` and no *workbook* projection function exists. Note the wording:
-  `services.claims.project` does exist, but it is C8's claims-to-canonical-fields projection, a
-  different thing from C6's whole-store-to-hashed-artifact projection. The T0.5 golden fixture
-  does not exist either.
+- **C6** — **format frozen by D-14 (2026-08-07); the projection, golden fixture, and initial
+  writer have landed.** `services/output/projection.py` emits the canonical bytes with policy and
+  computed flags inside the hash and a store-derived `generated_on`. `write_workbook()` emits the
+  suppliers-as-rows 13-tab artifact and passes a byte-identity test through the PV slice. Hidden
+  state columns/navigation, complete visual QA, the columns orientation, and the gating desktop
+  Excel/LibreOffice test remain. `services.claims.project` is C8's claims-to-fields projection,
+  a different thing from C6's whole-store-to-hashed-artifact projection.
 
-An earlier version of this section named only five contracts and omitted C2 and C3, on the
-reasoning that `schema/` and `SourceRef` already existed and so were the ones most likely to be
-mistaken for finished. **C4 and C8 are now that pair**, for the mirror-image reason: each has a
-finished, live-verified SQL half and an unstarted Python half, and `sql/` is the visible artifact.
-It is the same split this document already flags in the acceptance table — a tested half that
-gets quoted and an unbuilt half that does not.
+The partial marker hides materially different gaps. C4 has a complete low-level library and a
+transaction boundary used by the narrow slice but not the general stages; C6 has a canonical
+hashed projection and initial renderer but not its advanced/desktop gates; C8 has a database job
+design and append-only claim invariant but no runner. Read the evidence rather than assuming
+every partial contract is at the same stage.
 
 These are shared boundaries. Building multiple adapters before freezing them would create
 incompatible records and rework.
@@ -328,15 +359,14 @@ claims cannot be validated.
 The fastest path to a useful contributor demo is not to implement every service in parallel.
 Build one tested vertical slice:
 
-1. settle the license and contributor-governance choices;
-2. freeze the five contracts still open above — C2, C4, C6, C7 and C8;
-3. commit sanitized fixtures for one PV module document and its expected claims;
-4. implement content detection and one format-native parser;
-5. persist immutable claims and reduce them to canonical fields;
-6. run implemented conflict policy and create queue records;
-7. expose a minimal review API for those records;
-8. render the PV tab plus provenance/conflict tabs; and
-9. validate idempotency, access isolation, audit integrity, and deterministic output.
+1. close the remaining factual and shape decisions in C2, C7, and C8;
+2. extend the PV slice from trusted CSV to one sanitized native document and parser adapter;
+3. extend the narrow PostgreSQL writer into general repositories for documents, claims, conflicts,
+   resolutions, and audit events;
+4. expose the existing review operation through a minimal authenticated API and durable queue;
+5. put the compose-time severity gate in front of workbook generation;
+6. validate access isolation and transaction rollback through that complete database path; and
+7. run the output through desktop Excel and LibreOffice before expanding formats/categories.
 
 After that slice is stable, add document formats and component families behind the same
 contracts.
@@ -345,15 +375,15 @@ contracts.
 
 Changes that are useful without depending on unfinished storage contracts include:
 
-- Protocol conformance tests and an adapter test kit — no test imports `ports` at all today;
+- a *vendor* adapter behind any of the six ports — the conformance suite and in-memory
+  references now exist to write one against;
 - table-driven tests that close remaining schema and traceability gaps;
 - sanitized golden fixtures for the existing conflict policy;
 - documentation checks and link validation; and
 - proposals for the unresolved shared contracts.
 
-Avoid inventing a production workbook shape in isolation: C6's *format* is frozen by D-14 but
-no projection exists, and it is
-explicitly a shared contract that needs an accepted design decision first. The database shape is
-no longer in that category — C1 has landed — but the same rule applies from the other side: build
-against `sql/` rather than beside it, and changing what is there is a contract change under
+Do not build a second workbook renderer beside the initial one. C6's projection and
+suppliers-as-rows writer now exist; extend them against the open G.3–G.8 gates and add regression
+tests for each feature. The database shape is likewise settled by C1: build against `sql/`
+rather than beside it, and treat changes there as contract changes under
 [CONTRIBUTING.md](../CONTRIBUTING.md).

@@ -147,3 +147,20 @@ jobs:
           fi
           grep -qE '[0-9]+ passed' /tmp/sql-out || {
             echo "::error::the live-schema suite reported no passing tests"; exit 1; }
+
+      - name: Run the live audit-chain suite
+        env:
+          PROCUREMENT_TEST_DSN: postgresql://postgres:postgres@localhost:5432/procurement
+        # The audit concurrency tests are independently DSN-gated. Keep their
+        # output and assertions separate from the schema suite so neither an
+        # unset DSN nor a collection regression can disappear inside a combined
+        # successful pytest summary.
+        run: |
+          set -o pipefail
+          uv run --no-sync pytest tests/test_audit_live.py -q 2>&1 | tee /tmp/audit-live-out
+          if grep -qE '[0-9]+ skipped' /tmp/audit-live-out; then
+            echo "::error::the live audit-chain suite skipped; PROCUREMENT_TEST_DSN is not reaching it"
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/audit-live-out || {
+            echo "::error::the live audit-chain suite reported no passing tests"; exit 1; }

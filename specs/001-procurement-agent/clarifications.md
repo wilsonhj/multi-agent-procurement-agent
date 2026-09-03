@@ -633,11 +633,14 @@ names, with a concrete implementation. [V] for the package metadata only — rea
 JSON API on 2026-08-06: version 0.1.4, Apache-2.0 (so it clears the dependency licence gate),
 **zero runtime dependencies** (everything in `requires_dist` is an extra).
 
-**The package has not been installed, locked, or executed against this repo's data** — it is not
-in `pyproject.toml` or `uv.lock`. Ratifying this decision should be paired with adding the
-dependency and a conformance test against RFC 8785's own published test vectors, because the
-whole argument for using a library rather than hand-rolling is that its conformance is somebody
-else's problem *only once you have checked it*.
+**Installed, locked and conformance-tested as of 2026-08-12** — `rfc8785==0.1.4` is pinned exactly
+in `pyproject.toml` (exactly, not `~=`: this library decides the bytes every chain is hashed over,
+so an output change would re-base all history while the data stands still, which is the A-6 class).
+`tests/test_audit_canonicalisation.py` runs it against RFC 8785's own published vectors - section
+3.2.4's hex byte dump, section 3.2.3's UTF-16 sorting vector, and all 26 rows of Appendix B
+Table 1 including the two that must raise. That pairing was this decision's own condition for
+ratification, because the whole argument for using a library rather than hand-rolling is that its
+conformance is somebody else's problem *only once you have checked it*.
 
 **Do not hand-roll this with `json.dumps(sort_keys=True)`.** [V] — the two disagree in at least
 two ways that matter, both verified in this repo's own venv: JCS sorts keys by **UTF-16 code
@@ -729,9 +732,10 @@ events at all under the normative text. `spec.md` governs. See A-49.
 ## D-14 — The canonical workbook projection (contract C6)
 
 > **Status: ADOPTED 2026-08-07** by the lead architect, as recommended, including both calls in
-> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero —
-> `write_workbook()` raises and no *workbook* projection function exists — and it blocked WP-G
-> entirely, including the gating G.6 desktop-Excel test. (`services.claims.project` is a
+> §Two decisions below. Drafted 2026-08-06 to close T0.5. C6 was the only contract at zero at that
+> point - `write_workbook()` raised and no *workbook* projection function existed - and it blocked
+> WP-G entirely. The projection and T0.5 landed 2026-08-12; `write_workbook()` and the gating G.6
+> desktop-Excel test remain. (`services.claims.project` is a
 > different projection: claims to canonical fields, contract C8. C6 is the projection of the
 > whole store to the hashed artifact.)
 
@@ -782,12 +786,58 @@ encoding:
 |---|---|
 | `Decimal` | `{"$decimal": str(v)}` — **added 2026-08-11** |
 | `date` | `{"$date": v.isoformat()}` — **added 2026-08-11** |
-| `datetime` | RFC 3339 UTC, microseconds **always** printed (`isoformat()` omits `.000000` when zero, so pin a formatter) |
-| `DeclaredBand` | `model_dump` |
+| `datetime` | `{"$datetime": …}`, RFC 3339 UTC, microseconds **always** printed (`isoformat()` omits `.000000` when zero, so pin a formatter). Aware only — **amended 2026-08-12** |
+| `DeclaredBand` | `model_dump`, then **every leaf back through `encode_value`** — **amended 2026-08-12** |
 | enums | `.value` |
 | `frozenset` | sorted, as `derived` already is |
 | `tuple` | list — needed for condition grouping keys on the sort path, never for a stored value |
-| `str`, `int`, `float`, `bool`, `None` | bare |
+| `list` | list, elementwise — **added 2026-08-12** |
+| `str`, `int`, `float`, `bool`, `None` | bare (finite floats only) |
+
+**Three amendments, all found by implementing this table in Track 1a and all required by the
+property below rather than by preference.** Recorded here because the code now differs from what
+this table said, and a table that lies is worse than one that is silent:
+
+1. **`list` was absent, and `list[str]` is the declared type of 18 contract rows** — so a
+   closed-world encoder raised on real data. Encoded elementwise; order is content, never sorted.
+   It shares the JSON array with `tuple` and `frozenset`, which is sound only because neither of
+   those ever reaches the polymorphic `CanonicalField.value` slot: `derived` is a frozenset at a
+   fixed key, and tuples exist solely on the sort path. **Injectivity is required over the
+   polymorphic value domain**, which is the domain that needs it — `value` is typed
+   `object | None`, so one key path carries a `Decimal` for one field and a `str` for another and
+   position cannot disambiguate. That is the whole reason the tagged types are tagged. Adding
+   `$tuple`/`$frozenset` sigils would buy nothing and put sigils into sort keys.
+2. **`model_dump` alone leaks raw enum members.** Plain `model_dump()` runs in *python mode* and
+   returns `kind` as the `ToleranceKind` member, which is not JSON and is one `repr()` away from
+   `<ToleranceKind.ABSOLUTE: 'absolute'>` — the A-6 class, where a hash moves because a member was
+   renamed. `mode="json"` fixes that one case and creates a worse one: a `Decimal` field added to
+   the model later would be serialised by pydantic's rules instead of earning its `$decimal` tag,
+   so two distinct precisions would collide. Recursing keeps one encoding authority per leaf.
+
+   ⚠️ **This defect is invisible under equality assertions.** A `StrEnum` member equals its own
+   value and `json.dumps` writes it as a plain string, so the leak passes every `==` test and
+   surfaces only when a non-`str`/`int` field is added. It is caught by a structural check that
+   every leaf is *exactly* a JSON type — `type(x) is str`, not `isinstance`.
+3. **`datetime` pinned a format but no tag**, so an encoded datetime would collide with the equal
+   plain string — precisely the argument that earned `date` its tag one row above. Tagged
+   `$datetime`. Naive datetimes are **refused**: a naive datetime names no instant, and assuming
+   UTC would encode it identically to an aware noon-UTC that it is *not equal to*, breaking
+   injectivity in the silent direction. Aware datetimes are converted to UTC before formatting,
+   which is what makes `14:00+02:00` and `12:00Z` — one value, two spellings — encode once.
+
+Non-finite floats are refused for the same reason: JSON cannot represent them, and `NaN != NaN`
+means no injective map can place a value that is not equal to itself. The schema already rejects
+these at construction (`_reject_non_finite`); the encoder declines to be the hole in that.
+
+Two Python equalities are deliberately **not** honoured, both warts rather than semantics:
+`True == 1` and `1 == 1.0` encode distinctly, which this decision already implied by calling
+`22`, `22.0`, `"22"`, `true` and `null` "five different tokens" below. `Severity.INFORMATIONAL == 0`
+*is* honoured, because an `IntEnum` member is the integer. Over-separating a coincidence is safe;
+under-separating a precision is not.
+
+Implemented at `src/procurement_agent/schema/encoding.py`, with the property tests at
+`tests/test_encoding.py`. Placement follows `schema/component.py:74` — `schema` sits below
+`services` and cannot import it, and both consumers live in `services`.
 
 **The requirement is a property, not the table: `encode_value()` must be injective over the
 value domain, enforced by test.** The table is one implementation of it. Two consequences that
@@ -983,6 +1033,126 @@ too-permissive leaks commercial terms.
 on the two questions.
 
 ---
+
+## D-16 — A reviewer's decision is a claim, and it settles its group (contracts C5, C8)
+
+> **Status: ADOPTED 2026-09-02**, on the instruction to fix every verified defect. Closes
+> [A-53](analysis.md). Recommended shape **A** of what was `open-decisions.md` item 8, as
+> `sql/06_resolution.sql:29-38` proposed.
+
+**The defect.** `services.claims.project()` never read or wrote `resolution`, `_preferred()` had no
+human tier, and `_status_for()` reopened any group holding more than one distinct answer. So a
+recorded decision was discarded by the next reducer run, and a human's value recorded as a claim
+*reopened* the conflict it settled. Reproduced: re-committing the identical, complete claim set
+for a resolved field stored `OPEN` / `resolution=None`.
+
+**Adopted.**
+
+1. **A human claim is a `FieldClaim` whose `extractor_version` starts with `human:`** and which
+   carries its `Resolution`. The validator enforces both directions: a `human:` claim without a
+   `Resolution` is "a decision with nobody behind it"; a `Resolution` on a machine claim is "a
+   person's name on a machine value". `sql/06` recommended the convention and said it could not
+   enforce it; `FieldClaim._human_claims_carry_their_decision` is the enforcement.
+2. **Only value-asserting actions may be claims**: `SELECT_VALUE`, `ENTER_OVERRIDE`,
+   `KEEP_SYSTEM_OF_RECORD`. `DEFER` and `REQUEST_MORE_WEB_SEARCH` assert nothing about the
+   world; they are events against the *conflict*, recorded in `resolution` and `audit.event`.
+3. **`value_after`, when recorded, must equal the claim's value.** A decision logged against one
+   number and a claim asserting another is the drift the reducer exists to make impossible.
+4. **The reducer:** `_preferred` ranks a human claim above every tier and confidence, and among
+   human claims the latest `resolved_at` — stored data, not the clock — wins; `_status_for`
+   returns `RESOLVED` whenever a human claim is in the group; `project()` copies the decision
+   onto `CanonicalField.resolution`, so RESOLVED-with-resolution is produced by construction.
+5. **A settled group stays settled.** A later extraction that disagrees does not reopen it;
+   reopening is a human action (`REQUEST_MORE_WEB_SEARCH`, capped at 3 by task F.3). The
+   alternative — any new answer reopens — makes every re-extraction a silent appeal.
+6. **`claim_key` carries `resolved_at` for a human claim**, so one reviewer's second decision on
+   a field is a new assertion rather than a same-key contradiction that raises `ProposalError`.
+7. **`assert_no_autonomous_overwrite` passes a field carrying a `Resolution`.** The rule is against
+   *autonomous* overwrite; a reviewer choosing the web candidate is FR-HITL-04's `SELECT_VALUE`.
+   A web value with no decision behind it is still refused.
+8. **Provenance of a human claim** is the selected candidate's `source_ref` for `SELECT_VALUE`
+   and `KEEP_SYSTEM_OF_RECORD`, and the reviewer-cited source for `ENTER_OVERRIDE`. NFR-01's
+   "no value without a source" holds unchanged; `SourceRef` still requires a document or URL.
+
+**What it costs.** `FieldClaim` gains a key, so the two committed claim fixtures were
+regenerated with the canonical options (`tests/fixtures/README.md` § Regenerating);
+their behavioural assertions are unchanged. `sql/04_claim.sql` does not yet carry a
+`resolution` column — the Python record is ahead of the DDL, which is the mirror of
+C4 and C8's usual shape, and WP-H/WP-F own that migration.
+
+**Rejected: `project(claims, resolutions)`.** A second input keeps the reducer pure but breaks
+the sentence C8 is built on — "the canonical value is a projection over claims, never an
+in-place update" — and gives the store two write paths to keep consistent.
+
+## D-17 — List-valued fields are sets (amends D-2)
+
+> **Status: ADOPTED 2026-09-02**, on the same instruction. Closes [A-55](analysis.md).
+
+**The defect.** `values_conflict` compared numbers, then text, then fell through to
+`a.value == b.value` — order-sensitive — with the reason "values are not comparable as numbers or
+text". The contract's `list[str]` fields had no tolerance row and reached that fallback, so
+two datasheets listing identical certifications in a different order raised a conflict.
+`certifications` floors at `CRITICAL`, so `compose_gate_blocks()` refused the workbook over
+typography.
+
+**Adopted.**
+
+1. **`ToleranceRule.SET_EQUAL`**, a seventh member. D-2's table gains one rule, not a general
+   "unordered" flag on the others, because a set comparison changes the comparison rather than
+   its threshold — the same reason D-2's six were kept distinct.
+2. **Every `list[str]` key has a `SET_EQUAL` row** in `FIELD_TOLERANCES` (via `_set_equal`),
+   pinned bidirectionally against the contract by
+   `test_every_list_field_in_the_contract_has_a_set_rule`. None reaches `DEFAULT_TOLERANCE`.
+3. **Per-element normalisation is the single-string one**: `_normalise_text` and
+   `_editions_by_base`, so `IEC 61215:2016` against `:2021` is a `TEMPORAL` conflict on that
+   element rather than a set mismatch.
+4. **Containment is a conflict, not a gap.** For an attestation, absence is the finding
+   (FR-HITL-01): `{UL 1741}` against `{UL 1741, IEC 61215}` is one source claiming a
+   certification the other does not.
+5. **A scalar in a set field is a conflict that says so** — an extractor emitted a string where
+   the contract types a list — rather than a silent element-wise compare.
+6. The off-contract fallback still compares lists as written, and its reason now says that
+   element order counts because no `SET_EQUAL` row exists, instead of calling two lists
+   "not comparable".
+7. **`project()` status for SET_EQUAL is pairwise `values_conflict`**, not a
+   canonical string of years. A missing edition is unknown (`IEC 61215` vs
+   `:2021` is NONE); two dated editions still OPEN. `_asserted` still uses a set
+   rendering so same-key duplicates collapse; lists are not sorted in `_render`.
+
+## D-18 — The RESOLVED invariant is structural: RESOLVED is derived, not stored
+
+> **Status: ADOPTED IN FULL 2026-09-02.** Closes [A-58](analysis.md).
+
+**The defect.** `CanonicalField` forbids `conflict_status=RESOLVED` with `resolution=None` by
+overriding five pydantic entry points, and the inventory was already incomplete. A stored
+`ConflictStatus` that included RESOLVED also left `evolve(conflict_status=OPEN)` able to rewrite
+the enum while leaving the decision in place, so Open Items hid remaining queue hits.
+
+**Adopted, structural:** `RESOLVED` is *derived*, not stored.
+
+1. `CanonicalField` stores `unresolved_status: UnresolvedStatus` — NONE, OPEN or
+   INSUFFICIENT_EVIDENCE, with no RESOLVED member — and `resolution: Resolution | None`.
+2. `conflict_status` is a computed field: RESOLVED exactly when a resolution is present,
+   otherwise the stored state. It serialises under the TRS's key; `unresolved_status` is
+   excluded from serialisation. **The wire shape is unchanged**: eight TRS keys plus
+   `condition`, and `model_validate(model_dump())` round-trips both states.
+3. The contract's name is still accepted everywhere it was: a before-validator maps
+   `conflict_status=` onto the stored field for the constructor, `evolve` and
+   `model_validate`, refusing RESOLVED-with-no-resolution at the door **and refusing to move a
+   resolved field off RESOLVED** (the hole `evolve(conflict_status=OPEN)` used to take).
+   `model_construct` maps the contract name rather than dropping it silently; the property
+   setter shares the same two refusals.
+4. **Deleted:** `_assert_resolution_matches_status`, the after-validator, and the
+   `__setstate__` / `__deepcopy__` overrides — the forbidden combination has no representation.
+   The `model_copy(update=)` refusal stays, because it is about the *other* invariant: an
+   unvalidated `update` could replace a recorded `Resolution` unseen. `extra="forbid"` stays.
+5. **What a raw `__dict__` write can still do** is clear `resolution`, which un-resolves the
+   field consistently; it can no longer fabricate a resolved one. That residual is recorded in
+   `tests/test_resolution_immutability.py` as a fact rather than an oversight.
+
+**Cost, measured.** Zero fixture change — neither committed fixture serialises a
+`CanonicalField`. The wire and `evolve` keep `conflict_status=`. The reducer copies the human
+claim's `Resolution` onto the field and lets the decision derive RESOLVED.
 
 ## Carried forward as genuinely unresolved
 

@@ -79,7 +79,30 @@ def test_the_expected_files_are_all_present() -> None:
         "06_resolution.sql",
         "07_audit_event.sql",
         "08_job.sql",
+        "09_claim_natural_key_condition.sql",
     ]
+
+
+def test_claim_natural_key_includes_condition() -> None:
+    """Python `FieldClaim.claim_key()` includes `grouping_key()`. SQL unique did
+    not, so the first production writer `ON CONFLICT`s the Sungrow trio into
+    `_existing_claim_id` and cannot persist D-1.
+
+    Asserted on the create-time constraint *and* the forward migration, because
+    a live database that already applied `04` will not re-run it.
+    """
+    create = _sql("04_claim.sql")
+    match = re.search(
+        r"CONSTRAINT claim_natural_key UNIQUE\s*\((.*?)\)",
+        create,
+        re.DOTALL,
+    )
+    assert match is not None
+    columns = [part.strip() for part in match.group(1).split(",")]
+    assert "condition" in columns
+    migration = _sql("09_claim_natural_key_condition.sql")
+    assert "claim_natural_key" in migration
+    assert re.search(r"\bcondition\b", migration) is not None
 
 
 # --- S9: a pre-existing over-privileged role must not survive a re-run ---------
@@ -269,6 +292,79 @@ def test_every_such_table_has_a_confidentiality_select_policy(filename: str, tab
     assert re.search(r"_is_restricted\(|NOT access_restricted", combined), (
         f"{table}'s SELECT policy does not gate on the document's restriction"
     )
+
+
+@pytest.mark.parametrize(("filename", "table"), _CONTENT_TABLES)
+def test_every_such_table_denies_the_app_role_restricted_rows_outright(
+    filename: str, table: str
+) -> None:
+    """Was: every policy above admits `app.allow_restricted = 'true'`, and
+    `procurement_app` sets that GUC itself — by `SET`, by `set_config`, by
+    `SET LOCAL`, and by `options='-c app.allow_restricted=true'` in the
+    connection string, which lands during startup and so declassifies the
+    session before it issues a statement. Measured: 1 visible row became 2 on
+    all seven tables at once, the CONFIDENTIAL pricing chunk included.
+
+    The fix must be a *separate* `AS RESTRICTIVE` policy, not an edit to the
+    permissive ones. Permissive policies are OR'd, so nothing added to them can
+    narrow the result; restrictive policies are AND'd. Deleting the GUC clause
+    from the existing policies instead is not an option either — it breaks the
+    chunk inheritance trigger's parent lookup, which reaches visibility through
+    exactly that clause.
+    """
+    policies = [
+        s
+        for s in _statements(_sql(filename))
+        if s.upper().startswith("CREATE POLICY")
+        and f"ON {table}" in s
+        and "AS RESTRICTIVE" in s.upper()
+    ]
+    assert policies, (
+        f"{table} has no RESTRICTIVE policy, so procurement_app can read every "
+        "restricted row on it by setting app.allow_restricted itself"
+    )
+    combined = " ".join(policies)
+    assert "TO procurement_app" in combined, (
+        f"{table}'s restrictive policy is not scoped to procurement_app. "
+        "Unscoped, it also applies to procurement_owner -- and so to "
+        "document_is_restricted(), which then reports every document restricted "
+        "and hides the entire store from everyone."
+    )
+    assert "app.allow_restricted" not in combined, (
+        f"{table}'s restrictive policy admits the very GUC it exists to defeat"
+    )
+    assert re.search(r"_is_restricted\(|NOT access_restricted", combined), (
+        f"{table}'s restrictive policy does not gate on the document's restriction"
+    )
+
+
+@pytest.mark.parametrize(("filename", "table"), _CONTENT_TABLES)
+def test_the_restrictive_policies_keep_raising_restriction_possible(
+    filename: str, table: str
+) -> None:
+    """`WITH CHECK (true)` is spelled out on every one of them, and must stay.
+
+    PostgreSQL reuses the `USING` expression as the `WITH CHECK` when the latter
+    is omitted. Measured, that makes `INSERT ... access_restricted = true` fail
+    for `procurement_app` while the same insert with `false` succeeds — the
+    schema penalising the *safe* action, which is the exact defect 00_roles.sql
+    documents at length and solved by creating `procurement_ingest`. Restriction
+    has to stay a ratchet for this role: `USING` denies it any restricted row to
+    read, update or delete; `WITH CHECK (true)` leaves it free to raise
+    restriction, never to lower it."""
+    policies = [
+        s
+        for s in _statements(_sql(filename))
+        if s.upper().startswith("CREATE POLICY")
+        and f"ON {table}" in s
+        and "AS RESTRICTIVE" in s.upper()
+    ]
+    for policy in policies:
+        assert re.search(r"WITH CHECK\s*\(\s*true\s*\)", policy, re.IGNORECASE), (
+            f"{table}'s restrictive policy omits WITH CHECK (true), so the USING "
+            f"expression becomes the check and writing a MORE restricted row is "
+            f"the failing direction -- {policy[:120]}"
+        )
 
 
 def test_the_derivation_helpers_are_security_definer_and_pinned() -> None:

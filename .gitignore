@@ -36,3 +36,12 @@ htmlcov/
 .DS_Store
 .AppleDouble
 Icon?
+
+# Agent working directory. Session transcripts, worktrees and local agent state -
+# none of it is project source, and `.claude/worktrees/` holds whole checkouts.
+#
+# Ignored rather than merely "never staged": the rule was enforced by discipline
+# for the whole of Phase 1, and one `git add -A` would have committed it. Every
+# other confidential path here (docs/source/, data/, corpus/, out/, *.xlsx, .env*)
+# was already covered; this was the gap.
+.claude/

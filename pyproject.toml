@@ -17,6 +17,18 @@ dependencies = [
     # "Openpyxl 3.1.5", so a patch bump changes the output bytes and breaks
     # every historical AC-7 hash with zero data change. See plan.md Decision 8c.
     "openpyxl==3.1.5",
+    # Pinned EXACTLY, for openpyxl's reason rather than openpyxl's mechanism.
+    # This library decides the bytes `audit.event.hash` covers (clarifications.md
+    # D-13), so any change in its output re-bases every chain ever written while
+    # the data stands still - the A-6 class of defect wearing a dependency hat.
+    # A `~=0.1.4` bound would admit 0.1.5, and under PEP 440 a 0.x minor is not
+    # a compatibility promise; RFC 8785 conformance is a property of the release
+    # this repo's test vectors ran against, not of the version range. Core rather
+    # than an extra because the audit envelope is not swappable infrastructure:
+    # NFR-04's extras exist for parsers, embedders and stores, and C4 is none of
+    # those. Zero runtime dependencies and Apache-2.0 (PyPI, 2026-08-12), so it
+    # neither widens the dependency surface nor touches the licence gate.
+    "rfc8785==0.1.4",
 ]
 
 [project.optional-dependencies]

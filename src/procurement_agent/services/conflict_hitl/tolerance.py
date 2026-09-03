@@ -15,8 +15,15 @@ table invented names - `transformer_no_load_loss_w` where the contract says
 its 20 keys matched nothing. `tolerance_for` falls back to EXACT, so every one of
 those rows silently collapsed to the rounding floor: the transformer loss rule
 inverted outright, turning a measured loss *below* guarantee into a queued
-conflict. `test_every_tolerance_key_is_a_contract_key` now parses the contract
-and fails on any key that is not in it.
+conflict.
+
+**The key now lives on the row, validated against `schema.registry`.** A test
+parsing the markdown was the first fix and it was the weaker one: a dict key is a
+free string, so nothing stopped the next row being written under an invented name
+between test runs, and the table held a second copy of the contract's key list
+that could drift from it. A row that *cannot be constructed* with a key the
+contract does not have cannot be filed under one, and the dict is built from the
+rows rather than typed out beside them.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ import math
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...schema import ToleranceCondition, ToleranceRule
+from ...schema.registry import require_contract_key
 
 
 class FieldTolerance(BaseModel):
@@ -40,6 +48,17 @@ class FieldTolerance(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    key: str | None = Field(
+        default=None,
+        description=(
+            "The frozen contract's `key` for the parameter this band governs. "
+            "Validated against `schema.registry`, so an invented name is refused "
+            "here rather than falling through `tolerance_for` to EXACT. Optional "
+            "because a band is also constructed ad hoc - by a caller comparing two "
+            "candidates directly, and throughout the tests - where there is no "
+            "field to name; `_table` refuses a keyless row for the table itself."
+        ),
+    )
     rule: ToleranceRule
     magnitude: float | None = Field(
         default=None,
@@ -69,6 +88,11 @@ class FieldTolerance(BaseModel):
 
     @model_validator(mode="after")
     def _magnitude_matches_rule(self) -> FieldTolerance:
+        if self.key is not None:
+            # The union form: D-2 assigns a band to a parameter, not to a tab, so
+            # there is no category to check against. `nameplate_power` and
+            # `rated_ac_power` mean one thing wherever they appear.
+            require_contract_key(self.key)
         if self.rule in self._NUMERIC:
             if self.magnitude is None:
                 raise ValueError(f"{self.rule} needs a magnitude")
@@ -92,6 +116,7 @@ class FieldTolerance(BaseModel):
 
 
 def _abs(
+    key: str,
     magnitude: float,
     unit: str,
     basis: str,
@@ -100,6 +125,7 @@ def _abs(
     alternate_magnitude: float | None = None,
 ) -> FieldTolerance:
     return FieldTolerance(
+        key=key,
         rule=ToleranceRule.ABSOLUTE,
         magnitude=magnitude,
         unit=unit,
@@ -110,6 +136,7 @@ def _abs(
 
 
 def _rel(
+    key: str,
     magnitude: float,
     basis: str,
     *,
@@ -117,6 +144,7 @@ def _rel(
     alternate_magnitude: float | None = None,
 ) -> FieldTolerance:
     return FieldTolerance(
+        key=key,
         rule=ToleranceRule.RELATIVE,
         magnitude=magnitude,
         basis=basis,
@@ -126,6 +154,7 @@ def _rel(
 
 
 def _one_sided(
+    key: str,
     magnitude: float,
     basis: str,
     *,
@@ -133,6 +162,7 @@ def _one_sided(
     alternate_magnitude: float | None = None,
 ) -> FieldTolerance:
     return FieldTolerance(
+        key=key,
         rule=ToleranceRule.ONE_SIDED,
         magnitude=magnitude,
         basis=basis,
@@ -141,8 +171,32 @@ def _one_sided(
     )
 
 
-def _exact(basis: str) -> FieldTolerance:
-    return FieldTolerance(rule=ToleranceRule.EXACT, basis=basis)
+def _exact(key: str | None, basis: str) -> FieldTolerance:
+    return FieldTolerance(key=key, rule=ToleranceRule.EXACT, basis=basis)
+
+
+def _set_equal(key: str, basis: str) -> FieldTolerance:
+    return FieldTolerance(key=key, rule=ToleranceRule.SET_EQUAL, basis=basis)
+
+
+def _table(*rows: FieldTolerance) -> dict[str, FieldTolerance]:
+    """Index rows by the key each already carries.
+
+    The lookup key is *derived* rather than typed out beside the row, which closes
+    the half the validator cannot see: a row whose own key is valid, filed in the
+    dict under a different string, is exactly as unreachable as an invented name
+    and looks exactly as correct. A duplicate is raised for the same reason -
+    silently keeping the last of two bands for one field is a decision nobody
+    made.
+    """
+    table: dict[str, FieldTolerance] = {}
+    for row in rows:
+        if row.key is None:
+            raise ValueError(f"a table row needs the contract key it governs: {row}")
+        if row.key in table:
+            raise ValueError(f"two tolerance rows for {row.key!r}; one would win silently")
+        table[row.key] = row
+    return table
 
 
 #: D-2's starting table, keyed by the frozen contract's `key` column.
@@ -151,37 +205,43 @@ def _exact(basis: str) -> FieldTolerance:
 #: condition gate already refuses those pairs (`Condition.comparable_with`), so
 #: the tolerance here is the within-condition one and nothing has to restate the
 #: cross-condition rule in a second place where it could drift.
-FIELD_TOLERANCES: dict[str, FieldTolerance] = {
+FIELD_TOLERANCES: dict[str, FieldTolerance] = _table(
     # --- PV modules ---
-    "nameplate_power": _abs(1.0, "Wp", "5 W bins; +/-1 W absorbs `650` vs `650.0` only. High [V]"),
-    "stc_rating": _abs(1.0, "Wp", "Same ladder as nameplate_power. High [V]"),
-    "nmot_rating": _abs(1.0, "Wp", "Same ladder as nameplate_power. High [V]"),
-    "module_efficiency": _abs(0.1, "%", "Quoted to 1 dp. High [V]"),
-    "temp_coeff_pmax": _abs(
+    _abs("nameplate_power", 1.0, "Wp", "5 W bins; +/-1 W absorbs `650` vs `650.0` only. High [V]"),
+    _abs("stc_rating", 1.0, "Wp", "Same ladder as nameplate_power. High [V]"),
+    _abs("nmot_rating", 1.0, "Wp", "Same ladder as nameplate_power. High [V]"),
+    _abs("module_efficiency", 0.1, "%", "Quoted to 1 dp. High [V]"),
+    _abs(
+        "temp_coeff_pmax",
         0.01,
         "%/degC",
         "Population spans p5 -0.386 .. p95 -0.278 (n=4,749); "
         "+/-0.01 is ~9% of the discriminating range. High [V]",
     ),
-    "temp_coeff_voc": _abs(0.01, "%/degC", "median -0.278. High [V]"),
-    "temp_coeff_isc": _abs(0.005, "%/degC", "median 0.0454, quoted to 2-3 dp. High [V]"),
-    "degradation_year_1": _abs(0.05, "%", "Contractual, quoted to 2 dp. High"),
-    "degradation_annual": _abs(0.05, "%/yr", "Contractual, quoted to 2 dp. High"),
-    "max_system_voltage": _exact("Discrete 1000/1500; IEC and UL stored separately. High [V]"),
-    "power_tolerance": FieldTolerance(
+    _abs("temp_coeff_voc", 0.01, "%/degC", "median -0.278. High [V]"),
+    _abs("temp_coeff_isc", 0.005, "%/degC", "median 0.0454, quoted to 2-3 dp. High [V]"),
+    _abs("degradation_year_1", 0.05, "%", "Contractual, quoted to 2 dp. High"),
+    _abs("degradation_annual", 0.05, "%/yr", "Contractual, quoted to 2 dp. High"),
+    _exact("max_system_voltage", "Discrete 1000/1500; IEC and UL stored separately. High [V]"),
+    FieldTolerance(
+        key="power_tolerance",
         rule=ToleranceRule.DECLARED_BAND,
         basis="Three conventions in use: `0~+5 W`, `0~+10 W`, `0~+3%`. High [V]",
     ),
-    "bifaciality_tolerance": FieldTolerance(
+    FieldTolerance(
+        key="bifaciality_tolerance",
         rule=ToleranceRule.DECLARED_BAND,
         basis="Canadian Solar prints bifaciality then `Tolerance: +/- 5 %` on the next line.",
     ),
     # --- Inverters / PCS ---
-    "rated_ac_power": _rel(
-        0.01, "Within one temperature only; 352/320/295 kVA are all 'rated'. High [V]"
+    _rel(
+        "rated_ac_power",
+        0.01,
+        "Within one temperature only; 352/320/295 kVA are all 'rated'. High [V]",
     ),
-    "max_efficiency": _abs(0.05, "%", "Quoted to 2 dp (`99.02`). High [V]"),
-    "cec_efficiency": _abs(
+    _abs("max_efficiency", 0.05, "%", "Quoted to 2 dp (`99.02`). High [V]"),
+    _abs(
+        "cec_efficiency",
         0.1,
         "%",
         "0.1 pp datasheet-to-datasheet; 0.25 pp against the CEC list, whose headline "
@@ -190,32 +250,65 @@ FIELD_TOLERANCES: dict[str, FieldTolerance] = {
         alternate_magnitude=0.25,
     ),
     # --- Transformers ---
-    "impedance_percent": _rel(
+    _rel(
+        "impedance_percent",
         0.075,
         "IEC 60076-1 Table 1 item 3a, verbatim: +/-7.5% if Z>=10%, +/-10% if Z<10%. High [V]",
         alternate_when=ToleranceCondition.IMPEDANCE_BELOW_10_PCT,
         alternate_magnitude=0.10,
     ),
-    "no_load_loss": _one_sided(
-        0.15, "IEC Table 1 item 1b component losses, conditional on total. High [V]"
+    _one_sided(
+        "no_load_loss", 0.15, "IEC Table 1 item 1b component losses, conditional on total. High [V]"
     ),
-    "load_loss": _one_sided(
-        0.15, "IEC Table 1 item 1b component losses, conditional on total. High [V]"
+    _one_sided(
+        "load_loss", 0.15, "IEC Table 1 item 1b component losses, conditional on total. High [V]"
     ),
-    "efficiency": _abs(0.05, "%", "Transformer efficiency, quoted to 2 dp. Reasoned"),
-    "rating_mva": _exact("Exact per cooling class - see D-6 and the note below. High"),
+    _abs("efficiency", 0.05, "%", "Transformer efficiency, quoted to 2 dp. Reasoned"),
+    _exact("rating_mva", "Exact per cooling class - see D-6 and the note below. High"),
     # --- BESS ---
-    "usable_energy_per_container": _rel(
-        0.005, "Within one (side, life-point); BOL vs EOL differ ~26%. High"
+    _rel(
+        "usable_energy_per_container",
+        0.005,
+        "Within one (side, life-point); BOL vs EOL differ ~26%. High",
     ),
-    "nameplate_energy_per_container": _rel(
-        0.005, "Within one (side, life-point); BOL vs EOL differ ~26%. High"
+    _rel(
+        "nameplate_energy_per_container",
+        0.005,
+        "Within one (side, life-point); BOL vs EOL differ ~26%. High",
     ),
-    "round_trip_efficiency": _abs(
-        0.2, "%", "Same boundary only; a boundary shift is worth 2-7 pp. High"
+    _abs(
+        "round_trip_efficiency",
+        0.2,
+        "%",
+        "Same boundary only; a boundary shift is worth 2-7 pp. High",
     ),
-    "cycle_life": _exact("An integer count quoted to an SOH threshold; a difference is real. High"),
-}
+    _exact("cycle_life", "An integer count quoted to an SOH threshold; a difference is real. High"),
+    # D-17. Every `list[str]` key in the frozen contract - 14 distinct keys
+    # across 18 rows. Before these rows they fell to DEFAULT_TOLERANCE's
+    # order-sensitive `==`, and `certifications` carries base severity CRITICAL.
+    *(
+        _set_equal(
+            key,
+            "Contract type list[str]; a list of attestations is a set (D-17). High [V]",
+        )
+        for key in (
+            "bess_integration",
+            "cell_certification",
+            "certifications",
+            "communication_protocols",
+            "cooling_classes",
+            "cybersecurity_standards",
+            "filtering_provisions",
+            "fire_safety_certifications",
+            "inverter_integration",
+            "pcs_certification",
+            "protocols",
+            "ride_through_standards",
+            "standards",
+            "ul_listing",
+        )
+    ),
+)
 
 #: Fields whose name is shared by genuinely different physical quantities.
 #:
@@ -223,9 +316,10 @@ FIELD_TOLERANCES: dict[str, FieldTolerance] = {
 #: row under `inverter_power_kva_vs_kw`, which is not a contract key - so
 #: `tolerance_for` never returned it and the guard it configures was unreachable,
 #: the same invented-name defect the table above was corrected for. That row is
-#: now in `UNIMPLEMENTED_D2_ROWS`, and
-#: `test_every_tolerance_key_is_a_contract_key` covers this dict too.
-NEVER_COMPARABLE: dict[str, FieldTolerance] = {}
+#: now in `UNIMPLEMENTED_D2_ROWS`, and a row can no longer be written under a name
+#: the contract does not have: `FieldTolerance.key` is validated against
+#: `schema.registry` and `_table` takes the dict key from the row.
+NEVER_COMPARABLE: dict[str, FieldTolerance] = _table()
 
 #: D-2 rows with no home in this table, recorded rather than dropped.
 #:
@@ -284,7 +378,9 @@ UNWIRED_TOLERANCE_CONDITIONS: dict[ToleranceCondition, str] = {
 #: guessed band silently merges values where exactness merely raises a reviewable
 #: conflict. D-2 gives no default; this is the safe direction, recorded here
 #: rather than buried in the comparison.
-DEFAULT_TOLERANCE = _exact("Unassigned field - exact until D-2 gains a row. See tolerance.py")
+#:
+#: Carries no `key`, because it is the row for *whichever* field has none.
+DEFAULT_TOLERANCE = _exact(None, "Unassigned field - exact until D-2 gains a row. See tolerance.py")
 
 
 def tolerance_for(field_name: str) -> FieldTolerance:

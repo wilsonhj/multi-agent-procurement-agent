@@ -8,12 +8,13 @@
 > "multi-agent". This document is the third of those: how to divide *building* the remaining work
 > across concurrent workers. No runtime constraint changes.
 
-D-13, D-14 and D-15 were ratified on 2026-08-07 and the licence is settled. **No code has moved
-since** — contracts remain 3 done / 4 partial / 1 untouched, requirements 10 enforced / 23
-partial / 17 declared / 6 open, and ten `NotImplementedError` stubs stand. The decisions *were*
-the binding constraint, so this is progress; it is just not implementation. The gate opened and
-nobody has walked through it. Two work packages were blocked on judgement rather than effort and
-are now free: **WP-H** (audit library, which `tasks.md` says "must land first") and **WP-G**.
+D-13, D-14 and D-15 were ratified on 2026-08-07 and the licence is settled. The status counts
+below describe the plan snapshot at publication; subsequent hardening has landed the audit
+library, the initial workbook writer, the field registry, the port conformance suite, and the
+sanitized-PV vertical slice. The current verification baseline is recorded in
+[`docs/current-state.md`](../../docs/current-state.md). Two work packages were blocked on
+judgement rather than effort and are now free: **WP-H** (audit library, which `tasks.md` says
+"must land first") and **WP-G**.
 
 ## The interface technique, restated
 
@@ -41,7 +42,7 @@ dependency, not a scheduling preference. Merge ordering is separate and stated b
 | # | Track | Needs | Team | Owns these paths |
 |---|---|---|---|---|
 | **0** | ~~Reconcile the tracking docs~~ **DONE** (#33, merged `b32e04b`) | — | 1 | `sql/07_audit_event.sql` (comments), `sql/README.md`, `specs/001-procurement-agent/tasks.md`, `docs/current-state.md`, `docs/requirements-traceability.md` |
-| **1a** | `encode_value()` | 0 ✅ | **6** | `src/procurement_agent/schema/encoding.py` (new) |
+| **1a** | ~~`encode_value()`~~ **DONE** (`3a3af5c`) | 0 ✅ | **6** | `src/procurement_agent/schema/encoding.py` (new), `tests/test_encoding.py` (new) |
 | **1b** | A-50 convergence | 1a | 5 | `src/procurement_agent/services/conflict_hitl/__init__.py` |
 | **2** | WP-H — audit library | 0 (`sql/07` comment only) | 1 | `src/procurement_agent/audit/` (new), `pyproject.toml` |
 | **3** | WP-G — C6 projection + T0.5 fixture | 1a | 6 | `src/procurement_agent/services/output/`, `tests/fixtures/workbooks/` |
@@ -101,29 +102,45 @@ runtime rather than only in the diff.
 
 ---
 
-### Track 1a — `encode_value()` · *small, gates Track 3*
+### Track 1a — `encode_value()` · ✅ **DONE** — `3a3af5c`, gated Tracks 1b and 3
 
-**Placement is decided by an existing rule.** `schema/component.py:74` states **`schema` sits
+**Placement was decided by an existing rule.** `schema/component.py:74` states **`schema` sits
 below `services` and cannot import it**. `encode_value()` encodes schema types, so `schema/` is
 the only placement letting both consumers — `services/output` (Track 3) and
-`services/conflict_hitl` (Track 1b) — use it without either depending on the other.
+`services/conflict_hitl` (Track 1b) — use it without either depending on the other. Landed at
+`src/procurement_agent/schema/encoding.py`, tests at `tests/test_encoding.py`.
 
-**Scope:** implement it exactly as D-14 freezes it — `DeclaredBand` via `model_dump`, datetimes
-as RFC 3339 UTC with microseconds always printed, enums via `.value`, frozensets sorted.
+The `Decimal` warning this section carried is **resolved**: D-14 gained its `Decimal` rule on
+2026-08-11, before implementation started, and the encoder tags it `{"$decimal": str(v)}` with
+`normalize()` banned — `conflict_hitl._decimals` reads precision from that exact text and it sets
+D-2's rounding floor, so the trailing zero decides whether a human is asked to review.
 
-> ⚠️ **D-14's `encode_value()` has no `Decimal` rule, and it needs one before this is written.**
-> `conflict_hitl/__init__.py:332` records that "`Decimal("650")` is the natural representation"
-> of D-2's EXACT catalog values, so `Decimal` is genuinely in the value domain. Under `repr()`,
-> `Decimal("650")`, `650` and `650.0` are three distinct keys. A naive encoder collapses them.
->
-> **A collapse is worse than a wrong order.** `sorted()` is stable, so a tie does not reorder —
-> it leaks *arrival* order, which is the exact defect `_ordering_key`'s docstring records
-> shipping twice. Amend D-14 with a `Decimal` rule, then require the encoder be **injective over
-> the candidate value domain**, or compose a type tag into the key.
+**Implementing the frozen table found three gaps in it**, all amended into D-14 on 2026-08-12 and
+all required by the stated property rather than by preference. Recorded here because two of them
+change what a *reader of the table alone* would build:
 
-**Verify:** no encoded output contains a `repr()` artifact — concretely `"<" not in encoded` for
-every enum-bearing field, which is what would have caught A-50; plus an injectivity test over
-`{Decimal("650"), 650, 650.0, "650"}` and the datetime/string pair.
+1. **`list` was absent**, yet `list[str]` is the declared type of 18 contract fields, so a
+   closed-world encoder raised on real data. Encoded elementwise. It shares the JSON array with
+   `tuple` and `frozenset`, which is sound only because neither reaches the polymorphic
+   `CanonicalField.value` slot where injectivity is actually required.
+2. **`DeclaredBand | model_dump` leaks raw enum members** — plain `model_dump()` runs in python
+   mode; `mode="json"` would bypass the `$decimal` tag for any Decimal field added later. Leaves
+   recurse through the same encoder, keeping one authority.
+3. **The `datetime` row pinned a format but no tag**, so an encoded datetime would collide with
+   the equal plain string — the same argument that earned `date` its tag one row above.
+
+**Verified by mutation, not by a green first run.** Eight mutations — swapped date/datetime order,
+`Decimal.normalize()`, an unrecursed `model_dump`, tagged enums, naive datetimes assumed UTC,
+`isoformat()` in place of the pinned formatter, non-finite floats admitted, and a `str()` fallback
+opening the closed world — each turn the suite red.
+
+> ⚠️ **One of the eight survived the first suite, and the reason generalises.** The unrecursed
+> `model_dump` passed every test, because a `StrEnum` member equals its own value and `json.dumps`
+> writes it as a plain string. **Equality assertions cannot see a raw-enum leak.** It is caught
+> only by a structural check that every leaf is *exactly* a JSON type — `type(x) is str`, not
+> `isinstance`. Any track hashing an artifact should assume the same blind spot applies to it.
+
+Gates at merge: 514 passed, 24 skipped (from 481/24 — the 33 new tests run); ruff and mypy clean.
 
 ---
 

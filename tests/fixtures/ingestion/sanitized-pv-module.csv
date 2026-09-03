@@ -1,0 +1,4 @@
+document_id,source_uri,document_type,supplier,model,nameplate,field_name,value,unit,verbatim_value,basis,section,confidence
+syn-pv-datasheet,file:///sanitized/example-solar-pv650-datasheet.pdf,spec_sheet,Example Solar Ltd.,PV-SAN-650,650,nameplate_power,650,Wp,650 Wp,stc,Electrical Data (STC),0.97
+syn-pv-datasheet,file:///sanitized/example-solar-pv650-datasheet.pdf,spec_sheet,Example Solar Ltd.,PV-SAN-650,650,module_efficiency,22.5,%,22.5 %,stc,Electrical Data (STC),0.94
+syn-pv-purchase-order,file:///sanitized/example-solar-pv650-po.pdf,purchase_order,Example Solar Ltd.,PV-SAN-650,650,nameplate_power,655,Wp,655 Wp,stc,Line Item 12,0.91

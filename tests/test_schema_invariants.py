@@ -17,9 +17,11 @@ from procurement_agent.schema import (
     ConflictQueueEntry,
     ConflictStatus,
     DeclaredBand,
+    DocumentType,
     Resolution,
     ResolutionAction,
     Severity,
+    SourceDocument,
     SourceRef,
     SourceTier,
     ToleranceKind,
@@ -88,8 +90,21 @@ def test_canonical_field_has_the_eight_spec_keys_plus_condition() -> None:
         "conflict_status",
         "resolution",
     }
-    assert spec_keys <= set(CanonicalField.model_fields)
-    assert set(CanonicalField.model_fields) - spec_keys == {"condition"}
+    field = CanonicalField(
+        value=650,
+        source_tier=SourceTier.SYSTEM_OF_RECORD,
+        source_ref=SourceRef(document_id="doc-1"),
+        confidence=0.9,
+    )
+    on_the_wire = set(field.model_dump())
+    assert spec_keys <= on_the_wire
+    assert on_the_wire - spec_keys == {"condition"}
+    # D-18: `conflict_status` is computed from `resolution` and the stored
+    # `unresolved_status`, which is excluded from the dump. The contract's key
+    # set is the wire shape, not the storage layout.
+    assert "conflict_status" in CanonicalField.model_computed_fields
+    assert "unresolved_status" in CanonicalField.model_fields
+    assert "unresolved_status" not in on_the_wire
 
 
 def test_resolved_field_must_carry_its_resolution() -> None:
@@ -203,7 +218,7 @@ def test_resolution_invariant_survives_assignment() -> None:
         source_ref=SourceRef(document_id="doc-1"),
         confidence=0.9,
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="must carry its Resolution"):
         field.conflict_status = ConflictStatus.RESOLVED
 
 
@@ -245,7 +260,7 @@ def test_a_resolved_field_cannot_have_its_resolution_cleared() -> None:
         conflict_status=ConflictStatus.RESOLVED,
         resolution=_resolution("procurement.lead"),
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):
         field.resolution = None
 
 
@@ -436,7 +451,7 @@ def test_evolve_preserves_a_model_typed_value() -> None:
     """
     evolved = _band_field().evolve(confidence=0.8)
     assert isinstance(evolved.value, DeclaredBand)
-    assert evolved.value.resolve(650.0) == (650.0, 655.0)
+    assert evolved.value.resolve(650.0, nominal_unit="W") == (650.0, 655.0)
 
 
 def test_evolve_still_revalidates() -> None:
@@ -465,3 +480,39 @@ def test_evolve_refuses_an_unknown_field() -> None:
     key."""
     with pytest.raises(ValueError, match="unknown field"):
         _band_field().evolve(conflict_stauts=ConflictStatus.RESOLVED)
+
+
+def test_the_component_models_refuse_an_unknown_field() -> None:
+    """A mistyped optional field must not vanish.
+
+    Pydantic's default is `extra='ignore'`, and every canonical-store model was
+    on it. The cost is not cosmetic: `ComponentInstance(nameplate_w=550)` leaves
+    `nameplate` as `None`, which `ordering_key()` maps to `float('-inf')` - so a
+    typo silently discards the bin discriminator that exists because "one
+    datasheet routinely covers several SKUs".
+
+    This is the same class as issue #16 one level up: #16 closed the condition
+    *vocabulary*, so an invalid `basis` value is refused, while the field *name*
+    stayed open-world. `config.py`'s `extra="ignore"` is deliberate and correct -
+    unknown environment variables must not break startup - and no schema model
+    documents such a reason.
+
+    `schema/field.py`'s models are covered by their own suite; these are the two
+    that live here.
+    """
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ComponentInstance(
+            supplier="Adani",
+            model="ASB-M10-144-550",
+            component_category=ComponentCategory.PV_MODULES,
+            nameplate_w=550.0,  # type: ignore[call-arg]
+        )
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SourceDocument(
+            document_id="d",
+            content_hash="h",
+            source_uri="file:///x.pdf",
+            document_type=DocumentType.SPEC_SHEET,
+            ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+            access_restrictedd=True,  # type: ignore[call-arg]
+        )

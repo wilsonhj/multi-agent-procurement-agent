@@ -285,12 +285,16 @@ def _band(tolerance: FieldTolerance, numbers: Sequence[float]) -> float | None:
 
     Deliberately simpler than `conflict_hitl._effective_magnitude`: it never
     selects between a D-2 row's two conditional bands (impedance below 10%,
-    IEEE vs IEC, against the CEC list), because both callers below only need
-    the right answer to within a factor of a few - an order-of-magnitude
-    overshoot, or a coarse units-only reconciliation - and no D-2 conditional
-    branch differs by enough to flip either verdict. `None` for EXACT,
-    DECLARED_BAND and NEVER_COMPARE, which have no per-field magnitude to scale:
-    those rules are out of scope for these modifiers rather than guessed at.
+    IEEE vs IEC, against the CEC list), because its one caller -
+    `_gross_divergence` - only needs the right answer to within a factor of a
+    few, and no D-2 conditional branch differs by enough to flip an
+    order-of-magnitude verdict. `None` for EXACT, DECLARED_BAND and
+    NEVER_COMPARE, which have no per-field magnitude to scale: those rules are
+    out of scope for that modifier rather than guessed at.
+
+    `_reconciles` was the second caller and is no longer one. A disagreement
+    band is the wrong instrument for "is this one number in two units", and
+    lending it out for that question is the defect that docstring now records.
     """
     if tolerance.magnitude is None:
         return None
@@ -368,27 +372,59 @@ def _scaled_numbers(candidates: Sequence[ConflictCandidate]) -> list[float] | No
     return numbers
 
 
+#: Relative and absolute slack allowed when deciding two numbers are the *same*
+#: number. Sized for the conversion arithmetic in `_reconciles` and for nothing
+#: else: `0.1 MW` scaled by 1e6 is 100000.00000000001, not 100000.0. Emphatically
+#: not a disagreement tolerance - D-2's bands are that, and `_reconciles` is
+#: documented at length for why the two questions must not share an answer.
+RECONCILIATION_EPSILON = 1e-9
+
+
 def _reconciles(a: ConflictCandidate, b: ConflictCandidate, tolerance: FieldTolerance) -> bool:
-    """Whether `a` and `b` agree once converted to a common unit.
+    """Whether `a` and `b` are the **same number** printed in a different unit.
 
     Requires both units to be individually recognised in `_BASE_UNIT` and to
     share a family - unlike `_scaled_numbers`'s raw fallback, an unrecognised
     unit pair here must read as "not shown to reconcile", not as "reconciles by
     default", because this result feeds a severity *discount*.
 
-    EXACT-rule fields (`tolerance.py`'s default for every field D-2 does not
-    cover - which is every Tier A and CRITICAL field: none of pricing,
-    warranty-term counts, domestic content, BABA/FEOC or certifications carries
-    a D-2 numeric row) have no `_band` to compare against, but "reconciles
-    after conversion" is a narrower question than D-2's disagreement tolerance:
-    it asks whether this is the *same number* printed in a different unit, not
-    whether two independent measurements are close enough to agree. So EXACT
-    falls back to numeric equality up to floating-point representation noise
-    from the conversion arithmetic itself, rather than reading "no D-2 band" as
-    "cannot reconcile" - which would leave this modifier permanently unreachable
-    for the fields the Tier A / CRITICAL floors below exist to protect, the
-    same shape of defect as `NEVER_COMPARABLE`'s formerly-invented key.
+    **The comparison is representation noise, never a D-2 band**, and that
+    distinction is the whole of this function. "Reconciles after conversion" is a
+    strictly narrower question than D-2's disagreement tolerance: it asks whether
+    this is one number spelled two ways, not whether two independent measurements
+    are close enough to agree. The second question belongs to `values_conflict`,
+    and a D-2 band is its answer.
+
+    An earlier version reached for `_band` first and so asked the second question
+    for every non-EXACT rule, leaving the representation-noise test reachable
+    only for EXACT rows. `no_load_loss` carries a ONE_SIDED 15% band, so 100 kW
+    against 114850 W - 14.85% apart, a unit error *and* a real disagreement -
+    collected the full -2 "just fix the normaliser" discount and scored
+    INFORMATIONAL. The identical pair classed INTER_DOCUMENT scores HIGH, and
+    understating is the direction this module's docstring calls unsafe.
+
+    **That mis-graded the queue; it did not unblock composition**, and the fix is
+    reported as the queue-quality fix it is. The only two HIGH-or-CRITICAL fields
+    carrying a numeric D-2 band are `degradation_year_1` and `degradation_annual`
+    - both Tier A, both held at HIGH by the floor below whatever this returns -
+    and every other banded field is already MEDIUM-or-under, so no wrongly
+    granted discount could cross `config.compose_gate_threshold`. That is a
+    property of today's two tables rather than of this code, so
+    `test_the_only_high_or_critical_banded_fields_are_floored` asserts it and
+    fails the day a HIGH field gains a band.
+
+    A value one side rounded (`115 kW` against `114850 W`) is not the same
+    number, and declining the discount there is the conservative direction.
+
+    NEVER_COMPARE is refused outright. That rule marks a field whose name is
+    shared by genuinely different physical quantities, so "these convert to the
+    same number" is a coincidence the rule exists to distrust rather than
+    evidence of one reading. The band test used to refuse those rows as a side
+    effect of their having no magnitude; refusing them explicitly keeps that now
+    that a magnitude is no longer what is being asked for.
     """
+    if tolerance.rule is ToleranceRule.NEVER_COMPARE:
+        return False
     if a.value is None or b.value is None or a.unit is None or b.unit is None:
         return False
     base_a = _BASE_UNIT.get(a.unit.strip().casefold())
@@ -399,12 +435,9 @@ def _reconciles(a: ConflictCandidate, b: ConflictCandidate, tolerance: FieldTole
     if number_a is None or number_b is None:
         return False
     common_a, common_b = number_a * base_a[1], number_b * base_b[1]
-    band = _band(tolerance, (common_a, common_b))
-    if band is not None:
-        return abs(common_a - common_b) <= band
-    if tolerance.rule is ToleranceRule.EXACT:
-        return math.isclose(common_a, common_b, rel_tol=1e-9, abs_tol=1e-9)
-    return False
+    return math.isclose(
+        common_a, common_b, rel_tol=RECONCILIATION_EPSILON, abs_tol=RECONCILIATION_EPSILON
+    )
 
 
 # --- the four bounded modifiers, open-decisions.md #1 --------------------------

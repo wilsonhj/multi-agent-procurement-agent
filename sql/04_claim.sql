@@ -86,13 +86,19 @@ CREATE TABLE public.claim (
     -- not guaranteed. This is a known, narrow gap, not a solved one -- see
     -- sql/README.md.
     --
+    -- `condition` is in the key because Python `FieldClaim.claim_key()` includes
+    -- `grouping_key()`. Without it, one document / one field / one extractor
+    -- stating three ambients (the Sungrow trio; D-1) collides, and the writer
+    -- that `ON CONFLICT`s this constraint cannot persist them.
+    --
     -- This also assumes extractor_version is fine-grained enough to
     -- distinguish genuinely different extraction strategies for the same
     -- field (e.g. WP-B B.6's field-guided vs document-guided cross-read), so
     -- that the two produce distinct claim rows rather than colliding under
     -- this key -- also flagged in sql/README.md.
     CONSTRAINT claim_natural_key UNIQUE (
-        document_id, component_category, supplier, model, nameplate, field, extractor_version
+        document_id, component_category, supplier, model, nameplate, field, extractor_version,
+        condition
     )
 );
 
@@ -151,6 +157,30 @@ CREATE POLICY claim_write_insert ON public.claim
 
 CREATE POLICY claim_ingest_select ON public.claim
     FOR SELECT TO procurement_ingest USING (true);
+
+-- procurement_app cannot switch its own confidentiality off. See the equivalent
+-- policy in 02_document.sql for the measured attack matrix, why this is a new
+-- RESTRICTIVE policy rather than an edit to the permissive ones (they are OR'd;
+-- this one is AND'd), and why `WITH CHECK (true)` is spelled out.
+--
+-- The predicate is public.document_is_restricted(document_id), derived rather
+-- than stored, exactly as claim_confidentiality_select above expresses it -- a
+-- claim is as confidential as the document it was extracted from, and this table
+-- carries no flag of its own.
+--
+-- Note what this also closes, which the GUC escape alone did not explain.
+-- `claim_ingest_select` is permissive and `USING (true)`, and RLS role matching
+-- follows *inherited* membership: a mis-granted `GRANT procurement_ingest TO
+-- procurement_app` therefore applies that policy to the application role with no
+-- `SET ROLE` issued at all. Measured. Being AND'd, the policy below still denies
+-- the row in that state -- so a membership mis-grant degrades from fail-open to
+-- fail-closed. 00_roles.sql revokes the membership on every apply and
+-- tests/test_sql_behaviour.py asserts it is absent; this is the layer that holds
+-- if both of those are somehow bypassed.
+CREATE POLICY claim_app_never_restricted ON public.claim
+    AS RESTRICTIVE FOR ALL TO procurement_app
+    USING (NOT public.document_is_restricted(document_id))
+    WITH CHECK (true);
 
 -- **These two exist so the append-only trigger keeps speaking.** The obvious
 -- move on an append-only table is to declare no UPDATE/DELETE policy at all, so

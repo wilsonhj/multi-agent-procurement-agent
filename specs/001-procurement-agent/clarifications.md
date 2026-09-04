@@ -738,6 +738,11 @@ events at all under the normative text. `spec.md` governs. See A-49.
 > desktop-Excel test remain. (`services.claims.project` is a
 > different projection: claims to canonical fields, contract C8. C6 is the projection of the
 > whole store to the hashed artifact.)
+>
+> **Amended 2026-09-03 by D-29:**
+> the `policy` object gains `thresholds`, the per-field τ table embedded by value. A reader of the
+> shape below alone would omit it and hash differently — the same "table alone" trap Track 1a
+> recorded. One structural re-baseline of the golden fixture follows; field rows are unchanged.
 
 **Bytes:** UTF-8 output of
 `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
@@ -760,8 +765,8 @@ repr-JSON keeps it. The two contracts want different things — cross-language v
 lossless Python round-trip here.
 
 **Shape.** Top level
-`{projection_version: 1, policy: {...}, components: [...], conflicts: [...], sources: [...]}`.
-Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
+`{projection_version: 1, policy: {policy_version, confidence_threshold, thresholds}, components: [...], conflicts: [...], sources: [...]}`.
+`thresholds` is the per-field τ map embedded **by value** (D-29). Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
 fields by name, then:
 
 - **Nothing that decides hashed array order may contain `repr()` of an enum.** This is one rule,
@@ -836,7 +841,7 @@ Two Python equalities are deliberately **not** honoured, both warts rather than 
 under-separating a precision is not.
 
 Implemented at `src/procurement_agent/schema/encoding.py`, with the property tests at
-`tests/test_encoding.py`. Placement follows `schema/component.py:74` — `schema` sits below
+`tests/test_encoding.py`. Placement follows that module's own rule — `schema` sits below
 `services` and cannot import it, and both consumers live in `services`.
 
 **The requirement is a property, not the table: `encode_value()` must be injective over the
@@ -889,15 +894,15 @@ Python identifiers, so only a deliberate alias could mint one. Assert no dumped 
    projection hash as a cross-policy *store* identity, which is a job for the separately recorded
    inputs, not for this hash.
 
-   **Two consequences that must land with it.** Hashing policy makes the B.10 τ table
-   **versioned, append-only data** — otherwise historical projections become unrecomputable the
-   first time τ moves. And golden fixtures must pin their own τ so production re-tuning never
-   re-baselines them; `tasks.md` sequences τ tuning after WP-B, which is exactly when fixture
-   churn would otherwise be worst.
+   **Two consequences that must land with it.** Hashing policy means the B.10 τ table is
+   carried **by value inside `policy.thresholds`** (D-29) — historical bytes include the τ that
+   produced them, so a later retune cannot share a hash. Golden fixtures must pin their own τ
+   map so production re-tuning never re-baselines them; `tasks.md` sequences τ tuning after WP-B,
+   which is exactly when fixture churn would otherwise be worst.
 2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands the stamp; AC-7 and
    G.5's `sleep(1.1)` re-run demand byte-identity; a store-derived stamp satisfies both with no
-   normative edit. The rule already exists at `services/output/__init__.py:151-153`; what is new
-   is promoting it out of a docstring on an unimplemented function. See [A-48](analysis.md).
+   normative edit. The store-only wording lives on `write_workbook` (the docstring that says no
+   timestamps derived from anything but the store). See [A-48](analysis.md).
 
    **Recommended derivation: the maximum store write-timestamp over the rows the projection
    actually reflects** — `max(document.ingested_at, claim.extracted_at, conflict.detected_at,
@@ -936,8 +941,10 @@ Python identifiers, so only a deliberate alias could mint one. Assert no dumped 
 
 **Golden fixture (T0.5):** one committed projection plus its hash for a synthetic two-supplier PV
 store containing D-1's Sungrow trio, so the fixture exercises list-valued fields rather than the
-easy one-value-per-key case. Note `tests/fixtures/` deliberately ships **no** projection fixture
-until this decision is ratified — see `tests/fixtures/README.md`.
+easy one-value-per-key case. Landed 2026-08-12 as
+`tests/fixtures/workbooks/two-supplier-pv-store.json` and
+`two-supplier-pv-store.canonical-bytes.sha256`. Story 6 re-baselines it once when `thresholds`
+is added (D-29).
 
 **Confidence: High** on the byte format; **Medium** on the shape; the two items above are
 explicitly the maintainer's call.
@@ -1076,9 +1083,9 @@ for a resolved field stored `OPEN` / `resolution=None`.
 
 **What it costs.** `FieldClaim` gains a key, so the two committed claim fixtures were
 regenerated with the canonical options (`tests/fixtures/README.md` § Regenerating);
-their behavioural assertions are unchanged. `sql/04_claim.sql` does not yet carry a
-`resolution` column — the Python record is ahead of the DDL, which is the mirror of
-C4 and C8's usual shape, and WP-H/WP-F own that migration.
+their behavioural assertions are unchanged. `sql/04_claim.sql` still has no `resolution`
+column — the Python record is ahead of the DDL. **D-27 assigns the link to Story 4a** in
+`sql/10_claim_resolution_link.sql` (`claim.resolution_id` plus a CHECK mirroring the validator).
 
 **Rejected: `project(claims, resolutions)`.** A second input keeps the reducer pure but breaks
 the sentence C8 is built on — "the canonical value is a projection over claims, never an
@@ -1153,6 +1160,199 @@ the enum while leaving the decision in place, so Open Items hid remaining queue 
 **Cost, measured.** Zero fixture change — neither committed fixture serialises a
 `CanonicalField`. The wire and `evolve` keep `conflict_status=`. The reducer copies the human
 claim's `Resolution` onto the field and lets the decision derive RESOLVED.
+
+---
+
+## D-19 — Word documents are paged by conversion to PDF at ingest (Phase 2 Q-5)
+
+> **Status: RATIFIED 2026-09-03.** Ratifies [phase-2/clarifications.md](phase-2/clarifications.md) Q-5
+> option A. Owner: Story 1a.
+
+**The fact.** Docling populates `prov[].page_no` from a page model that Word does not have, so
+`.docx` tables arrive with empty provenance. FR-ING-05 promises "source, page and caption".
+
+**Adopted.** At ingest, `.docx` is converted to PDF with LibreOffice headless
+(`soffice --headless -env:UserInstallation=file:///tmp/<uuid> --convert-to pdf`) and the PDF is
+parsed, so `page` is real. The stored document and its `content_hash` remain the **original
+`.docx` bytes**. `section` (heading path) is recorded on every element in every format. If
+`soffice` is absent the Docling adapter declares `PAGE_NUMBERS` as an `UNIMPLEMENTED` absence for
+Word in the conformance matrix and elements carry `page=None` — loud, never estimated.
+
+**Rejected:** estimating pages from character count (wrong pages presented as real).
+
+## D-20 — Web search results are transient; the query and the fetched page are the record (Phase 2 Q-6)
+
+> **Status: RATIFIED 2026-09-03 as the engineering rule.** The commercial half — whether to buy
+> storage rights or change provider — remains a product-owner question and is tracked in
+> [phase-2/clarifications.md](phase-2/clarifications.md) Q-6. Owner: Story 3.
+
+**The fact.** The default provider's API terms (Brave) forbid storing or caching Search Results
+beyond transient operational storage and forbid using them to evaluate or improve models.
+FR-WEB-02 requires the query, URL, title and retrieval timestamp logged; NFR-02 makes that log
+immutable.
+
+**Adopted.**
+
+1. What is persisted: the **query string** (ours) on `audit.run_event`; the **fetched page** as a
+   `SourceDocument(source_uri=url, document_type=technical_documentation)` content-hashed like any
+   upload; URL, title, `retrieved_at` and `source_authority` on the claim's `SourceRef`.
+2. What is never persisted: provider rank, snippet, or any result metadata. `WebHit` has no field
+   for them, so the rule is structural.
+3. The gold set (D-11) is never built from search results.
+
+## D-21 — The reviewer surface is server-rendered FastAPI + Jinja2 + HTMX with Authlib OIDC (Phase 2 Q-7)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 5.
+
+FastAPI (MIT), Jinja2 (BSD-3), HTMX (BSD-2 / 0BSD), Authlib (BSD-3), uvicorn (BSD-3), httpx
+(BSD-3, dev). Sync handlers run in FastAPI's threadpool — Decision 10 stands. No JavaScript build
+step; no client-side state of record. The session carries the OIDC `sub` and clearance claim;
+every request builds a `PrincipalContext` and every repository call goes through it. The UI never
+filters restricted rows itself; RLS does (D-15).
+
+**Rejected:** a React/Next front end (second toolchain for a workflow whose record is the
+database); Streamlit/Gradio (poor fit for OIDC sessions and a five-action validated form).
+
+## D-22 — The extraction model is Qwen3-30B-A3B-Instruct-2507 on vLLM (Phase 2 Q-8)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 1c. Re-benchmark on the gold set before any
+> accuracy claim (D-11).
+
+Apache-2.0 (passes the licence gate; Llama's community licence does not). MoE, 3.3 B active,
+262 K native context. Alternate: dense `Qwen3-32B`, same licence.
+
+**Server contract, part of the adapter's documentation:**
+`vllm serve <model> --structured-outputs-config '{"backend":"xgrammar","disable_any_whitespace":true}'
+--logprobs-mode raw_logprobs`. The first flag fixes the Instruct-2507 checkpoints' non-termination
+under `json_schema`; the second returns logprobs **before** the grammar mask — `processed_logprobs`
+saturates every token whose alternatives were masked, which is the naive-logprob failure D-3 names.
+Requests use `response_format={"type":"json_schema", …}`; `guided_json` was removed in vLLM 0.12.
+Instructor `Mode.JSON_SCHEMA` via `create_with_completion` only; a response without `logprobs`
+raises.
+
+## D-23 — `ParsedElement` is extended additively (Phase 2 Q-9; contract P2-C1)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Track 0.
+
+`ParsedElement` gains four optional fields with `None`/default values: `bbox` (axis-aligned
+envelope, page points, origin top-left), `table: TableData | None` (present iff `kind == "table"`;
+`TableData(rows, header_rows, caption, merged)` with numbers rendered by `repr()`),
+`page_quality: float | None` (0–1; D-3's "low-quality scan" gate reads it), and
+`role: body | furniture | footnote | caption` (FR-ING-05). **Kinds stay `heading | body | table |
+figure`.** The conformance pin on `__annotations__` is updated in the same PR. No `TableElement`
+subclass; one carrier so every `isinstance` stays valid. OCR polygons are reduced to their envelope
+on the element; the polygon itself lives on the OCR adapter's `recognize()` payload, not in `SourceRef`.
+
+## D-24 — Gold labels are `gold:` claims that never enter a store (Phase 2 Q-10)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 1d harness.
+
+A label is a `FieldClaim` with `extractor_version="gold:<annotator>"`, `source_tier=
+system_of_record`. `commit_claims` refuses the `gold:` prefix (asserted), so the store cannot be
+polluted. Documents are **not** committed; they live under `PROCUREMENT_GOLD_CORPUS_DIR` and a
+committed `tests/fixtures/gold/manifest.json` keys label files by `content_hash`. The gold suite
+skips without the corpus (the `PROCUREMENT_TEST_DSN` pattern) and fails on silent skip on the
+self-hosted runner. D-16's `human:` rule is untouched: a gold label is not a decision about a
+conflict.
+
+## D-25 — The lexical leg is a seventh port, `LexicalSearchPort` (Phase 2 Q-11; contract P2-C3)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Track 0 (type, reference, capability row), Story 2
+> (Postgres adapter). Adds the seventh synchronous Protocol. D-26 adds the eighth; the docs
+> sweep pins **eight**.
+
+```python
+class LexicalSearchPort(Protocol):
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        limit: int,
+        category: ComponentCategory | None = None,
+        supplier: str | None = None,
+        source_tier: SourceTier | None = None,
+        allowed_document_ids: set[str] | None = None,
+    ) -> list[RetrievedChunk]: ...
+```
+
+`allowed_document_ids=None` returns nothing — the `VectorStorePort` rule, unchanged. Capabilities
+`DETERMINISTIC_OUTPUT, METADATA_FILTERING, ACCESS_FILTERING, TRIGRAM_TOLERANCE`;
+`ACCESS_FILTERING` remains un-xfailable. Hybrid retrieval fuses dense and lexical with RRF k=60 in
+`services.retrieval`. **Rejected:** a `search_lexical` method on `VectorStorePort` (forces every
+vector backend to implement or disclaim lexical search); fusion hidden inside the pgvector adapter
+(the part-number test becomes inexpressible against the reference).
+
+**Sweep owed with the Track 0 PR:** every document that says "six ports" — `plan.md` Decision 10,
+`ADR-001`, `docs/current-state.md`, `docs/requirements-traceability.md` NFR-04, `ports/__init__.py`,
+`phase-1-execution.md`, `analysis.md` A-20, the docstrings of `adapters/registry.py`,
+`adapters/__init__.py`, `tests/port_contracts/*` — is corrected to eight (D-25's seventh plus
+D-26's `WebSearchPort`). The grep test in P2-A-24 is the pin, not this list.
+
+## D-26 — `WebSearchPort` is an eighth port; the CEC pull is a CLI job, not a stage (Phase 2 Q-12; contract P2-C4)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Track 0 (port), Story 3 (adapters, CEC).
+
+`WebSearchPort.search(query, *, limit) -> list[WebHit]`; `WebHit(url, title, retrieved_at,
+provider)` — no snippet, no rank (D-20). Reference adapter is deterministic from a fixture map;
+the Brave adapter enforces `Settings.web_search_rate_limit_per_minute` with a token bucket and an
+explicit timeout (ADR-001 §3).
+
+The weekly CEC pull (D-8) is `procurement-agent cec-refresh` driven by an external scheduler and
+audited on a `run:` stream. **`Stage` gains no member** — the six values are pinned by
+`sql/08_job.sql`'s CHECK and by the runtime rule that the reducer is `detect_conflicts`.
+
+## D-27 — A human claim row links to its resolution by `claim.resolution_id` (Phase 2 Q-13; contract P2-C6)
+
+> **Status: RATIFIED 2026-09-03.** Closes the "Python ahead of DDL" note in D-16. Owner: Story 4a.
+
+`sql/10_claim_resolution_link.sql` (forward-only, the `sql/09` pattern):
+
+```sql
+ALTER TABLE public.claim ADD COLUMN resolution_id text NULL REFERENCES public.resolution(resolution_id);
+ALTER TABLE public.claim ADD CONSTRAINT claim_human_carries_resolution
+  CHECK ((extractor_version LIKE 'human:%') = (resolution_id IS NOT NULL));
+```
+
+Mirrors `FieldClaim._human_claims_carry_their_decision` exactly. Insert order is resolution, then
+the human claim. `resolution.selected_claim_id` keeps pointing at the *candidate* claim; the new
+column points from the *human* claim to its decision. **Rejected:** a JSON copy of the
+`Resolution` on the claim row (two copies of an append-only fact); deriving the link by
+`resolved_by` and time (collides within a second).
+
+## D-28 — The CLI is stdlib `argparse` (Phase 2 Q-14)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 4b.
+
+`[project.scripts] procurement-agent`. Core dependencies stay thin, per the `pyproject` rule that
+every heavy dependency sits behind an extra. Typer/Click are acceptable licences and add nothing the
+subcommand set needs.
+
+## D-29 — `ProjectionPolicy` embeds the τ table by value (Phase 2 Q-15; amends D-14; closes A-51)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 6 (writer), Story 1c (table). **Amends D-14**: the
+> projection's `policy` object gains one key.
+
+`ProjectionPolicy(policy_version, confidence_threshold, thresholds: Mapping[str, float])`. The
+per-field τ that `threshold_for(field_name)` returns is embedded **by value**, so the D-14 hash
+changes exactly when a threshold changes — the hash exists to change when the workbook would. By
+name would let two different threshold tables share one hash.
+
+**Cost, stated before it is paid.** One structural re-baseline of
+`tests/fixtures/workbooks/two-supplier-pv-store.json` and its digest: `policy` gains `thresholds`
+mapping every field to the fixture's existing 0.80; every field row is byte-identical. The PR must
+show the diff as **one added key, identical field rows** — the permutation-only discipline of
+Phase 1 Track 1b applied to a key addition. `policy_version` stays `fixture-2026-08-12`.
+
+## D-30 — A stale access-review register warns at ingest and never blocks (Phase 2 Q-16)
+
+> **Status: RATIFIED 2026-09-03.** Owner: Story 7 (register), Story 1a (check).
+
+`docs/access-review.md` is the register (date · NDA hash or roster date · outcome · reviewer);
+`Settings.access_review_max_age_days` (default 90). When a document classified into a restricted
+type arrives and the register is older than that, `ingest()` emits a warning in the structured log
+and on the run event and labels the document restricted as usual. It never blocks: D-15 already
+states the asymmetry — too-restrictive blocks a reviewer, too-permissive leaks — and the default
+label is the safe direction, so blocking buys nothing.
 
 ## Carried forward as genuinely unresolved
 

@@ -2,6 +2,14 @@
 
 **Spec:** [spec.md](spec.md) · **Plan:** [plan.md](plan.md) · **Decisions:** [clarifications.md](clarifications.md) · **Analysis:** [analysis.md](analysis.md)
 
+> **Execution plans.** Phase 1 (the substrate) is recorded in
+> [phase-1-execution.md](phase-1-execution.md) and is complete. The remaining work packages
+> WP-A through WP-I are re-cut as seven stories with a dependency table, path ownership and an
+> agent-team dispatch protocol in [phase-2-execution.md](phase-2-execution.md); per-story
+> specifications, clarifications and the consistency register live under
+> [`phase-2/`](phase-2/). Where this file's WP-level bullets and a story spec disagree, the story
+> spec is the more recent reading and this file needs the sweep.
+
 Structured for several teams working simultaneously. Read **Phase 0 first** — nothing
 parallelises until the contracts are frozen, and the most common way a plan like this fails is
 teams shipping seven incompatible versions of the same record.

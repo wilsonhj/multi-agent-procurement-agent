@@ -42,7 +42,7 @@ on-contract key.
 - `adapters/{parser,ocr,llm}/memory.py` references; `adapters/registry.py` `AdapterEntry` with capability accounting; `UNXFAILABLE = {ACCESS_FILTERING, INSUFFICIENT_EVIDENCE}`.
 - `schema/registry.py`: 125 `FieldSpec` over 124 contract keys, bidirectionally tested; `SourceRef(document_id, page, section, extractor_version, bounding_box: tuple[float,float,float,float] | None, url, page_title, retrieved_at, source_authority)`.
 - `services/claims`: `FieldClaim` (frozen; `extractor_version` required; `human:` rule), `canonical_claims`, `project`, `commit_claims(field_name, claims, *, writer, category)`.
-- `services/confidence/`: Tier A table derived from the registry; no scorer.
+- `services/confidence/`: Tier A table derived from the registry; `fuse()` / `requires_review()` exist; **no `threshold_for()` and no extraction scorer**.
 - `services/vertical_slice.py`: the CSV-only path; **stays as is** — it is the executable proof of the contracts, not the production route.
 - `Settings`: `max_concurrent_parse=4`, `max_concurrent_llm=8`, `llm_endpoint/model/api_key`; **no OCR endpoint** (P2-A-15).
 
@@ -54,7 +54,7 @@ on-contract key.
 
 `ParsedElement` gains, all optional with `None` defaults:
 
-- `bbox: tuple[float, float, float, float] | None` — axis-aligned envelope in page points, origin top-left. Polygons from OCR are reduced to their envelope here; the polygon itself is kept on the OCR adapter's chunk payload (Story 2), not on the element.
+- `bbox: tuple[float, float, float, float] | None` — axis-aligned envelope in page points, origin top-left. Polygons from OCR are reduced to their envelope here; the polygon itself stays on the OCR adapter's `recognize()` payload (not on `ParsedElement`; Story 2 may copy it onto a chunk later).
 - `table: TableData | None` — `TableData(rows: tuple[tuple[str, ...], ...], header_rows: int, caption: str | None, merged: tuple[CellSpan, ...])`; present iff `kind == "table"`.
 - `page_quality: float | None` — 0–1, OCR/parser confidence for the page region; D-3's "low-quality scan" hard gate reads it.
 - `role: Literal["body", "furniture", "footnote", "caption"] = "body"` — FR-ING-05 headers/footers/footnotes.
@@ -161,8 +161,8 @@ Router → parser → per-page audit → OCR fallback → classification → lab
 `SourceDocument` (Story 4 repository) → return `IngestResult(document, elements, parse_events)`.
 `ingest()` does **not** extract: extraction is Track 1c's stage, invoked by the runner (Story 4),
 because agent-topology's fan-out unit for `extract` is document × category field set, not
-document. The Phase 1 stub returned `list[ComponentInstance]`; that return is removed (
-components are projections over claims, never an ingest output — P2-A-20).
+document. The Phase 1 stub returns `tuple[SourceDocument, list[ComponentInstance]]`; that return
+is removed (components are projections over claims, never an ingest output — P2-A-20).
 
 ---
 

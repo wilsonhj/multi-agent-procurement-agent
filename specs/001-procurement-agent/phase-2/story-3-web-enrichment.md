@@ -1,7 +1,7 @@
 # Story 3 — Gap-only web enrichment (WP-D)
 
-**Track:** 3 · **Team:** 5 · **Needs:** Track 0 (P2-C4, P2-C8), Track 4a (repositories,
-`PrincipalContext`), Track 4b's `audit.run_event` (P2-C7) · **Status:** proposed 2026-09-03
+**Track:** 3 · **Team:** 5 · **Needs:** Track 0 (P2-C4, P2-C8, P2-C9), Track 4a (repositories,
+`PrincipalContext`, P2-C7 `audit.run_event`), Track 4b (runner, for AC-2) · **Status:** proposed 2026-09-03
 
 **Story.** When a supplier's documents do not state a value the comparison needs, the tool looks
 for it publicly, records exactly what it asked and where the answer came from, marks the value
@@ -23,7 +23,7 @@ corrected to agree (P2-A-13).
 | FR-WEB-01..05 | Gap-only or explicit request; tag `web_supplement` with URL, title, timestamp; **log the query**; fill empty only; raise conflicts beyond tolerance; record authority |
 | C-1, C-2, FR-HITL-02 | Web never overwrites a system-of-record value; no auto-arbitration |
 | D-2, D-17 | Divergence judged by the field's tolerance row; sets compared as sets |
-| D-8 / D-8a | CEC is an authority for PV modules and inverters, **not** utility-scale BESS; never pvlib's bundled CEC data; weekly pull of the live SAM CSVs |
+| D-8 / D-8a | CEC is an authority for PV modules and inverters, **not** utility-scale BESS; weekly pull of the four CEC **XLSX** exports from `solarequipment.energy.ca.gov` (D-8). D-8a separately: live SAM **CSVs** from the NREL/SAM repo for single-diode coefficients; never pvlib's bundled CEC data |
 | D-12d | `request_more_web_search` reopen cap at 3 |
 | D-13 | `web_search` is a **run-scoped** event on `audit.run_event`, not on the per-document chain (A-49) |
 | D-16 | A human selecting the web value is `SELECT_VALUE`; a web value with no decision is still refused by the overwrite guard |
@@ -45,8 +45,8 @@ corrected to agree (P2-A-13).
 
 A **gap** is `(component, field_name, condition)` for which `project()` yields no
 system-of-record claim, or for which a reviewer recorded `REQUEST_MORE_WEB_SEARCH`. Planning
-reads the registry: each `FieldSpec` gains an optional `web_query_template` (Track 0 adds the
-attribute; this story fills it for the fields worth searching). Fields with no template are never
+reads the registry: each `FieldSpec` gains an optional `web_query_template` (P2-C9, written by
+Track 0; this story fills it for the fields worth searching). Fields with no template are never
 searched — silence is the default. Tier A fields **may** be searched (a public UL listing is
 useful evidence) but their claims always route to review (D-3).
 
@@ -111,14 +111,15 @@ stub is unreferenced; the signature changes in this story with Team 1 review.
 
 ## 5 · CEC cross-check (D.5, D-8, D-8a) — `services/web_search/cec.py`
 
-A **separate authority feed**, not a search: weekly pull of the four CEC XLSX exports from the
-live SAM CSV location pinned in settings (`cec_source_urls`, `cec_cache_dir`), parsed with the
+A **separate authority feed**, not a search: weekly pull of the four CEC XLSX exports from
+`solarequipment.energy.ca.gov` (D-8; URLs pinned in `cec_source_urls`), parsed with the
 Story 1 spreadsheet adapter into claims with `source_tier=web_supplement`,
 `source_authority="cec"`, `extractor_version="web:cec@<export-date>"`, surrogate id per D-8,
-alias seeding from the `Notes` column into the identity module. Never `retrieve_sam()` with
-defaults — a test asserts the bundled path is not imported. **Not applied to BESS categories**
-(D-8) — asserted. Scheduling is a CLI subcommand (`procurement-agent cec-refresh`) driven by an
-external scheduler (D-26); it is not a `Stage`.
+alias seeding from the `Notes` column into the identity module. D-8a's live SAM CSVs (NREL/SAM
+repo, `cec_sam_csv_urls`) are a **second** pull for single-diode coefficients, not the CEC
+list location. Never `retrieve_sam()` with defaults — a test asserts the bundled path is not
+imported. **Not applied to BESS categories** (D-8) — asserted. Scheduling is a CLI subcommand
+(`procurement-agent cec-refresh`) driven by an external scheduler (D-26); it is not a `Stage`.
 
 ## 6 · Fan-out and caps
 

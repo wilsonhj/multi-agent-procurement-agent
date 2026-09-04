@@ -83,8 +83,9 @@ data changing?*) is answered by construction: no clock, no embedding, no model n
 
 ## 3 · P2-C3 — `LexicalSearchPort` (D-25)
 
-A seventh Protocol in `ports/`, not a method on `VectorStorePort`, so the six existing adapters
-stay conformant and the in-memory reference is trivial:
+A seventh Protocol beside the six that exist today, not a method on `VectorStorePort`, so the
+existing adapters stay conformant and the in-memory reference is trivial. Track 0 also adds
+`WebSearchPort` (P2-C4) in the same freeze; Decision 10's count becomes **eight**.
 
 ```python
 class LexicalSearchPort(Protocol):
@@ -144,12 +145,14 @@ query, not a green run).
 
 ```python
 def retrieve(query, *, embedder, store, lexical, reranker, principal, limit=10, category=None,
-             supplier=None, source_tier=None, allowed_document_ids=None) -> list[RetrievedChunk]
+             supplier=None, source_tier=None, allowed_document_ids: set[str] | None) -> list[RetrievedChunk]
 ```
 
-Dense top-50 and lexical top-50 → RRF k=60 → rerank → `limit`. `allowed_document_ids` defaults to
-the principal's visible set computed by the Story 4 repository — a caller that wants everything
-passes it; a caller that passes nothing gets nothing (the port rule, preserved at the service).
+Dense top-50 and lexical top-50 → RRF k=60 → rerank → `limit`. **`allowed_document_ids` is
+required at the service.** `None` (and omitting it) returns `[]` — the port rule, unchanged.
+Callers that want the principal's entitlement pass `DocumentRepository.visible_ids(principal)`
+explicitly. There is no default-to-visible: that would make a forgotten argument return
+restricted-and-cleared documents and break AC-8's "omit nothing" reading.
 
 ## 6 · Access control (Decision 3c, D-15, AC-8) — the live tests
 

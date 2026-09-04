@@ -73,11 +73,11 @@ rewritten policy set: `document_is_visible(p_document_id)` replaces `document_is
 reads `current_setting('app.groups', true)` (a comma-separated list the principal context sets)
 instead of the boolean GUC; the RESTRICTIVE policy keeps the app role from setting it. The proposal
 directory is **outside** the lexical apply order so CI does not apply it; a test asserts the
-proposal parses (`psql --dry-run` is not a thing — apply it to a throwaway database in the `sql`
-job and run the existing attack matrix against it, then drop). `PrincipalContext` gains
-`groups: frozenset[str]` (empty today). Adopting outcome B is: move the file to `sql/13_…`, flip the
-principal to populate `groups`, re-run the grant and attack matrices. D-15's estimate of ~40
-policies is what the proposal file contains, so the cost is known before it is paid.
+proposal parses (apply it to a throwaway database in the `sql` job and run the existing attack
+matrix against it, then drop). `PrincipalContext` gains `groups: frozenset[str]` (empty today).
+Adopting outcome B is: move the file to `sql/14_restricted_group.sql` (not 13 — 13 is the
+deny-list), flip the principal to populate `groups`, re-run the grant and attack matrices. D-15's
+estimate of ~40 policies is what the proposal file contains, so the cost is known before it is paid.
 
 ### Outcome C — recusal only: per-person deny-list, keeping the boolean
 

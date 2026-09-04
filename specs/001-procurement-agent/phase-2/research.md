@@ -87,9 +87,9 @@ a migration rather than a redesign.
 
 ## What this changes in the plan
 
-Nothing is reversed. Five pins are added (Docling `<3`; vLLM `response_format` +
+Nothing is reversed. Five pins were added (Docling `<3`; vLLM `response_format` +
 `--logprobs-mode raw_logprobs` + the xgrammar/`disable_any_whitespace` launch config; Instructor
-`create_with_completion`; client-side MRL truncation asserted by the conformance suite) and two
-questions are opened (**Q-5** Word page numbers, **Q-6** web-result storage rights). Two stack
-choices that the plan never made are proposed with defaults (**Q-7** reviewer surface, **Q-8**
-extraction model).
+`create_with_completion`; client-side MRL truncation asserted by the conformance suite). The two
+questions this research opened (**Q-5** Word page numbers, **Q-6** web-result storage rights) and
+the two stack choices the plan never made (**Q-7** reviewer surface, **Q-8** extraction model)
+were ratified the same day as D-19 – D-22.

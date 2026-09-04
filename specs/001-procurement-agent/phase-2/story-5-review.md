@@ -75,7 +75,9 @@ asserting actions; a second asserting decision on an entry already resolved is r
 
 `queue()` includes low-confidence and insufficient-evidence fields as rows of kind
 `review_required` (FR-HITL-05) sourced from the projection's flags, not only conflict entries;
-they resolve with the same five actions.
+they resolve with the same five actions. `queue()` also drops rows whose supplier is in
+`principal.denied_suppliers` (Story 7 outcome C; a no-op while the set is empty). That filter is
+an exclusion within an entitlement, not a substitute for RLS.
 
 Age metric: `now - detected_at` per row; `oldest_open_by_severity` on the dashboard. Nothing
 expires.

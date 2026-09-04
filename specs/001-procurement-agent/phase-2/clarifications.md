@@ -2,9 +2,11 @@
 
 Numbering continues from [phase-1-execution.md](../phase-1-execution.md) (Q-1..Q-4). Each entry
 names what it blocks, the options, the recommended default and its confidence, and what would
-overturn it. **Nothing here is adopted until it is ratified**; a track builds to the recommended
-default and records the assumption in its PR. Adopting means folding the answer into
-[clarifications.md](../clarifications.md) as a D-19+ entry and marking the row here.
+overturn it. **Q-5 through Q-16 were ratified on 2026-09-03** and folded into
+[clarifications.md](../clarifications.md) as D-19 – D-30; the D-entry is the authority and the
+entries below are the record of the options considered. Q-1 stays open. Adopting a remaining
+question means folding the answer into [clarifications.md](../clarifications.md) as a D-entry
+and marking the row here.
 
 Format follows [open-decisions.md](../open-decisions.md).
 

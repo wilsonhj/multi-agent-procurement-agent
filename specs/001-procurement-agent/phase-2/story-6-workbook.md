@@ -43,10 +43,17 @@ formatting half and AC-7 loses its "gated on G.6" caveat for the LibreOffice hal
 
 ## 1 · G.3 — hidden parallel state columns (Decision 8a)
 
-Per category tab, layout is `A: Parameter`, `B..(B+n-1): one column per supplier`, then
-immediately `n` hidden `_state` columns, one per supplier, cell text
-`"<flags>|<claim_id>|<document_id>#p<page>|<confidence>"` — e.g. `"web,low|CLM-00012003|ds_3.pdf#p47|0.62"`.
-Both load-bearing constraints are **asserted in the generator** before save, not only in tests:
+Decision 8a's comparison-tab layout is **suppliers as columns**:
+
+`A: Parameter`, `B..(B+n-1): one column per supplier`, then immediately `n` hidden `_state`
+columns, one per supplier, cell text `"<flags>|<claim_id>|<document_id>#p<page>|<confidence>"`
+— e.g. `"web,low|CLM-00012003|ds_3.pdf#p47|0.62"`.
+
+That layout is `suppliers_as_rows=False`. Today's writer implements only
+`suppliers_as_rows=True` (long-form: Supplier / Model / Field / … as visible columns, one row
+per supplier-field). The default in `Settings` stays `True`; this story implements **both**
+orientations. The two load-bearing assertions apply to whichever orientation is being written
+and live **in the generator** before save, not only in tests:
 
 - `assert ws.column_dimensions[first_state_col].index == last_value_col + 1` — no blank column;
 - `assert ws.auto_filter.ref` spans `A1:<last_state_col><last_row>`.
@@ -54,7 +61,8 @@ Both load-bearing constraints are **asserted in the generator** before save, not
 Hidden columns are `hidden=True`, width 0. The visible Flags/Provenance columns of the current
 writer are removed; the comment stays on flagged cells only (Decision 8a: decorative, ~120 per
 tab). The state string's fields are `encode_value`-rendered so the same claim renders the same
-bytes everywhere.
+bytes everywhere. For `True`, there is one hidden `_state` column (the value block is already
+one cell per row). For `False`, there are `n` hidden columns, one per supplier.
 
 ## 2 · G.4 — three orthogonal visual channels (Decision 8b)
 
@@ -120,11 +128,13 @@ Its bytes derive from the projection, so it is deterministic by construction.
 
 ## 6 · Alternate orientation (FR-OUT-01)
 
-`suppliers_as_rows=False` — parameters as columns, suppliers as rows — with the **same** hidden
-state block rule (state columns follow the value block; here one state column per parameter) and
-the same channels. The `NotImplementedError` at L172 is removed. The two orientations render from
-one projection; a test renders both and asserts identical cell *sets* (value, flags, provenance)
-under transposition.
+`suppliers_as_rows=True` (default, already implemented as long-form) keeps Supplier / Model /
+Field as columns and adds the hidden state block per §1. `suppliers_as_rows=False` is Decision
+8a's matrix (Parameter in `A`, one supplier per value column) — the `NotImplementedError` at
+L172 is removed. The two orientations render from one projection; a test renders both and
+asserts identical cell *sets* (value, flags, provenance) under transposition. G.7's `MATCH`
+over the Parameter column applies only to the `False` matrix; the `True` long-form matches on
+the Field column.
 
 ## 7 · Tabs 12–13 layouts (AC-6, open-decisions §5)
 

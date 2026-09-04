@@ -765,8 +765,8 @@ repr-JSON keeps it. The two contracts want different things — cross-language v
 lossless Python round-trip here.
 
 **Shape.** Top level
-`{projection_version: 1, policy: {...}, components: [...], conflicts: [...], sources: [...]}`.
-Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
+`{projection_version: 1, policy: {policy_version, confidence_threshold, thresholds}, components: [...], conflicts: [...], sources: [...]}`.
+`thresholds` is the per-field τ map embedded **by value** (D-29). Arrays wherever order is meaning: components by `ComponentInstance.ordering_key()` (D-4 stage 5),
 fields by name, then:
 
 - **Nothing that decides hashed array order may contain `repr()` of an enum.** This is one rule,
@@ -894,15 +894,15 @@ Python identifiers, so only a deliberate alias could mint one. Assert no dumped 
    projection hash as a cross-policy *store* identity, which is a job for the separately recorded
    inputs, not for this hash.
 
-   **Two consequences that must land with it.** Hashing policy makes the B.10 τ table
-   **versioned, append-only data** — otherwise historical projections become unrecomputable the
-   first time τ moves. And golden fixtures must pin their own τ so production re-tuning never
-   re-baselines them; `tasks.md` sequences τ tuning after WP-B, which is exactly when fixture
-   churn would otherwise be worst.
+   **Two consequences that must land with it.** Hashing policy means the B.10 τ table is
+   carried **by value inside `policy.thresholds`** (D-29) — historical bytes include the τ that
+   produced them, so a later retune cannot share a hash. Golden fixtures must pin their own τ
+   map so production re-tuning never re-baselines them; `tasks.md` sequences τ tuning after WP-B,
+   which is exactly when fixture churn would otherwise be worst.
 2. **`generated_on` must be store-derived, not wall clock.** FR-OUT-06 demands the stamp; AC-7 and
    G.5's `sleep(1.1)` re-run demand byte-identity; a store-derived stamp satisfies both with no
-   normative edit. The rule already exists at `services/output/__init__.py:151-153`; what is new
-   is promoting it out of a docstring on an unimplemented function. See [A-48](analysis.md).
+   normative edit. The store-only wording lives on `write_workbook` (the docstring that says no
+   timestamps derived from anything but the store). See [A-48](analysis.md).
 
    **Recommended derivation: the maximum store write-timestamp over the rows the projection
    actually reflects** — `max(document.ingested_at, claim.extracted_at, conflict.detected_at,
@@ -941,8 +941,10 @@ Python identifiers, so only a deliberate alias could mint one. Assert no dumped 
 
 **Golden fixture (T0.5):** one committed projection plus its hash for a synthetic two-supplier PV
 store containing D-1's Sungrow trio, so the fixture exercises list-valued fields rather than the
-easy one-value-per-key case. Note `tests/fixtures/` deliberately ships **no** projection fixture
-until this decision is ratified — see `tests/fixtures/README.md`.
+easy one-value-per-key case. Landed 2026-08-12 as
+`tests/fixtures/workbooks/two-supplier-pv-store.json` and
+`two-supplier-pv-store.canonical-bytes.sha256`. Story 6 re-baselines it once when `thresholds`
+is added (D-29).
 
 **Confidence: High** on the byte format; **Medium** on the shape; the two items above are
 explicitly the maintainer's call.
@@ -1081,11 +1083,9 @@ for a resolved field stored `OPEN` / `resolution=None`.
 
 **What it costs.** `FieldClaim` gains a key, so the two committed claim fixtures were
 regenerated with the canonical options (`tests/fixtures/README.md` § Regenerating);
-their behavioural assertions are unchanged. `sql/04_claim.sql` does not yet carry a
-`resolution` column — the Python record is ahead of the DDL, which is the mirror of
-C4 and C8's usual shape, and WP-H/WP-F own that migration. **Settled 2026-09-03 by D-27:**
-`claim.resolution_id` with a CHECK mirroring the validator, in `sql/10_claim_resolution_link.sql`,
-owned by Phase 2 Story 4a.
+their behavioural assertions are unchanged. `sql/04_claim.sql` still has no `resolution`
+column — the Python record is ahead of the DDL. **D-27 assigns the link to Story 4a** in
+`sql/10_claim_resolution_link.sql` (`claim.resolution_id` plus a CHECK mirroring the validator).
 
 **Rejected: `project(claims, resolutions)`.** A second input keeps the reducer pure but breaks
 the sentence C8 is built on — "the canonical value is a projection over claims, never an
@@ -1241,7 +1241,7 @@ envelope, page points, origin top-left), `table: TableData | None` (present iff 
 `role: body | furniture | footnote | caption` (FR-ING-05). **Kinds stay `heading | body | table |
 figure`.** The conformance pin on `__annotations__` is updated in the same PR. No `TableElement`
 subclass; one carrier so every `isinstance` stays valid. OCR polygons are reduced to their envelope
-on the element; the polygon itself lives on the OCR adapter's chunk payload, not in `SourceRef`.
+on the element; the polygon itself lives on the OCR adapter's `recognize()` payload, not in `SourceRef`.
 
 ## D-24 — Gold labels are `gold:` claims that never enter a store (Phase 2 Q-10)
 
@@ -1258,7 +1258,8 @@ conflict.
 ## D-25 — The lexical leg is a seventh port, `LexicalSearchPort` (Phase 2 Q-11; contract P2-C3)
 
 > **Status: RATIFIED 2026-09-03.** Owner: Track 0 (type, reference, capability row), Story 2
-> (Postgres adapter). Amends Decision 10's "six" to **seven** synchronous Protocols.
+> (Postgres adapter). Adds the seventh synchronous Protocol. D-26 adds the eighth; the docs
+> sweep pins **eight**.
 
 ```python
 class LexicalSearchPort(Protocol):
@@ -1282,9 +1283,10 @@ vector backend to implement or disclaim lexical search); fusion hidden inside th
 (the part-number test becomes inexpressible against the reference).
 
 **Sweep owed with the Track 0 PR:** every document that says "six ports" — `plan.md` Decision 10,
-`ADR-001`, `docs/current-state.md`, `docs/requirements-traceability.md` NFR-04, the docstrings of
-`adapters/registry.py`, `adapters/__init__.py`, `tests/port_contracts/*` — is corrected to seven
-(with `WebSearchPort` from D-26, eight).
+`ADR-001`, `docs/current-state.md`, `docs/requirements-traceability.md` NFR-04, `ports/__init__.py`,
+`phase-1-execution.md`, `analysis.md` A-20, the docstrings of `adapters/registry.py`,
+`adapters/__init__.py`, `tests/port_contracts/*` — is corrected to eight (D-25's seventh plus
+D-26's `WebSearchPort`). The grep test in P2-A-24 is the pin, not this list.
 
 ## D-26 — `WebSearchPort` is an eighth port; the CEC pull is a CLI job, not a stage (Phase 2 Q-12; contract P2-C4)
 

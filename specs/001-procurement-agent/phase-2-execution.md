@@ -46,27 +46,28 @@ artifact dependency, not a scheduling preference. Merge ordering is stated below
 
 | # | Track | Story spec | Needs | Team | Owns these paths |
 |---|---|---|---|---|---|
-| **0** | Phase 2 contract freeze — the eight additive contracts and their fixtures (§ Contracts below) | this file § Contracts | — | 1 | `src/procurement_agent/ports/__init__.py`, `adapters/parsed_element.py`, `adapters/capabilities.py`, `adapters/registry.py`, `tests/port_contracts/`, `tests/fixtures/parsed/` (new), `tests/fixtures/chunks/` (new), `tests/fixtures/README.md`, `specs/001-procurement-agent/phase-2/*.md` (owner of record) |
+| **0** | Phase 2 contract freeze — the nine additive contracts and their fixtures (§ Contracts below) | this file § Contracts | — | 1 | `src/procurement_agent/ports/__init__.py`, `adapters/parsed_element.py`, `adapters/capabilities.py`, `adapters/registry.py`, `schema/registry.py` (optional `web_query_template` only), `schema/` (`PrincipalContext` type only), `tests/port_contracts/`, `tests/fixtures/parsed/` (new), `tests/fixtures/chunks/` (new), `tests/fixtures/README.md`, `specs/001-procurement-agent/phase-2/*.md` (owner of record) |
 | **1a** | Parser router, spreadsheet path, Docling PDF/Word path, per-page audit, classification, ACL label at ingest | [story-1](phase-2/story-1-ingest-extract.md) §A | 0 | 2 | `services/ingestion/`, `adapters/parser/` (new backends), `tests/fixtures/ingestion/`, `tests/test_ingestion*.py` |
 | **1b** | OCR adapter (PaddleOCR-VL-1.6 on vLLM) and degraded RapidOCR tier | [story-1](phase-2/story-1-ingest-extract.md) §B | 0 | 2 | `adapters/ocr/` |
 | **1c** | Schema-constrained extraction, cross-read, plausibility gates, cold-start confidence, `threshold_for()` | [story-1](phase-2/story-1-ingest-extract.md) §C | 0, 1a fixture | 3 | `services/extraction/` (new), `services/confidence/`, `adapters/llm/` |
 | **1d** | Gold set — 30–50 labelled documents (**human-produced**; agents build the harness only) | [story-1](phase-2/story-1-ingest-extract.md) §D | 0 | human + 3 | `tests/fixtures/gold/` (new), `tests/test_gold_set.py` |
 | **2** | Chunking, triple table indexing, contextual prefix, TEI embedder/reranker adapters, pgvector store adapter, hybrid retrieval with RRF, AC-8 live test | [story-2](phase-2/story-2-index-retrieve.md) | 0, 4a (connection + principal) | 4 | `services/indexing/`, `services/retrieval/`, `adapters/embedder/`, `adapters/reranker/`, `adapters/vector_store/` (new backends), `adapters/lexical_store/` (new), `tests/test_indexing*.py`, `tests/test_retrieval*.py` |
-| **3** | Gap-only web enrichment: `WebSearchPort`, gap planner, fetched-page persistence as `SourceDocument`, authority ordering, CEC cross-check, AC-2 end-to-end | [story-3](phase-2/story-3-web-enrichment.md) | 0, 4a, 4b (`audit.run_event`) | 5 | `services/web_search/`, `adapters/web_search/` (new), `tests/test_web_search*.py` |
+| **3** | Gap-only web enrichment: `WebSearchPort`, gap planner, fetched-page persistence as `SourceDocument`, authority ordering, CEC cross-check, AC-2 end-to-end | [story-3](phase-2/story-3-web-enrichment.md) | 0, 4a (incl. P2-C7), 4b (runner for AC-2) | 5 | `services/web_search/`, `adapters/web_search/` (new), `tests/test_web_search*.py` |
 | **4a** | Repository layer: connections, `PrincipalContext` → `SET LOCAL app.allow_restricted`, document/claim/conflict/resolution/job repositories, `sql/10`–`sql/12` | [story-4](phase-2/story-4-persistence-runner.md) §A | 0 | 6 | `services/store/` (new), `sql/10_*.sql`, `sql/11_*.sql`, `sql/12_*.sql`, `sql/README.md`, `tests/test_store*.py`, `tests/test_sql_behaviour.py` (additive), `.github/workflows/ci.yml` (sql job only) |
 | **4b** | Runner: `orchestrator.run`, stage handlers, idempotency keys, lease sweeper, retry/backoff, quarantine, `attempt_failed` from the exception handler, compose stage with recorded override, CLI | [story-4](phase-2/story-4-persistence-runner.md) §B | 4a | 6 | `orchestrator/`, `cli/` (new), `pyproject.toml` (`[project.scripts]`), `tests/test_runner*.py` |
 | **5** | Review service (five actions, leases, reopen cap) and the reviewer UI (FastAPI + Jinja2 + HTMX, OIDC) | [story-5](phase-2/story-5-review.md) | 0, 4a | 7 | `services/review/` (new), `ui/` (new), `tests/test_review*.py`, `tests/test_ui*.py` |
 | **6** | Workbook finish: G.3 hidden state columns, G.4 three channels, G.6 LibreOffice CI gate, G.7 navigation, G.8 completeness manifest, alternate orientation, tabs 12–13 layouts, τ by field | [story-6](phase-2/story-6-workbook.md) | 0 | 8 | `services/output/`, `tests/fixtures/workbooks/`, `tests/test_workbook*.py`, `.github/workflows/ci.yml` (new `workbook` job only) |
-| **7** | Access-label facts: the D-15 decision artifact, readiness for each of the three outcomes, re-arming register | [story-7](phase-2/story-7-access-labels.md) | — (human facts); code readiness needs 4a | human + 6 | `docs/decisions/ADR-002-*.md` (new), `docs/access-review.md` (new), `sql/13_access_denylist.sql` (reserved number), `sql/proposals/` (new, **not applied**) |
+| **7** | Access-label facts: the D-15 decision artifact, readiness for each of the three outcomes, re-arming register | [story-7](phase-2/story-7-access-labels.md) | — (human facts); code readiness needs 4a | human + 6 | `docs/decisions/ADR-002-*.md` (new), `docs/access-review.md` (new), `sql/13_access_denylist.sql` (applied, empty), `sql/proposals/restricted_group.sql` (becomes `sql/14` if outcome B is chosen), **not** overlapping 13 |
 
 `sql/` numbers are reserved by Track 0 in `sql/README.md` so parallel worktrees cannot collide:
-`10`–`12` Story 4, `13` Story 7, `14+` unassigned (P2-A-21).
+`10`–`12` Story 4, `13` Story 7 deny-list (applied), `14` reserved for outcome B `restricted_group`,
+`15+` unassigned (P2-A-21).
 
 **Start order** — 0 first and alone; it is short (days, not weeks) because every contract in it
 is additive. Then 1a, 1b, 1d, 4a, 6 and the human halves of 1d and 7 begin immediately. 1c waits
 for 1a's committed parsed-elements fixture; 2, 3 and 5 wait for 4a's connection and principal
-primitives; 3 additionally waits for 4b's `audit.run_event` (a small, early part of 4b that 6
-should land first — see the 4b note).
+primitives; 3's query log needs 4a's `audit.run_event` (P2-C7: `sql/11`–`12` and
+`append_run_event`), and its AC-2 path additionally needs 4b's runner.
 
 **Merge order** — `0 → 4a → (1a ∥ 1b ∥ 6) → 1c → 4b → (2 ∥ 5) → 3 → 7-readiness`. 1d and 7's
 human artifacts merge whenever they exist. 4a merges before the parser tracks even though they do
@@ -83,21 +84,27 @@ two connection layers.
 
 ## Contracts frozen in Track 0
 
-Eight additive contracts. "Additive" is load-bearing: every one extends a shape with optional
+Nine additive contracts. "Additive" is load-bearing: every one extends a shape with optional
 fields or adds a new Protocol beside the six, so no existing test breaks except the pins that
 assert the old shape, and those are updated in the same PR. Each is specified in full in the
-story that consumes it; Track 0 writes the type, the fixture and the pin.
+story that consumes it.
+
+Track 0 writes the **Python type, the fixture and the pin** for every row. P2-C5's
+`PrincipalContext` type lives in `schema/` so 1a can compile before 4a merges; 4a writes
+`services/store/` and the GUC rule. P2-C6/C7's SQL (`sql/10`–`12`) and `audit.append_run_event`
+are 4a deliverables against shapes frozen here.
 
 | ID | Contract | Consumers | Where specified |
 |---|---|---|---|
 | **P2-C1** | `ParsedElement` gains optional `bbox`, `table: TableData \| None`, `page_quality: float \| None`, `role` (body/furniture/footnote/caption). Kinds stay four — cells live inside `TableData`, not as a new kind. The conformance pin on `ParsedElement.__annotations__` is updated to the new set in the same PR | 1a, 1b, 1c, 2 | [story-1 §A.0](phase-2/story-1-ingest-extract.md) |
-| **P2-C2** | `ChunkRecord` (kind ∈ prose/table_full/table_row/table_summary, text, page, section, table_id, context_prefix) replaces `chunk() -> list[str]`; `ChunkMetadata` gains `chunk_kind`, `table_id`, `section` | 2, 4a | [story-2 §1](phase-2/story-2-index-retrieve.md) |
+| **P2-C2** | `ChunkRecord` as in story-2 §1: `chunk_id`, `document_id`, `kind` ∈ prose/table_full/table_row/table_summary, `text`, `body`, `context_prefix`, `page`, `section`, `table_id`, `ordinal`. Replaces `chunk() -> list[str]`; `ChunkMetadata` gains `chunk_kind`, `table_id`, `section` | 2, 4a, 6 | [story-2 §1](phase-2/story-2-index-retrieve.md) |
 | **P2-C3** | `LexicalSearchPort` — a seventh Protocol beside the six, with `search_lexical(query, *, limit, filters..., allowed_document_ids)`; in-memory reference + capability row; `allowed_document_ids=None` returns nothing, same rule as `VectorStorePort` | 2 | [story-2 §3](phase-2/story-2-index-retrieve.md) |
 | **P2-C4** | `WebSearchPort` — eighth Protocol: `search(query, *, limit) -> list[WebHit]` where `WebHit` is `url`, `title`, `retrieved_at`, `provider`; no snippet, no rank persisted (D-20); in-memory reference | 3 | [story-3 §2](phase-2/story-3-web-enrichment.md) |
 | **P2-C5** | `PrincipalContext(subject: str, cleared_for_restricted: bool, denied_suppliers: frozenset[str])` and the rule that every store connection is opened **through** a principal; `SET LOCAL app.allow_restricted` is set from it and nowhere else | 2, 3, 4a, 4b, 5, 7 | [story-4 §A.1](phase-2/story-4-persistence-runner.md) |
 | **P2-C6** | Claim persistence of D-16: `sql/10_claim_resolution_link.sql` adds `claim.resolution_id` (nullable FK) with `CHECK ((extractor_version LIKE 'human:%') = (resolution_id IS NOT NULL))`; insert order resolution → human claim | 4a, 5 | [story-4 §A.3](phase-2/story-4-persistence-runner.md) |
 | **P2-C7** | `audit.run_event` (`sql/11`) per D-13 and the taxonomy amendment (`sql/12`) removing `web_search` from `audit.event` and dropping `recorded_at`'s DEFAULT; `audit.append_run_event()` | 3, 4b, 5 | [story-4 §A.4](phase-2/story-4-persistence-runner.md) |
 | **P2-C8** | `extractor_version` naming: `"<pipeline>@<semver-or-hash>"` for machines, `"human:<oidc-sub>"` per D-16, `"web:<provider>@<version>"` for Story 3, `"gold:<annotator>"` for labels that are never committed to a claim store | 1c, 3, 1d, 5 | [story-1 §C.5](phase-2/story-1-ingest-extract.md) |
+| **P2-C9** | `FieldSpec.web_query_template: str \| None = None` — silence is the default; Story 3 fills templates for fields worth searching; no parallel query-key on another type | 3 | [story-3 §1](phase-2/story-3-web-enrichment.md) |
 
 **Why these are frozen now and not discovered in-track.** Three of them (`P2-C1`, `P2-C2`,
 `P2-C3`) are expressibility gaps the Phase 1 inventory found in the ports: `ParsedElement` cannot
@@ -114,7 +121,7 @@ first team to hit it. See [analysis.md P2-A-1..P2-A-3](phase-2/analysis.md).
 |---|---|---|---|
 | `tests/fixtures/parsed/synthetic-pv-datasheet.json` — `ParsedElement` list with a 6-row electrical table, page numbers, one furniture element | 0 (synthetic), re-validated by 1a | 1c, 2 | `TableData` round-trips; every element has `page` |
 | `tests/fixtures/parsed/synthetic-scan.json` — same content with `bbox` and `page_quality < 0.5` | 0 | 1b, 1c | D-3 hard gate "low-quality scan" is expressible |
-| `tests/fixtures/chunks/synthetic-pv-datasheet.json` — `ChunkRecord` list: prose + `table_full` + 6 `table_row` + `table_summary` | 2 | 4a (row shape), 6 (Sources tab) | Decision 6 triple indexing shape |
+| `tests/fixtures/chunks/synthetic-pv-datasheet.json` — `ChunkRecord` list: prose + `table_full` + 6 `table_row` + `table_summary` | 0 (synthetic), re-validated by 2 | 4a (row shape), 6 (Sources tab) | Decision 6 triple indexing shape |
 | `tests/fixtures/claims/*.json` (existing two) + `synthetic-pv-datasheet.claims.json` | 1c | 4a, 5, 6 | Claims carry `P2-C8` versions; keys on-contract |
 | `tests/fixtures/conflicts/*.json` (existing) | — | 5, 6 | unchanged; no `resolution` on fixtures |
 | `tests/fixtures/workbooks/two-supplier-pv-store.json` + sha256 (existing) | — | 6 | D-14 bytes; **any change is a re-baseline needing permutation-only review** |
@@ -149,7 +156,7 @@ Quoted so no track has to rediscover them. Sources: [agent-topology.md](../../do
 
 ## Agent-team dispatch protocol
 
-How the eight tracks run concurrently without the failure modes Phase 1 recorded.
+How the eight teams run the twelve tracks concurrently without the failure modes Phase 1 recorded.
 
 **Isolation.** One git worktree per track (`.claude/worktrees/` is already the convention); one
 branch per track named `phase-2/<track>`; **no agent runs `pytest` in a tree another agent is
@@ -173,8 +180,9 @@ editing** — measured in this project's history to produce untrustworthy signal
    fixture change.
 
 **Integration agent.** One agent owns the merge order. It merges a track only when: its PR is
-green on **both** CI jobs bound to the head SHA (not a PR-level summary — Phase 1 recorded
-`gh pr checks` reporting a stale commit); the passed-test count is ≥ the count on `main` plus the
+green on **every** CI job bound to the head SHA — today `checks` (py3.12 and py3.13) and `sql`;
+after Track 6, also `workbook` — not a PR-level summary (Phase 1 recorded `gh pr checks` reporting
+a stale commit); the passed-test count is ≥ the count on `main` plus the
 story's minimum new tests; and the story's **Done means** artifact is committed. After each merge
 it re-runs the full gate set on the integration branch and records counts in the story file's
 status line.
@@ -219,7 +227,7 @@ product owner.
 
 ## Cross-artifact analysis
 
-The full register is [phase-2/analysis.md](phase-2/analysis.md) (P2-A-1 … P2-A-27). The items
+The full register is [phase-2/analysis.md](phase-2/analysis.md) (P2-A-1 … P2-A-28). The items
 that shape this plan:
 
 - **Three expressibility gaps in the ports** (P2-A-1..3) are why Track 0 exists.
@@ -279,4 +287,5 @@ Tabs 12–13 *content* beyond layout (the compliance and tax specialist team of 
 Stage 4) — it needs the extraction path to exist first and is Phase 3. Multi-supplier identity
 resolution tuning (D-4 Stage 4 thresholds) waits on the gold set. Migration tooling for `sql/`
 (a version table, rollback) is still a decision nobody has taken; Phase 2 keeps the forward-only
-numbered files and adds `10`–`12`.
+numbered files and adds `10`–`13` (`13` is the deny-list, applied empty; `14` is reserved if
+outcome B is chosen).

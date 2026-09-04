@@ -72,7 +72,7 @@ readers. Reviewer and UI connections come from Story 5 with the reviewer's clear
 |---|---|---|
 | `DocumentRepository` | `upsert(SourceDocument) -> (document_id, created: bool)`; `get`; `visible_ids(principal) -> set[str]` | `ON CONFLICT (content_hash) DO NOTHING RETURNING`; `created=False` is AC-5's signal |
 | `ChunkRepository` | `write_chunks(list[ChunkRecord], embeddings)`; `delete_for_document` | Story 2's rows; trigger inherits the label |
-| `PostgresClaimStore` (implements `ClaimWriter`) | `append(list[FieldClaim]) -> list[claim_id]`; `current(field_name)` = `project()` over stored claims; `commit(field_name, values)` | `ON CONFLICT ON CONSTRAINT claim_natural_key DO NOTHING`; human claims insert **after** their resolution (P2-C6) |
+| `PostgresClaimStore` (implements `ClaimWriter`) | `append(list[FieldClaim]) -> list[claim_id]`; `current(field_name)` = `project()` over stored claims; `commit(field_name, values)` | Workers never call `append` directly. The only write path from a claim to the store remains `commit_claims` (guard then INSERT). `append` is the writer's INSERT; `commit` on the Protocol is not a second store. `ON CONFLICT ON CONSTRAINT claim_natural_key DO NOTHING`; human claims insert **after** their resolution (P2-C6) |
 | `ConflictRepository` | `upsert_entry(ConflictQueueEntry)`; `lease(principal, *, limit) -> list[entry]` (`FOR UPDATE SKIP LOCKED`, `status='pending' OR lease_expires_at < now()` → `leased`, 15 min); `release`; `mark_resolved`; `reopen` (increments `reopen_count`, refuses at 3); `sweep_expired()` | Story 5 calls; never writes SQL itself |
 | `ResolutionRepository` | `append(entry_id, Resolution, selected_claim_id) -> resolution_id` | append-only |
 | `JobRepository` | `enqueue(stage, document_id, payload, idempotency_key)` (`ON CONFLICT DO NOTHING`); `claim(worker_id, stages)` (documented `SKIP LOCKED` query); `succeed`; `fail(error, backoff)`; `quarantine`; `sweep_leases()` | only the columns `procurement_app` may UPDATE |
@@ -153,11 +153,11 @@ with exponential backoff (`2^attempt` minutes, capped 60); at `max_attempts` →
 
 `compose_workbook` handler: `unresolved = ConflictRepository.open_entries()`;
 `compose_gate_blocks(unresolved, threshold=settings.compose_gate_threshold)` → if it blocks and
-the run lacks `accept_incomplete`, the job **succeeds with outcome `blocked`** and a
-`completeness manifest` (Story 6, G.8) is still written listing every blocker; if
-`accept_incomplete` is set, a `compose_override` run event records who, when, why and the blocker
-list, then composition proceeds. Threshold `CRITICAL` is unrepresentable in `Settings` (`le=HIGH`),
-so the gate cannot be disabled — unchanged.
+the run lacks `accept_incomplete`, the job **succeeds** (`status='succeeded'` — `sql/08` has no
+`blocked` value) with `payload.outcome='blocked'` and a completeness manifest (Story 6, G.8)
+listing every blocker; if `accept_incomplete` is set, a `compose_override` run event records who,
+when, why and the blocker list, then composition proceeds. Threshold `CRITICAL` is unrepresentable
+in `Settings` (`le=HIGH`), so the gate cannot be disabled — unchanged.
 
 ### B.4 · CLI (`cli/__init__.py`, `[project.scripts] procurement-agent = …`; D-28, argparse)
 

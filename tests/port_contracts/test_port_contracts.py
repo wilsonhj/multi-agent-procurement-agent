@@ -508,16 +508,17 @@ _STOCKED_DOCUMENT_IDS = {f"doc-{rank}" for rank in range(6)}
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
 def test_a_stored_chunk_comes_back_from_search(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
-    hits = store.search(
-        _query(dimensions), limit=3, allowed_document_ids=_STOCKED_DOCUMENT_IDS
-    )
+    hits = store.search(_query(dimensions), limit=3, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
     assert [hit.chunk_id for hit in hits] == ["chunk-0", "chunk-1", "chunk-2"]
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
 def test_search_returns_no_more_than_the_limit(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
-    assert len(store.search(_query(dimensions), limit=2, allowed_document_ids=_STOCKED_DOCUMENT_IDS)) == 2
+    assert (
+        len(store.search(_query(dimensions), limit=2, allowed_document_ids=_STOCKED_DOCUMENT_IDS))
+        == 2
+    )
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
@@ -526,7 +527,9 @@ def test_results_are_ordered_best_first(entry: AdapterEntry) -> None:
     store, dimensions = _stocked(entry)
     scores = [
         hit.score
-        for hit in store.search(_query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
+        for hit in store.search(
+            _query(dimensions), limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
     ]
     assert scores == sorted(scores, reverse=True)
 

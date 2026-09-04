@@ -38,7 +38,7 @@ workbook; the UI passes its HTTP tests under an OIDC test issuer.
 - `Resolution(action, resolved_by, resolved_at, rationale, value_before, value_after)`; `ResolutionAction.asserts_a_value`.
 - `FieldClaim` human rule; `services.claims.project()` prefers the latest human claim by `resolved_at`.
 - `sql/05_conflict.sql`: `status`, `lease_owner`, `lease_expires_at`, `reopen_count ≤ 3`; `sql/06_resolution.sql`: five actions, `selected_claim_id`, append-only.
-- Story 4's `ConflictRepository.lease/release/mark_resolved/reopen/sweep_expired`, `ResolutionRepository.append`, `PostgresClaimStore.append`, `PrincipalContext`.
+- Story 4 (not yet in the tree) will supply `ConflictRepository.lease/release/mark_resolved/reopen/sweep_expired`, `ResolutionRepository.append`, `PostgresClaimStore.append`, `PrincipalContext`. This story consumes them.
 - No HTTP app, no auth, no templates anywhere in the tree.
 
 ---

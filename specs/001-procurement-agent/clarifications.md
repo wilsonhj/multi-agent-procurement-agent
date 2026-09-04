@@ -841,7 +841,7 @@ Two Python equalities are deliberately **not** honoured, both warts rather than 
 under-separating a precision is not.
 
 Implemented at `src/procurement_agent/schema/encoding.py`, with the property tests at
-`tests/test_encoding.py`. Placement follows `schema/component.py:74` — `schema` sits below
+`tests/test_encoding.py`. Placement follows that module's own rule — `schema` sits below
 `services` and cannot import it, and both consumers live in `services`.
 
 **The requirement is a property, not the table: `encode_value()` must be injective over the

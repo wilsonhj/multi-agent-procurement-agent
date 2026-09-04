@@ -12,6 +12,7 @@ this plan covers it) · **Ratified → D-n** (folded into `clarifications.md` on
 
 **Re-analysed 2026-09-03 after the Q-5 – Q-16 ratification.** P2-A-24 – P2-A-27 were added by that pass.
 P2-A-28 and the P2-A-20 / P2-A-24 evidence corrections were added 2026-09-04 after review of PR #40.
+P2-A-29 – P2-A-36 were added 2026-09-04 after the review + verification pass on PR #40.
 
 | ID | Finding | Evidence | Owner | Status |
 |---|---|---|---|---|
@@ -43,6 +44,14 @@ P2-A-28 and the P2-A-20 / P2-A-24 evidence corrections were added 2026-09-04 aft
 | **P2-A-26** | D-16's cost note still read "WP-H/WP-F own that migration" after D-27 assigned it to Story 4a | D-16 "What it costs" | Done | Recorded — D-16 now names Story 4a only |
 | **P2-A-27** | `.env.example` has `PROCUREMENT_LLM_MODEL=` blank; D-22 names a default. Same for every setting the ratified decisions introduce (`ocr_*`, `reranker_*`, `web_search_provider`, `oidc_*`, `classification_threshold`, `access_review_max_age_days`, `PROCUREMENT_GOLD_CORPUS_DIR`) | `.env.example`; D-19..D-30 | each story | Open — folded into P2-A-7; each story's PR adds its lines with the ratified default as the example value |
 | **P2-A-28** | Story 3 required Track 0 to add `FieldSpec.web_query_template`, but the original eight contracts and Track 0's path list omitted `schema/registry.py`. Two teams would have invented two keys | story-3 §1 vs phase-2-execution.md contracts table (pre-P2-C9) | Track 0 | **Decided (P2-C9)** — optional field, default `None`; Story 3 fills templates |
+| **P2-A-29** | `PrincipalContext` was specified in both `schema/` (Track 0 path row) and `services/store/principal.py` (story-4 §A.1). Two agents would emit two types | phase-2-execution.md P2-C5 vs story-4 A.1 (pre-fix) | Track 0 | **Decided** — type lives in `schema/principal.py`; 4a imports it |
+| **P2-A-30** | Story 4 told every stage except ingest to connect as `procurement_app` + GUC. Live DDL: `procurement_ingest` is the write identity; `document_app_never_restricted` is RESTRICTIVE and ignores the GUC | story-4 A.1 / trap vs `sql/00_roles.sql`, `sql/02_document.sql` | Story 4 | **Decided** — pipeline writers use `procurement_ingest`; #8 is a GRANT, not a role switch |
+| **P2-A-31** | 4b Done required a six-stage drain before Stories 2 and 3 merge | story-4 Done / Verify vs merge order | Story 4b + integration | **Decided** — 4b Done is ingest/extract/detect/compose; six-stage tests are a post-2/3 integration gate |
+| **P2-A-32** | `CellSpan` used in P2-C1 and never defined | story-1 A.0 | Track 0 | **Decided (P2-C1)** — `CellSpan(row, col, rowspan, colspan)` in `ports/` |
+| **P2-A-33** | P2-C5 omitted `groups`; Story 7 added it in-phase without owning `schema/` | story-7 §2 vs P2-C5 | Track 0 | **Decided (P2-C5)** — `groups` is on the frozen type, empty until outcome B |
+| **P2-A-34** | Live apply glob `0*.sql` never matches `sql/10`–`13`; three test files and `sql/README.md` had no Track 0 owner for the reservation | `tests/test_sql_schema.py` L65; `test_sql_behaviour.py` L223; `test_audit_live.py` L112 | Track 0 | **Decided** — Track 0 widens the glob and reserves numbers; 4a appends 10–12 rows |
+| **P2-A-35** | `config.py` / `.env.example` had no owner; six tracks would collide | P2-A-7 | Track 0 | **Decided** — Track 0 declares additive fields; later tracks do not add a second Settings |
+| **P2-A-36** | Story 3 stored fetched pages as `access_restricted=False` with no SSRF controls; Story 5 sourced `denied_suppliers` from the session; CLI `--as` impersonated any subject | story-3 §3; story-5 §2; story-4 B.4 | Stories 3, 4, 5 | **Decided (P2-C10, P2-C5)** — fetch policy + inherit restriction; deny-list from DB; no bare `--as` |
 
 ## Coverage check against the seven stories
 

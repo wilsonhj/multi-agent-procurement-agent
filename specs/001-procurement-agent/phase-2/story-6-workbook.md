@@ -14,7 +14,9 @@ byte-identical, and the file opens in LibreOffice in CI and in desktop Excel on 
 **Done means.** G.3, G.4, G.7, G.8 asserted in the generator **and** in tests; the LibreOffice
 half of G.6 runs in CI; the desktop-Excel half is a signed checklist in
 `docs/current-state.md`; `suppliers_as_rows=False` renders; AC-3 moves to `enforced` for the
-formatting half and AC-7 loses its "gated on G.6" caveat for the LibreOffice half.
+formatting half. **AC-7 keeps its "gated on G.6" caveat until both halves are recorded**
+(LibreOffice CI gate **and** the signed desktop-Excel checklist). Landing the LibreOffice job
+alone does not move AC-7.
 
 ---
 

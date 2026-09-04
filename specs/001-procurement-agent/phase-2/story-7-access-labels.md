@@ -35,11 +35,11 @@ content half arriving after the first ingest costs a configuration change.
 | Decision 3c | `FORCE ROW LEVEL SECURITY`; non-owner app role; RLS is the boundary |
 | D-12a | Principal identity is the OIDC `sub` |
 | C-6 (spec) | Access control enforced at retrieval, not display |
-| P2-C5 | `PrincipalContext(subject, cleared_for_restricted, denied_suppliers)` — the deny-list hook already exists in the type |
+| P2-C5 | `PrincipalContext(subject, cleared_for_restricted, denied_suppliers, groups)` — both hooks exist in the Track 0 type; `groups` stays empty until outcome B |
 
 ## Code surface today
 
-- `access_restricted` boolean on `document` and `chunk` (stored) and derived on five tables via `document_is_restricted()` / `conflict_is_restricted()`; 40 `CREATE POLICY` statements; RESTRICTIVE policy stops `procurement_app` from self-entitling; GUC `app.allow_restricted`.
+- `access_restricted` boolean on `document` and `chunk` (stored) and derived on five tables via `document_is_restricted()` / `conflict_is_restricted()`; **46** `CREATE POLICY` statements in `sql/02`–`08` (D-15's retrofit estimate remains ~40); RESTRICTIVE policy stops `procurement_app` from self-entitling; GUC `app.allow_restricted`.
 - `SourceDocument.access_restricted: bool = False`.
 - `VectorStorePort.search(allowed_document_ids=...)` — scoping within an entitlement.
 - No principal type, no deny-list, no group column, no register, no ADR-002.
@@ -85,12 +85,13 @@ Prepared and **applied** (it is additive and harmless when empty): `sql/13_acces
 `public.access_denylist(subject text, supplier text, recorded_at timestamptz, recorded_by text,
 PRIMARY KEY (subject, supplier))`, append-only like `resolution`, owner-writable only.
 `PrincipalContext.denied_suppliers` is populated from it at connection time (Story 4's
-`open_transaction`), and:
+`open_transaction` — never from a UI session), and:
 
 - `DocumentRepository.visible_ids(principal)` excludes documents whose claims name a denied
   supplier;
-- Story 2's `retrieve()` passes that set as `allowed_document_ids` (scoping within the
-  entitlement — RLS still governs restricted documents);
+- the **caller** of Story 2's `retrieve()` (runner, `ReviewService`, or this story's readiness
+  wiring) passes that set as `allowed_document_ids` (scoping within the entitlement — RLS still
+  governs restricted documents; `retrieve()` itself never calls `visible_ids`);
 - Story 5's queue excludes entries for denied suppliers **in the service**, since a recusal is an
   exclusion, not a clearance (D-15's own words), and the UI never sees them.
 
@@ -134,7 +135,9 @@ Minimum new tests: 15.
 - `test_principal_context_populates_denied_suppliers` · `test_empty_denylist_changes_nothing`
 - `test_restricted_group_proposal_applies_and_passes_attack_matrix` (throwaway database in the `sql` job; dropped after)
 - `test_proposal_directory_is_not_in_apply_order` (reads `sql/README.md` apply glob)
-- `test_stale_register_warns_and_labels_restricted_never_blocks`
+- `test_stale_register_warns_and_labels_restricted_never_blocks` — **owned by Track 1a**
+  (`ingest()`); this story asserts the register file and `Settings.access_review_max_age_days`
+  exist so 1a has something to read
 - `test_adr_002_exists_or_status_says_provisional` — until the human half lands, `docs/current-state.md` must still say "provisional"; this test keeps the two documents from disagreeing.
 
 **Gates at merge:** four local gates; `sql` job green with `13` applied.

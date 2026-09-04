@@ -68,10 +68,12 @@ class ReviewService:
 Invariants enforced in the service and asserted by tests: `resolved_by == principal.subject`;
 `resolved_at` from the service clock (tz-aware) and shared by the claim, the resolution row and the
 event; `value_before` = the projected value at lease time; `value_after` = the claim value for
-asserting actions; a second asserting decision on an entry already resolved is refused
+asserting actions; **`resolve` requires an unexpired lease owned by `principal.subject`** (no
+break-glass in this story); a second asserting decision on an entry already resolved is refused
 (`review_conflict`'s rule, kept); sibling pairs of a non-transitive D-1 group stay `OPEN` with
 `resolution=None` while remaining pairs exist (the Phase 1 fix, kept). The human claim's
-`extractor_version` is `f"human:{principal.subject}"` (P2-C8).
+`extractor_version` is `f"human:{principal.subject}"` (P2-C8). `PostgresClaimStore.append`
+refuses `gold:` (P2-C8); the service never constructs one.
 
 `queue()` includes low-confidence and insufficient-evidence fields as rows of kind
 `review_required` (FR-HITL-05) sourced from the projection's flags, not only conflict entries;
@@ -98,11 +100,16 @@ Routes:
 | `GET /healthz` | |
 
 Auth: Authlib OIDC (authorization code + PKCE) against `Settings.oidc_issuer`, `oidc_client_id`,
-`oidc_client_secret: SecretStr` (new). The session carries `sub` and the clearance claim; the app
-builds `PrincipalContext(subject=sub, cleared_for_restricted=<claim>)` per request and every
-repository call goes through `open_transaction(principal)`. **The UI never filters restricted rows
-itself** — an uncleared reviewer's queue is what RLS returns. `denied_suppliers` is passed through
-from the session for Story 7 outcome 2 and is empty today.
+`oidc_client_secret: SecretStr` (new). Required claims, named in settings: `oidc_clearance_claim`
+(default `restricted_clearance`, boolean) and `oidc_reviewer_role` (default `reviewer` — a
+group/role claim; users without it get 403 on every route except `/healthz`). The server-side
+session stores `sub` and the clearance boolean; cookies are `HttpOnly`, `Secure`, `SameSite=Lax`,
+rotated at login; the ID token `exp` is re-checked. The app builds
+`PrincipalContext(subject=sub, cleared_for_restricted=<claim>)` per request — **without**
+`denied_suppliers` or `groups` — and every repository call goes through
+`open_transaction(principal)`, which loads the deny-list (and groups) from the database (P2-C5).
+**The UI never filters restricted rows itself** — an uncleared reviewer's queue is what RLS
+returns. The session is not a source of entitlement.
 
 Accessibility and safety: server-rendered forms, no client-side state of record; CSRF token on
 every POST; rationale required for every action (FR-HITL-06); the "you are resolving in the
@@ -122,14 +129,14 @@ patched clock.
 
 Minimum new tests: 50. Named:
 
-- Service, live: `test_lease_exclusive_two_reviewers` · `test_lease_expires_and_is_reclaimable` · `test_release_by_non_owner_refused`
+- Service, live: `test_lease_exclusive_two_reviewers` · `test_lease_expires_and_is_reclaimable` · `test_release_by_non_owner_refused` · `test_resolve_without_lease_refused` · `test_resolve_by_non_lease_holder_refused`
 - One per action: `test_select_value_creates_human_claim_resolution_and_event` · `test_keep_sor_refused_when_no_sor_candidate` · `test_enter_override_requires_cited_source` · `test_enter_override_value_after_equals_claim_value` · `test_request_more_web_search_enqueues_job_and_reopens` · `test_request_more_web_search_refused_at_three` · `test_defer_releases_lease_and_keeps_pending`
 - `test_resolved_by_is_oidc_subject_not_email` · `test_resolved_at_shared_by_claim_resolution_event`
 - `test_second_asserting_decision_refused` · `test_sibling_pairs_stay_open` (ported from the slice)
 - `test_projection_is_resolved_after_decision` · `test_regenerated_workbook_shows_resolution` (with Story 6's writer; Open Items row disappears)
 - `test_low_confidence_fields_appear_in_queue` (FR-HITL-05)
 - `test_uncleared_reviewer_queue_excludes_restricted_via_rls` (live; asserts the service issued no supplier/document filter — the exclusion is RLS)
-- UI (httpx `TestClient`, mocked OIDC issuer): `test_unauthenticated_redirects_to_issuer` · `test_queue_renders_rows` · `test_conflict_page_shows_every_candidate_with_source` · `test_resolve_requires_rationale` · `test_resolve_posts_through_service` · `test_csrf_required`
+- UI (httpx `TestClient`, mocked OIDC issuer): `test_unauthenticated_redirects_to_issuer` · `test_queue_renders_rows` · `test_conflict_page_shows_every_candidate_with_source` · `test_resolve_requires_rationale` · `test_resolve_posts_through_service` · `test_csrf_required` · `test_user_without_reviewer_role_gets_403` · `test_clearance_claim_must_match_configured_name` · `test_denied_suppliers_not_read_from_session`
 - `test_licences_of_ui_dependencies` (reads installed metadata; MIT/BSD/Apache only)
 
 **Gates at merge:** four local gates; `sql` job green; `ui` extra added to `pyproject.toml`

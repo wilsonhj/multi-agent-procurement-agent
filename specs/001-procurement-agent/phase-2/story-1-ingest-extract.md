@@ -50,12 +50,30 @@ on-contract key.
 
 ## A — Track 1a: parser router and document paths
 
-### A.0 · P2-C1, consumed (Track 0 writes it)
+### A.0 · P2-C1 / D-23, consumed (Track 0 writes it)
 
 `ParsedElement` gains, all optional with `None` defaults:
 
-- `bbox: tuple[float, float, float, float] | None` — axis-aligned envelope in page points, origin top-left. Polygons from OCR are reduced to their envelope here; the polygon itself stays on the OCR adapter's `recognize()` payload (not on `ParsedElement`; Story 2 may copy it onto a chunk later).
-- `table: TableData | None` — `TableData(rows: tuple[tuple[str, ...], ...], header_rows: int, caption: str | None, merged: tuple[CellSpan, ...])`; present iff `kind == "table"`.
+- `bbox: tuple[float, float, float, float] | None` — axis-aligned envelope in page points, origin top-left. Polygons from OCR are reduced to their envelope here; the polygon itself stays on the OCR adapter's `recognize()` payload (not on `ParsedElement`, not on `ChunkRecord`, not on `SourceRef`).
+- `table: TableData | None` — present iff `kind == "table"`:
+
+```python
+@dataclass(frozen=True)
+class CellSpan:
+    row: int       # 0-based origin of the merged region
+    col: int
+    rowspan: int   # >= 1
+    colspan: int   # >= 1
+
+@dataclass(frozen=True)
+class TableData:
+    rows: tuple[tuple[str, ...], ...]
+    header_rows: int
+    caption: str | None
+    merged: tuple[CellSpan, ...]
+```
+
+  Both types live in `ports/__init__.py` next to `ParsedElement`.
 - `page_quality: float | None` — 0–1, OCR/parser confidence for the page region; D-3's "low-quality scan" hard gate reads it.
 - `role: Literal["body", "furniture", "footnote", "caption"] = "body"` — FR-ING-05 headers/footers/footnotes.
 
@@ -82,8 +100,9 @@ openpyxl (already a core dependency) with `data_only=False` **and** a second `da
 pass so formulas keep both text and cached value; pandas is **not** required and is not added to
 core. Per sheet → one `ParsedElement(kind="table")` with `TableData` preserving sheet name as
 `caption`, header rows detected by type-homogeneity of row 1, merged ranges in `merged`, numbers
-kept as numbers in `rows` via `repr()` (D-14's float rule, so the same value renders the same
-everywhere). `page` is the 1-based sheet index; `section` on the claim is the sheet name.
+kept as numbers in `rows` via `repr()` — the **same float rule as D-14 / Decision 8c** (do not
+import `encode_value` into the parser; the rule is "what `float.__repr__` would print"). `page`
+is the 1-based sheet index; `section` on the claim is the sheet name.
 
 CSV routes here too, via `csv.Sniffer` for the dialect. The sanitized-PV CSV fixture must parse
 through this adapter to the same claims `vertical_slice` produces — that is the compatibility
@@ -104,7 +123,9 @@ test.
 document (its `content_hash` is the identity), and record `section` (heading path) on every
 element regardless of format. If `soffice` is absent the adapter declares `PAGE_NUMBERS` as an
 `UNIMPLEMENTED` absence for Word and elements carry `page=None` — loud in the conformance matrix,
-never silent.
+never silent. The conversion subprocess is **isolated**: no network, CPU/memory/time caps, a
+throwaway `UserInstallation`, and a pinned LibreOffice version in the Story 6 CI image. It does
+not inherit the worker's DB credentials.
 
 ### A.4 · Per-page audit and the three-tier fallback (Decision 4, A.6)
 
@@ -131,7 +152,9 @@ result is a `(DocumentType, confidence)`; below `Settings.classification_thresho
 default 0.90) the document is **labelled restricted** and routed to review. Label map per D-15:
 contract/TOS, purchase order, pricing, terms and conditions, warranty → `access_restricted=True`;
 spec sheet, technical documentation, environmental regulation → `False`. The label is set once at
-ingest; Story 7's register check (D-30) warns, never blocks.
+ingest; Story 7's register check (D-30) warns, never blocks. Track **1a** owns the check inside
+`ingest()` and the test `test_stale_register_warns_and_labels_restricted_never_blocks`; Story 7
+owns the register file and the setting.
 
 ### A.7 · Content hash, stable IDs, idempotent re-ingest (FR-ING-09, NFR-05, AC-5)
 
@@ -231,10 +254,11 @@ comparison (D-6), BESS boundary string parsed before any RTE (D-7). A failed gat
 Every extracted value becomes a `FieldClaim` with `extractor_version =
 f"{pipeline}@{version}"` where `pipeline` names the engine chain (`docling+qwen3-30b-a3b`) and
 `version` is a hash of the prompt template + schema + model id — so a prompt change is a new
-extractor and old claims are superseded, never edited. `source_tier=system_of_record`.
-`condition` resolved per open-decisions §2 (`Condition.derived` records what was filled).
-`confidence` from C.6. Claims go to the store through `commit_claims` (the reducer) — never a
-direct table write from a worker.
+extractor and old claims are superseded, never edited. The string must match P2-C8's machine
+regex. `source_tier=system_of_record`. `condition` resolved per open-decisions §2
+(`Condition.derived` records what was filled). `confidence` from C.6. Claims go to the store
+through `commit_claims` (the reducer) — never a direct table write from a worker. `gold:` is
+refused on this path (D-24).
 
 ### C.6 · Cold-start confidence and `threshold_for()` (B.7, B.10, A-11)
 
@@ -280,6 +304,9 @@ Minimum new tests: 60. Named:
 - `test_word_path_yields_pages_via_pdf_conversion` — skips if `soffice` absent, and the conformance matrix shows the absence
 - `test_page_audit_flags_zero_char_page` · `test_failed_page_is_recorded_not_dropped` (asserts a `parse_failure` intent)
 - `test_classification_below_threshold_labels_restricted` (D-15 fail-closed)
+- `test_stale_register_warns_and_labels_restricted_never_blocks` (D-30; 1a owns this test)
+- `test_soffice_conversion_has_no_network_and_uses_throwaway_profile` (D-19 isolation; may skip
+  without `soffice`, must not skip the profile/env assertions when the binary is present)
 - `test_reingest_unchanged_document_is_a_noop_in_application` (AC-5 caller half; live, DSN-gated)
 - `test_decimal_comma_iec_document` — `10,5 kV` → 10.5 · `test_percent_per_kelvin_is_alias` · `test_no_temperature_conversion_path_exists`
 - `test_ocr_elements_carry_bbox_and_quality` (recorded response) · `test_degraded_tier_forces_review`
@@ -298,7 +325,8 @@ Minimum new tests: 60. Named:
 
 - `ParsedElement.page` is 1-based everywhere; the OCR reference already does this.
 - A Docling `TableItem` with empty `prov` is a **Word** table — do not "fix" it by guessing page 1.
-- `repr()` for numbers in `TableData`, never `str()` or `%.16g` (D-14, Decision 8c).
+- `repr()` for numbers in `TableData`, never `str()` or `%.16g` (same float rule as D-14 /
+  Decision 8c; not an import of `schema.encoding.encode_value`).
 - Logprob-mean over the whole JSON is exactly the metric D-3 says fails; the span mask must exclude grammar-forced tokens.
 - `commit_claims` refuses dropped condition groups (`StoredValueLossError`); an extractor that stops emitting a condition it emitted before is a defect, not a cleanup.
 

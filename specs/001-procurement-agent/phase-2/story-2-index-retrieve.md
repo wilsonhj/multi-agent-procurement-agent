@@ -42,12 +42,16 @@ recorded responses and have run once against real services (recorded in `docs/cu
 
 ---
 
-## 1 · P2-C2 — `ChunkRecord` (Track 0 writes; this story consumes)
+## 1 · P2-C2 — `ChunkRecord` (Track 0 writes in `ports/__init__.py`; this story consumes)
+
+Track 0 also lands the three new keys on `ChunkMetadata` in `adapters/vector_store/__init__.py`
+(`chunk_kind`, `table_id`, `section`). This story adds backends under `adapters/vector_store/`
+and `adapters/lexical_store/`; it does not redefine `ChunkRecord`.
 
 ```python
 @dataclass(frozen=True)
 class ChunkRecord:
-    chunk_id: str  # deterministic: sha256(document_id, kind, table_id or None, ordinal)[:32]
+    chunk_id: str  # sha256("|".join((document_id, kind, table_id or "", str(ordinal))).encode("utf-8")).hexdigest()[:32]
     document_id: str
     kind: Literal["prose", "table_full", "table_row", "table_summary"]
     text: str  # what is embedded, AFTER the context prefix is prepended
@@ -148,11 +152,14 @@ def retrieve(query, *, embedder, store, lexical, reranker, principal, limit=10, 
              supplier=None, source_tier=None, allowed_document_ids: set[str] | None) -> list[RetrievedChunk]
 ```
 
-Dense top-50 and lexical top-50 → RRF k=60 → rerank → `limit`. **`allowed_document_ids` is
-required at the service.** `None` (and omitting it) returns `[]` — the port rule, unchanged.
-Callers that want the principal's entitlement pass `DocumentRepository.visible_ids(principal)`
-explicitly. There is no default-to-visible: that would make a forgotten argument return
-restricted-and-cleared documents and break AC-8's "omit nothing" reading.
+Dense top-50 and lexical top-50 → RRF k=60 → rerank → `limit`. **`allowed_document_ids` is a
+required keyword with no default.** Passing `None` returns `[]` (the port rule, unchanged).
+Omitting the keyword is a `TypeError` — "omit" is not a calling convention at the service.
+`retrieve()` itself never calls `visible_ids`. The **caller** — the runner, `ReviewService`, or
+Story 7's readiness wiring — that wants the principal's entitlement passes
+`DocumentRepository.visible_ids(principal)` explicitly. There is no default-to-visible: that
+would make a forgotten argument return restricted-and-cleared documents and break AC-8's
+"omit nothing" reading.
 
 ## 6 · Access control (Decision 3c, D-15, AC-8) — the live tests
 

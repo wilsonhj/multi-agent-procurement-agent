@@ -79,12 +79,17 @@ from `Settings.web_search_api_key`; honours `web_search_rate_limit_per_minute` w
 
 ## 3 · Fetch and persist (FR-WEB-02, NFR-01) — `services/web_search/fetch.py`
 
-Each `WebHit.url` is fetched (explicit timeout, size cap, `robots.txt` honoured, HTML → text via
-the Story 1 Docling adapter's HTML backend or a stdlib fallback) and persisted as a
-`SourceDocument(source_uri=url, document_type=TECHNICAL_DOCUMENTATION, access_restricted=False,
+Each `WebHit.url` is fetched under **P2-C10**: HTTPS only (`http` is upgraded or refused);
+RFC1918, link-local, loopback and cloud-metadata IPs are blocked after DNS **and** after every
+redirect (max 3); explicit timeout and size cap; `robots.txt` honoured. A blocked URL is a
+logged fetch failure, never a `SourceDocument`. HTML → text via the Story 1 Docling adapter's
+HTML backend or a stdlib fallback. Persisted as a
+`SourceDocument(source_uri=url, document_type=TECHNICAL_DOCUMENTATION,
+access_restricted=<inherited from the gap's source document, else True>,
 data_vintage=retrieved_at)` with `content_hash` over the fetched bytes — so the same page fetched
 twice is one document (AC-5 applies to web pages too), and every web claim's `SourceRef` names a
-document **and** a URL. The fetched text is indexed by Story 2 so the Sources tab can show it.
+document **and** a URL. Public-page unrestricted is a reviewer clearance, not the fetch default.
+The fetched text is indexed by Story 2 so the Sources tab can show it.
 
 **What is logged where:**
 
@@ -137,6 +142,8 @@ Minimum new tests: 30. Named:
 - `test_query_is_logged_before_provider_call` (run event exists even when the provider raises)
 - `test_web_hit_carries_no_snippet_or_rank` (dataclass shape pin; D-20)
 - `test_fetched_page_becomes_source_document_with_content_hash` · `test_same_page_twice_is_one_document`
+- `test_fetch_refuses_internal_url` · `test_fetch_refuses_redirect_to_metadata_ip` ·
+  `test_ssrf_response_not_stored` · `test_fetched_page_inherits_gap_restriction`
 - `test_web_claim_source_ref_has_document_and_url_and_authority`
 - `test_authority_ordering_from_host`
 - **`test_ac2_end_to_end`** — SOR 650 + web 655 → one `RECORD_VS_WEB` entry; projected value 650; a second run adds no second entry (idempotent detection). Live variant on the `sql` job.

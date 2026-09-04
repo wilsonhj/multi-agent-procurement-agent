@@ -9,10 +9,17 @@ at-least-once retry, writes its business rows and its audit events in one transa
 driven from a CLI. Workers propose claims; one serial reducer per field commits the projection.
 The human gate stays a compose-time query.
 
-**Done means.** `procurement-agent ingest <paths>` enqueues; `procurement-agent worker` drains the
-six stages against a live PostgreSQL; killing a worker mid-stage and restarting produces no
-duplicate rows and no forked audit chain (asserted by counts and `verify_stream`); the compose
-stage refuses above the gate and proceeds with a recorded `--accept-incomplete` run event.
+**Done means (4a).** Repositories, `sql/10`–`12`, and `open_transaction` land against a live
+PostgreSQL; the GUC is set in exactly one module; pipeline writers connect as `procurement_ingest`.
+
+**Done means (4b).** `procurement-agent ingest <paths>` enqueues; `procurement-agent worker`
+drains **ingest → extract → detect_conflicts → compose** against a live PostgreSQL; killing a
+worker mid-stage and restarting produces no duplicate rows and no forked audit chain (asserted by
+counts and `verify_stream`); the compose stage refuses above the gate and proceeds with a recorded
+`--accept-incomplete` run event. `index` and `enrich_via_web` may be stub handlers at 4b merge.
+A six-stage drain (`test_audit_chain_verifies_after_full_run` and per-stage crash tests for
+`index` / `enrich_via_web`) is an **integration gate after Stories 2 and 3**, not a 4b merge
+criterion (see the master merge-order note).
 
 ---
 
@@ -45,26 +52,41 @@ stage refuses above the gate and proceeds with a recorded `--accept-incomplete` 
 
 ## A — Track 4a: repository layer and DDL additions
 
-### A.1 · P2-C5 — `PrincipalContext` and connections (`services/store/principal.py`, `connection.py`)
+### A.1 · P2-C5 — `PrincipalContext` and connections (`schema/principal.py`, `services/store/connection.py`)
+
+The dataclass is frozen in Track 0 at `schema/principal.py`. This story **imports** it; it does
+not define a second copy.
 
 ```python
 @dataclass(frozen=True)
 class PrincipalContext:
     subject: str                          # OIDC `sub` (D-12a); "system:<worker-id>" for workers
     cleared_for_restricted: bool
-    denied_suppliers: frozenset[str] = frozenset()   # Story 7 outcome 2 hook; empty today
+    denied_suppliers: frozenset[str] = frozenset()   # Story 7 outcome C; loaded from DB, never session
+    groups: frozenset[str] = frozenset()             # Story 7 outcome B hook; empty until then
 
 @contextmanager
 def open_transaction(settings, principal) -> Iterator[psycopg.Connection]:
-    # connect as procurement_app (or procurement_ingest for the ingest stage), autocommit off,
-    # SET LOCAL app.allow_restricted = 'true' iff principal.cleared_for_restricted,
+    # role = procurement_ingest if principal.subject.startswith("system:") else procurement_app
+    # autocommit off
+    # SET LOCAL app.allow_restricted = 'true' iff principal.cleared_for_restricted
+    #   (reader/UI only — the GUC does not override document_app_never_restricted)
+    # populate principal.denied_suppliers (and groups) from public.access_denylist /
+    #   app.groups for this subject — never from caller-supplied session fields
     # yield; commit on success; rollback on any exception.
 ```
 
 **The GUC is set here and nowhere else.** A grep test asserts `app.allow_restricted` appears in
-exactly one Python module. Workers run as `system:` principals with `cleared_for_restricted=True`
-— they must see restricted documents to process them; RLS protects *readers*, and workers are not
-readers. Reviewer and UI connections come from Story 5 with the reviewer's clearance.
+exactly one Python module. **Pipeline writers connect as `procurement_ingest`** — that is the
+DDL's write identity for ingest, indexing, extraction, conflict detection and audit append
+(`sql/00_roles.sql`; `sql/README.md` decision 22). `procurement_app` is the reader/UI role; its
+RESTRICTIVE policy `document_app_never_restricted` (`USING (NOT access_restricted)`) does **not**
+consult the GUC, so a worker on `procurement_app` cannot see restricted rows to process them.
+Workers run as `system:` principals with `cleared_for_restricted=True` because they must process
+restricted documents; they do that as `procurement_ingest`, not by asserting the GUC on the app
+role. Reviewer and UI connections come from Story 5 as `procurement_app` with the reviewer's
+clearance. If extract must lack reducer grants (#8), that is a GRANT on `procurement_ingest`,
+not a role switch.
 
 ### A.2 · Repositories (`services/store/*.py`) — thin, SQL-explicit, no ORM
 
@@ -72,7 +94,7 @@ readers. Reviewer and UI connections come from Story 5 with the reviewer's clear
 |---|---|---|
 | `DocumentRepository` | `upsert(SourceDocument) -> (document_id, created: bool)`; `get`; `visible_ids(principal) -> set[str]` | `ON CONFLICT (content_hash) DO NOTHING RETURNING`; `created=False` is AC-5's signal |
 | `ChunkRepository` | `write_chunks(list[ChunkRecord], embeddings)`; `delete_for_document` | Story 2's rows; trigger inherits the label |
-| `PostgresClaimStore` (implements `ClaimWriter`) | `append(list[FieldClaim]) -> list[claim_id]`; `current(field_name)` = `project()` over stored claims; `commit(field_name, values)` | Workers never call `append` directly. The only write path from a claim to the store remains `commit_claims` (guard then INSERT). `append` is the writer's INSERT; `commit` on the Protocol is not a second store. `ON CONFLICT ON CONSTRAINT claim_natural_key DO NOTHING`; human claims insert **after** their resolution (P2-C6) |
+| `PostgresClaimStore` (implements `ClaimWriter`) | `append(list[FieldClaim]) -> list[claim_id]`; `current(field_name)` = `project()` over stored claims; `commit(field_name, values)` | Workers never call `append` directly. The only write path from a claim to the store remains `commit_claims` (guard then INSERT). `append` is the writer's INSERT; `commit` on the Protocol is not a second store. `ON CONFLICT ON CONSTRAINT claim_natural_key DO NOTHING`; human claims insert **after** their resolution (P2-C6). **`append` and `commit_claims` refuse `extractor_version` starting `gold:`** (D-24 / P2-C8); the optional `CHECK (extractor_version NOT LIKE 'gold:%')` on `claim` is the SQL half |
 | `ConflictRepository` | `upsert_entry(ConflictQueueEntry)`; `lease(principal, *, limit) -> list[entry]` (`FOR UPDATE SKIP LOCKED`, `status='pending' OR lease_expires_at < now()` → `leased`, 15 min); `release`; `mark_resolved`; `reopen` (increments `reopen_count`, refuses at 3); `sweep_expired()` | Story 5 calls; never writes SQL itself |
 | `ResolutionRepository` | `append(entry_id, Resolution, selected_claim_id) -> resolution_id` | append-only |
 | `JobRepository` | `enqueue(stage, document_id, payload, idempotency_key)` (`ON CONFLICT DO NOTHING`); `claim(worker_id, stages)` (documented `SKIP LOCKED` query); `succeed`; `fail(error, backoff)`; `quarantine`; `sweep_leases()` | only the columns `procurement_app` may UPDATE |
@@ -112,7 +134,8 @@ verifies both stream kinds. The stream CHECK on `audit.event` is **not** widened
 - `test_expired_lease_is_reclaimable` · `test_reopen_refused_at_three`.
 - `test_run_event_chain_verifies` · `test_event_table_refuses_web_search_after_12`.
 - `test_recorded_at_has_no_default_after_12`.
-- CI `sql` job applies `00`–`12` and fails on silent skip exactly as today.
+- CI `sql` job applies `00`–`12` (Track 0's widened glob; fails if `10`–`12` are present on
+  disk and not applied) and fails on silent skip exactly as today.
 
 ---
 
@@ -142,7 +165,7 @@ events. Re-running it with unchanged claims changes zero rows (asserted).
 ### B.2 · Worker loop, retry, quarantine, sweeper
 
 `orchestrator.run(settings, *, stages, worker_id, once=False)`: claim → open transaction as
-`system:<worker_id>` → handler → commit → loop. On exception: rollback; in a **new** transaction
+`system:<worker_id>` on `procurement_ingest` → handler → commit → loop. On exception: rollback; in a **new** transaction
 write `attempt_failed` (Decision 9's "we attempted X and it failed" class) and `JobRepository.fail`
 with exponential backoff (`2^attempt` minutes, capped 60); at `max_attempts` → `quarantined`
 (I.4). `sweep_leases()` runs each loop iteration for both `job` and `conflict`. Concurrency:
@@ -164,15 +187,27 @@ in `Settings` (`le=HIGH`), so the gate cannot be disabled — unchanged.
 `ingest <path…> [--restricted]` (hash, enqueue) · `worker [--stages …] [--once]` ·
 `compose [--accept-incomplete --rationale …]` · `queue list|lease|release` (thin over Story 5's
 service) · `cec-refresh` (Story 3) · `audit verify [--run <id>|--document <id>]` (wraps the existing
-CLI). Every subcommand takes `--as <oidc-sub>` for the principal in non-interactive use; the UI
-supplies it from the session.
+CLI).
+
+**Identity (P2-C5).** Two modes, not one `--as` flag:
+
+- **Worker / system:** `worker` and `ingest` run as `system:<worker-id>` (or `system:cli-ingest`).
+  No human subject is accepted. `cleared_for_restricted=True` only inside the runner.
+- **Human:** `compose --accept-incomplete`, `queue lease|release|resolve`, and any command that
+  writes a `human:` claim or a `compose_override` run event require a validated OIDC token
+  (`--oidc-token` device-code / client credentials, or the UI session). The subject is the
+  token's `sub`. A bare `--as <oidc-sub>` **does not exist** — it would let anyone attribute a
+  compose override or resolution to any reviewer.
 
 ### B.5 · Observability (I.5)
 
 Structured JSON logs (ADR-001 §7) with `run_id`, `job_id`, `stage`, `document_id`, duration;
-per-stage counters exposed by `procurement-agent stats`. NFR-06/07 are **measured** against the
-gold corpus once Story 1d exists and recorded in `docs/current-state.md`; the traceability rows
-move from "open" only then.
+per-stage counters exposed by `procurement-agent stats`. **Never** log claim values, chunk text,
+fetched page bodies, or URLs of restricted documents; `document_id` is the correlation key.
+Exception formatters must not interpolate `ParsedElement.text` or `FieldClaim.value`. Worker logs
+are a cleared-operator pipeline, separate from reviewer access. NFR-06/07 are **measured** against
+the gold corpus once Story 1d exists and recorded in `docs/current-state.md`; the traceability
+rows move from "open" only then.
 
 ---
 
@@ -185,14 +220,22 @@ Minimum new tests: 55. Beyond A.5, named:
 - `test_claim_store_current_is_projection_over_claims` · `test_human_claim_requires_prior_resolution_row` (live)
 - `test_every_idempotency_key_is_a_function_of_stored_data` (property: same inputs → same key; clock patched)
 - `test_successor_jobs_enqueued_in_same_transaction` (crash injected after handler, before commit → no successor)
-- `test_retry_after_crash_changes_zero_rows` for each stage (live; count rows before/after)
+- `test_retry_after_crash_changes_zero_rows` for ingest, extract, detect_conflicts, compose (live;
+  count rows before/after). The same test for `index` and `enrich_via_web` is the post-2/3
+  integration gate, not a 4b merge test.
 - `test_detect_conflicts_is_serial_per_field` (two workers, same field → one leases, other skips)
 - `test_attempt_failed_written_in_new_transaction_after_rollback`
 - `test_quarantine_at_max_attempts` · `test_backoff_schedule`
 - `test_compose_blocked_writes_manifest_and_no_workbook` · `test_accept_incomplete_records_override_run_event`
 - `test_compose_threshold_critical_unrepresentable` (exists; keep)
 - `test_cli_ingest_enqueues_with_content_hash_key` · `test_cli_worker_once_drains_one_job`
-- `test_audit_chain_verifies_after_full_run` (`verify_stream` on every `doc:` and `run:` stream after the CSV fixture runs through all six stages; live)
+- `test_cli_compose_override_rejects_unauthenticated_as` · `test_cli_has_no_bare_as_flag`
+- `test_append_refuses_gold_prefix` · `test_claim_check_refuses_gold_prefix` (live)
+- `test_pipeline_writer_connects_as_ingest_role` · `test_app_role_cannot_read_restricted_even_with_guc` (live)
+- `test_denied_suppliers_loaded_from_denylist_not_caller` (live)
+- `test_audit_chain_verifies_after_full_run` — **integration after Stories 2 and 3**, not 4b
+  (`verify_stream` on every `doc:` and `run:` stream after the CSV fixture runs through all six
+  stages; live)
 
 **Gates at merge:** four local gates; `sql` job green with `00`–`12` applied and passed count
 raised; `docs/development.md` gains the CLI and the server-contract section.
@@ -204,8 +247,10 @@ raised; `docs/development.md` gains the CLI and the server-contract section.
 - Do not write the audit event and then the business row; the slice's order (business rows, then
   events, one commit) is the tested one, and `append_event` takes the tip under the advisory lock
   as its own statement.
-- The ingest worker connects as `procurement_ingest`; every other stage as `procurement_app`. Mixing
-  them is how a fan-out branch acquires a write it should not have (#8).
+- Every pipeline stage connects as `procurement_ingest`. Putting extract/index/detect on
+  `procurement_app` so "a fan-out branch cannot acquire a write" is how those stages lose
+  restricted rows — the RESTRICTIVE policy does not read the GUC. #8 is a GRANT on
+  `procurement_ingest` (extract lacks reducer privileges), not a role switch.
 - `Stage` gains **no** member. A seventh value breaks `sql/08`'s CHECK and the runtime constraint
   that the reducer is `detect_conflicts`.
 - `recorded_at` must be supplied by the caller from the stage's clock **once** per transaction, so

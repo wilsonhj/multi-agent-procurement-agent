@@ -1176,7 +1176,9 @@ claim's `Resolution` onto the field and lets the decision derive RESOLVED.
 parsed, so `page` is real. The stored document and its `content_hash` remain the **original
 `.docx` bytes**. `section` (heading path) is recorded on every element in every format. If
 `soffice` is absent the Docling adapter declares `PAGE_NUMBERS` as an `UNIMPLEMENTED` absence for
-Word in the conformance matrix and elements carry `page=None` — loud, never estimated.
+Word in the conformance matrix and elements carry `page=None` — loud, never estimated. The
+conversion runs in a restricted subprocess (no network, CPU/memory/time caps, throwaway profile,
+pinned version) and does not inherit the worker's database credentials.
 
 **Rejected:** estimating pages from character count (wrong pages presented as real).
 
@@ -1195,10 +1197,14 @@ immutable.
 
 1. What is persisted: the **query string** (ours) on `audit.run_event`; the **fetched page** as a
    `SourceDocument(source_uri=url, document_type=technical_documentation)` content-hashed like any
-   upload; URL, title, `retrieved_at` and `source_authority` on the claim's `SourceRef`.
+   upload, subject to P2-C10 (HTTPS-only, no private/link-local/loopback/metadata IPs after DNS
+   or redirect); URL, title, `retrieved_at` and `source_authority` on the claim's `SourceRef`.
 2. What is never persisted: provider rank, snippet, or any result metadata. `WebHit` has no field
    for them, so the rule is structural.
 3. The gold set (D-11) is never built from search results.
+4. Fetched pages inherit `access_restricted` from the gap's source document; if there is no
+   parent, they default **restricted** until a reviewer clears them. They are not stored as
+   unrestricted by default.
 
 ## D-21 — The reviewer surface is server-rendered FastAPI + Jinja2 + HTMX with Authlib OIDC (Phase 2 Q-7)
 
@@ -1206,9 +1212,14 @@ immutable.
 
 FastAPI (MIT), Jinja2 (BSD-3), HTMX (BSD-2 / 0BSD), Authlib (BSD-3), uvicorn (BSD-3), httpx
 (BSD-3, dev). Sync handlers run in FastAPI's threadpool — Decision 10 stands. No JavaScript build
-step; no client-side state of record. The session carries the OIDC `sub` and clearance claim;
-every request builds a `PrincipalContext` and every repository call goes through it. The UI never
-filters restricted rows itself; RLS does (D-15).
+step; no client-side state of record. The session carries the OIDC `sub` and the named clearance
+claim (`Settings.oidc_clearance_claim`, default `restricted_clearance`); a named reviewer
+role/group (`Settings.oidc_reviewer_role`, default `reviewer`) is required or the request is 403.
+The session cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, server-side, rotated at login.
+Every request builds a `PrincipalContext` from those validated claims only — not from
+client-supplied `denied_suppliers` — and every repository call goes through `open_transaction`,
+which loads the deny-list from the database (P2-C5). The UI never filters restricted rows
+itself; RLS does (D-15).
 
 **Rejected:** a React/Next front end (second toolchain for a workflow whose record is the
 database); Streamlit/Gradio (poor fit for OIDC sessions and a five-action validated form).
@@ -1236,7 +1247,8 @@ raises.
 
 `ParsedElement` gains four optional fields with `None`/default values: `bbox` (axis-aligned
 envelope, page points, origin top-left), `table: TableData | None` (present iff `kind == "table"`;
-`TableData(rows, header_rows, caption, merged)` with numbers rendered by `repr()`),
+`TableData(rows, header_rows, caption, merged: tuple[CellSpan, ...])` with
+`CellSpan(row, col, rowspan, colspan)` 0-based and spans `>= 1`, numbers rendered by `repr()`),
 `page_quality: float | None` (0–1; D-3's "low-quality scan" gate reads it), and
 `role: body | furniture | footnote | caption` (FR-ING-05). **Kinds stay `heading | body | table |
 figure`.** The conformance pin on `__annotations__` is updated in the same PR. No `TableElement`
@@ -1248,8 +1260,10 @@ on the element; the polygon itself lives on the OCR adapter's `recognize()` payl
 > **Status: RATIFIED 2026-09-03.** Owner: Story 1d harness.
 
 A label is a `FieldClaim` with `extractor_version="gold:<annotator>"`, `source_tier=
-system_of_record`. `commit_claims` refuses the `gold:` prefix (asserted), so the store cannot be
-polluted. Documents are **not** committed; they live under `PROCUREMENT_GOLD_CORPUS_DIR` and a
+system_of_record`. **Every write path refuses the `gold:` prefix** — `FieldClaim` construction
+outside the 1d harness, `commit_claims`, `PostgresClaimStore.append`, and a `CHECK
+(extractor_version NOT LIKE 'gold:%')` on `public.claim` (P2-C8). The 1d harness uses an
+in-memory writer only, so the store cannot be polluted. Documents are **not** committed; they live under `PROCUREMENT_GOLD_CORPUS_DIR` and a
 committed `tests/fixtures/gold/manifest.json` keys label files by `content_hash`. The gold suite
 skips without the corpus (the `PROCUREMENT_TEST_DSN` pattern) and fails on silent skip on the
 self-hosted runner. D-16's `human:` rule is untouched: a gold label is not a decision about a

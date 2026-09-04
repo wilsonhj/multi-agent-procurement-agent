@@ -99,9 +99,7 @@ def stamp_queue_hits(
     condition is resolved, so a sequential review does not leave a ghost OPEN.
     """
     involved = {
-        candidate.condition.grouping_key()
-        for left, right in pairs
-        for candidate in (left, right)
+        candidate.condition.grouping_key() for left, right in pairs for candidate in (left, right)
     }
     stamped: list[CanonicalField] = []
     for field in fields:
@@ -816,9 +814,7 @@ def review_conflict(
                 source_tier=selected.source_tier,
                 source_ref=selected.source_ref,
                 confidence=selected.confidence,
-                conflict_status=(
-                    ConflictStatus.OPEN if still_open else ConflictStatus.RESOLVED
-                ),
+                conflict_status=(ConflictStatus.OPEN if still_open else ConflictStatus.RESOLVED),
                 resolution=None if still_open else resolution,
             )
             if field.condition.grouping_key() == selected.condition.grouping_key()

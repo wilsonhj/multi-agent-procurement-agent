@@ -1073,6 +1073,7 @@ class CanonicalField(BaseModel):
         recorded = getattr(self, "resolution", None)
         return recorded is not None and _as_resolution(incoming) != recorded
 
+
 class ConflictCandidate(BaseModel):
     """One competing value for a field, as presented in the queue (FR-HITL-03)."""
 

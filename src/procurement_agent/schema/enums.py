@@ -329,7 +329,6 @@ class ResolutionAction(StrEnum):
     REQUEST_MORE_WEB_SEARCH = "request_more_web_search"
     DEFER = "defer"
 
-
     @property
     def asserts_a_value(self) -> bool:
         """Whether this action states what the field's value *is* (D-16).

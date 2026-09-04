@@ -41,7 +41,6 @@ from procurement_agent.schema import (
     ConflictCandidate,
     ConflictClass,
     ConflictQueueEntry,
-    ConflictStatus,
     DeclaredBand,
     DocumentType,
     EfficiencyWeighting,
@@ -54,6 +53,7 @@ from procurement_agent.schema import (
     SourceTier,
     ToleranceKind,
     UnencodableValueError,
+    UnresolvedStatus,
 )
 from procurement_agent.services.output import projection as projection_module
 from procurement_agent.services.output.projection import (
@@ -235,7 +235,7 @@ def synthetic_module() -> ComponentInstance:
                     source_tier=SourceTier.SYSTEM_OF_RECORD,
                     source_ref=_trina_ref(1, "Electrical Data (STC)"),
                     confidence=0.96,
-                    conflict_status=ConflictStatus.OPEN,
+                    unresolved_status=UnresolvedStatus.OPEN,
                 ),
                 CanonicalField(
                     value=655.0,
@@ -245,7 +245,7 @@ def synthetic_module() -> ComponentInstance:
                     source_tier=SourceTier.WEB_SUPPLEMENT,
                     source_ref=_trina_web_ref(),
                     confidence=0.72,
-                    conflict_status=ConflictStatus.OPEN,
+                    unresolved_status=UnresolvedStatus.OPEN,
                 ),
             ],
             # A `DeclaredBand` value, so the fixture covers the model-recursion

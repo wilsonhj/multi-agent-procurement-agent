@@ -51,6 +51,7 @@ from procurement_agent.schema import (
     SourceRef,
     SourceTier,
     ToleranceKind,
+    UnresolvedStatus,
 )
 from procurement_agent.schema.encoding import UnencodableValueError, encode_value
 from procurement_agent.services.output.projection import (
@@ -86,7 +87,11 @@ def _field(
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="doc-1"),
         confidence=confidence,
-        conflict_status=conflict_status,
+        unresolved_status=(
+            UnresolvedStatus.NONE
+            if conflict_status is ConflictStatus.RESOLVED
+            else UnresolvedStatus(conflict_status.value)
+        ),
         resolution=resolution,
     )
 

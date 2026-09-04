@@ -25,6 +25,7 @@ from procurement_agent.schema import (
     SourceRef,
     SourceTier,
     ToleranceKind,
+    UnresolvedStatus,
     WorkbookTab,
 )
 from procurement_agent.services.output import expected_tabs
@@ -110,30 +111,34 @@ def test_canonical_field_has_the_eight_spec_keys_plus_condition() -> None:
 def test_resolved_field_must_carry_its_resolution() -> None:
     """FR-HITL-06: decisions are logged with user, timestamp, before/after, rationale."""
     with pytest.raises(ValidationError):
-        CanonicalField(
-            value=650,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="doc-1"),
-            confidence=0.9,
-            conflict_status=ConflictStatus.RESOLVED,
+        CanonicalField.model_validate(
+            {
+                "value": 650,
+                "source_tier": SourceTier.SYSTEM_OF_RECORD,
+                "source_ref": SourceRef(document_id="doc-1"),
+                "confidence": 0.9,
+                "conflict_status": ConflictStatus.RESOLVED,
+            }
         )
 
 
 def test_resolved_field_accepts_a_resolution() -> None:
-    field = CanonicalField(
-        value=650,
-        source_tier=SourceTier.SYSTEM_OF_RECORD,
-        source_ref=SourceRef(document_id="doc-1"),
-        confidence=0.9,
-        conflict_status=ConflictStatus.RESOLVED,
-        resolution=Resolution(
-            action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
-            resolved_by="procurement.lead",
-            resolved_at=datetime.now(UTC),
-            rationale="Contract supersedes the web datasheet revision.",
-            value_before=655,
-            value_after=650,
-        ),
+    field = CanonicalField.model_validate(
+        {
+            "value": 650,
+            "source_tier": SourceTier.SYSTEM_OF_RECORD,
+            "source_ref": SourceRef(document_id="doc-1"),
+            "confidence": 0.9,
+            "conflict_status": ConflictStatus.RESOLVED,
+            "resolution": Resolution(
+                action=ResolutionAction.KEEP_SYSTEM_OF_RECORD,
+                resolved_by="procurement.lead",
+                resolved_at=datetime.now(UTC),
+                rationale="Contract supersedes the web datasheet revision.",
+                value_before=655,
+                value_after=650,
+            ),
+        }
     )
     # Echoing the constructor kwarg back tests pydantic, not the validator. What
     # `_resolution_matches_status` actually enforces is the *other* direction:
@@ -141,12 +146,14 @@ def test_resolved_field_accepts_a_resolution() -> None:
     # decision with no record of who made it is not auditable.
     assert field.resolution is not None
     with pytest.raises(ValidationError):
-        CanonicalField(
-            value=650,
-            source_tier=SourceTier.SYSTEM_OF_RECORD,
-            source_ref=SourceRef(document_id="doc-1"),
-            confidence=0.9,
-            conflict_status=ConflictStatus.RESOLVED,
+        CanonicalField.model_validate(
+            {
+                "value": 650,
+                "source_tier": SourceTier.SYSTEM_OF_RECORD,
+                "source_ref": SourceRef(document_id="doc-1"),
+                "confidence": 0.9,
+                "conflict_status": ConflictStatus.RESOLVED,
+            }
         )
 
 
@@ -252,13 +259,15 @@ def test_a_resolved_field_cannot_have_its_resolution_cleared() -> None:
     with no record of who made it - and a validator that checked only one field's
     assignment would catch only one of them.
     """
-    field = CanonicalField(
-        value=650,
-        source_tier=SourceTier.SYSTEM_OF_RECORD,
-        source_ref=SourceRef(document_id="doc-1"),
-        confidence=0.9,
-        conflict_status=ConflictStatus.RESOLVED,
-        resolution=_resolution("procurement.lead"),
+    field = CanonicalField.model_validate(
+        {
+            "value": 650,
+            "source_tier": SourceTier.SYSTEM_OF_RECORD,
+            "source_ref": SourceRef(document_id="doc-1"),
+            "confidence": 0.9,
+            "conflict_status": ConflictStatus.RESOLVED,
+            "resolution": _resolution("procurement.lead"),
+        }
     )
     with pytest.raises(ValueError):
         field.resolution = None
@@ -297,7 +306,7 @@ def _field(value: object, status: ConflictStatus, temp: float | None = None) -> 
         source_tier=SourceTier.SYSTEM_OF_RECORD,
         source_ref=SourceRef(document_id="ds-1"),
         confidence=0.9,
-        conflict_status=status,
+        unresolved_status=UnresolvedStatus(status.value),
     )
 
 

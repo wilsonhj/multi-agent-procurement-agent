@@ -60,10 +60,11 @@ on-contract key.
 ```python
 @dataclass(frozen=True)
 class CellSpan:
-    row: int       # 0-based origin of the merged region
+    row: int  # 0-based origin of the merged region
     col: int
-    rowspan: int   # >= 1
-    colspan: int   # >= 1
+    rowspan: int  # >= 1
+    colspan: int  # >= 1
+
 
 @dataclass(frozen=True)
 class TableData:

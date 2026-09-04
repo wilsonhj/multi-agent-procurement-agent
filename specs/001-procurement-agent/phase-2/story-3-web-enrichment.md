@@ -60,8 +60,9 @@ records the requester on the run event.
 class WebHit:
     url: str
     title: str | None
-    retrieved_at: datetime      # tz-aware
+    retrieved_at: datetime  # tz-aware
     provider: str
+
 
 class WebSearchPort(Protocol):
     def search(self, query: str, *, limit: int) -> list[WebHit]: ...

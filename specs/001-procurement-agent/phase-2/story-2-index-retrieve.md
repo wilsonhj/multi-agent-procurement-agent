@@ -47,11 +47,11 @@ recorded responses and have run once against real services (recorded in `docs/cu
 ```python
 @dataclass(frozen=True)
 class ChunkRecord:
-    chunk_id: str            # deterministic: sha256(document_id, kind, table_id or None, ordinal)[:32]
+    chunk_id: str  # deterministic: sha256(document_id, kind, table_id or None, ordinal)[:32]
     document_id: str
     kind: Literal["prose", "table_full", "table_row", "table_summary"]
-    text: str                # what is embedded, AFTER the context prefix is prepended
-    body: str                # the chunk text without prefix (stored as chunk_text)
+    text: str  # what is embedded, AFTER the context prefix is prepended
+    body: str  # the chunk text without prefix (stored as chunk_text)
     context_prefix: str
     page: int | None
     section: str | None
@@ -88,10 +88,16 @@ stay conformant and the in-memory reference is trivial:
 
 ```python
 class LexicalSearchPort(Protocol):
-    def search_lexical(self, query: str, *, limit: int,
-                       category: ComponentCategory | None = None, supplier: str | None = None,
-                       source_tier: SourceTier | None = None,
-                       allowed_document_ids: set[str] | None = None) -> list[RetrievedChunk]: ...
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        limit: int,
+        category: ComponentCategory | None = None,
+        supplier: str | None = None,
+        source_tier: SourceTier | None = None,
+        allowed_document_ids: set[str] | None = None,
+    ) -> list[RetrievedChunk]: ...
 ```
 
 Same `allowed_document_ids` rule as the vector port: `None` returns nothing. Capabilities:

@@ -1262,10 +1262,16 @@ conflict.
 
 ```python
 class LexicalSearchPort(Protocol):
-    def search_lexical(self, query: str, *, limit: int,
-                       category: ComponentCategory | None = None, supplier: str | None = None,
-                       source_tier: SourceTier | None = None,
-                       allowed_document_ids: set[str] | None = None) -> list[RetrievedChunk]: ...
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        limit: int,
+        category: ComponentCategory | None = None,
+        supplier: str | None = None,
+        source_tier: SourceTier | None = None,
+        allowed_document_ids: set[str] | None = None,
+    ) -> list[RetrievedChunk]: ...
 ```
 
 `allowed_document_ids=None` returns nothing — the `VectorStorePort` rule, unchanged. Capabilities

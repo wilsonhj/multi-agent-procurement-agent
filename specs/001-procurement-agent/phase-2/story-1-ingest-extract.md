@@ -236,6 +236,15 @@ extractor and old claims are superseded, never edited. `source_tier=system_of_re
 `confidence` from C.6. Claims go to the store through `commit_claims` (the reducer) — never a
 direct table write from a worker.
 
+P2-C8's four prefixes, pinned by Track 0 and consumed here and in Stories 3, 1d and 5:
+
+| Prefix | Writer | Stored? |
+|---|---|---|
+| `"<pipeline>@<semver-or-hash>"` | 1c (this section) | yes |
+| `"human:<oidc-sub>"` | Story 5, per D-16 | yes, and requires `resolution_id` (P2-C6) |
+| `"web:<provider>@<version>"` | Story 3 | yes |
+| `"gold:<annotator>"` | 1d labels | **never** committed to a claim store (D-24) |
+
 ### C.6 · Cold-start confidence and `threshold_for()` (B.7, B.10, A-11)
 
 `services/confidence/score.py`: rule-based fusion of grounding (verbatim/near-verbatim match in

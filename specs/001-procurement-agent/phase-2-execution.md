@@ -46,7 +46,7 @@ artifact dependency, not a scheduling preference. Merge ordering is stated below
 
 | # | Track | Story spec | Needs | Team | Owns these paths |
 |---|---|---|---|---|---|
-| **0** | Phase 2 contract freeze — the nine additive contracts and their fixtures (§ Contracts below) | this file § Contracts | — | 1 | `src/procurement_agent/ports/__init__.py`, `adapters/parsed_element.py`, `adapters/capabilities.py`, `adapters/registry.py`, `schema/registry.py` (optional `web_query_template` only), `schema/` (`PrincipalContext` type only), `tests/port_contracts/`, `tests/fixtures/parsed/` (new), `tests/fixtures/chunks/` (new), `tests/fixtures/README.md`, `specs/001-procurement-agent/phase-2/*.md` (owner of record) |
+| **0** | Phase 2 contract freeze — the nine additive contracts and their fixtures (§ Contracts below) | this file § Contracts + § Track 0 Verify | — | 1 | `src/procurement_agent/ports/__init__.py`, `adapters/parsed_element.py`, `adapters/capabilities.py`, `adapters/registry.py`, `adapters/vector_store/__init__.py` (`ChunkMetadata` keys only), `schema/registry.py` (optional `web_query_template` only), `schema/principal.py` (`PrincipalContext` only), `schema/chunk.py` (`ChunkRecord` only), `schema/__init__.py` (re-exports), `services/indexing/__init__.py` (`chunk()` return type only), `sql/README.md` (apply glob + reservation rows `10`–`14` only), `tests/test_sql_schema.py` / `tests/test_sql_behaviour.py` / `tests/test_audit_live.py` (apply glob only), `tests/port_contracts/`, `tests/fixtures/parsed/` (new), `tests/fixtures/chunks/` (new), `tests/fixtures/README.md`, `docs/current-state.md` (P2-A-8 baseline count), `specs/001-procurement-agent/plan.md` (P2-A-18 Decision 4 / parse extra), P2-A-24 ports-count sweep files, `specs/001-procurement-agent/phase-2/*.md` (owner of record) |
 | **1a** | Parser router, spreadsheet path, Docling PDF/Word path, per-page audit, classification, ACL label at ingest | [story-1](phase-2/story-1-ingest-extract.md) §A | 0 | 2 | `services/ingestion/`, `adapters/parser/` (new backends), `tests/fixtures/ingestion/`, `tests/test_ingestion*.py` |
 | **1b** | OCR adapter (PaddleOCR-VL-1.6 on vLLM) and degraded RapidOCR tier | [story-1](phase-2/story-1-ingest-extract.md) §B | 0 | 2 | `adapters/ocr/` |
 | **1c** | Schema-constrained extraction, cross-read, plausibility gates, cold-start confidence, `threshold_for()` | [story-1](phase-2/story-1-ingest-extract.md) §C | 0, 1a fixture | 3 | `services/extraction/` (new), `services/confidence/`, `adapters/llm/` |
@@ -61,7 +61,12 @@ artifact dependency, not a scheduling preference. Merge ordering is stated below
 
 `sql/` numbers are reserved by Track 0 in `sql/README.md` so parallel worktrees cannot collide:
 `10`–`12` Story 4, `13` Story 7 deny-list (applied), `14` reserved for outcome B `restricted_group`,
-`15+` unassigned (P2-A-21).
+`15+` unassigned (P2-A-21). **The apply glob must match those names.** Today's `sql/0*.sql` (and
+the same glob in `tests/test_sql_schema.py`, `tests/test_sql_behaviour.py`, `tests/test_audit_live.py`)
+does **not** match `10_*.sql`. Track 0 changes every copy to a two-digit glob
+(`[0-9][0-9]_*.sql` or equivalent) in the same PR as the reservation rows. Track 0 does **not**
+write `sql/10`–`14`; 4a and 7 do. Until those files exist the glob change is a no-op on the
+`00`–`09` set.
 
 **Start order** — 0 first and alone; it is short (days, not weeks) because every contract in it
 is additive. Then 1a, 1b, 1d, 4a, 6 and the human halves of 1d and 7 begin immediately. 1c waits
@@ -73,6 +78,9 @@ primitives; 3's query log needs 4a's `audit.run_event` (P2-C7: `sql/11`–`12` a
 human artifacts merge whenever they exist. 4a merges before the parser tracks even though they do
 not depend on it, because every later track's live tests use its connection fixture and landing it
 early stops three teams from writing three connection helpers.
+
+**Counts, kept separate:** eight **ports** (Decision 10 after D-25/D-26), nine **P2-C contracts**,
+eight **agent teams**, twelve **tracks**.
 
 **Team assignments.** Eight agent teams plus two human owners (gold set; NDA/roster facts).
 Team 1 holds Track 0 and is contract reviewer for every PR that touches `ports/`, `schema/` or
@@ -89,22 +97,54 @@ fields or adds a new Protocol beside the six, so no existing test breaks except 
 assert the old shape, and those are updated in the same PR. Each is specified in full in the
 story that consumes it.
 
-Track 0 writes the **Python type, the fixture and the pin** for every row. P2-C5's
-`PrincipalContext` type lives in `schema/` so 1a can compile before 4a merges; 4a writes
-`services/store/` and the GUC rule. P2-C6/C7's SQL (`sql/10`–`12`) and `audit.append_run_event`
-are 4a deliverables against shapes frozen here.
+Track 0 writes the **Python type, the fixture and the pin** for every row. Module homes are
+load-bearing (the same class of defect as P2-A-28):
+
+- P2-C1 — `ports.ParsedElement` + `adapters/parsed_element.py` conforming in the same PR
+- P2-C2 — `ChunkRecord` in `schema/chunk.py`; `ChunkMetadata` keys in `adapters/vector_store/__init__.py`;
+  `chunk()` return type in `services/indexing/__init__.py` only (still raises). Track 2 owns the rest of
+  `services/indexing/`.
+- P2-C3 / P2-C4 — new Protocols in `ports/__init__.py` plus in-memory references
+- P2-C5 — `PrincipalContext` in `schema/principal.py`, re-exported from `schema/`. 1a can compile
+  before 4a merges. **4a does not define a second class.** 4a writes `open_transaction` /
+  `SET LOCAL app.allow_restricted` in `services/store/principal.py` (GUC grep pin stays there).
+- P2-C6/C7 — shapes frozen here (CHECK text, event types, glob). SQL files and
+  `audit.append_run_event` are 4a deliverables.
+- P2-C8 — prefix pin (constant or docstring test); no claim writes
+- P2-C9 — optional field on `FieldSpec` in `schema/registry.py`
 
 | ID | Contract | Consumers | Where specified |
 |---|---|---|---|
 | **P2-C1** | `ParsedElement` gains optional `bbox`, `table: TableData \| None`, `page_quality: float \| None`, `role` (body/furniture/footnote/caption). Kinds stay four — cells live inside `TableData`, not as a new kind. The conformance pin on `ParsedElement.__annotations__` is updated to the new set in the same PR | 1a, 1b, 1c, 2 | [story-1 §A.0](phase-2/story-1-ingest-extract.md) |
-| **P2-C2** | `ChunkRecord` as in story-2 §1: `chunk_id`, `document_id`, `kind` ∈ prose/table_full/table_row/table_summary, `text`, `body`, `context_prefix`, `page`, `section`, `table_id`, `ordinal`. Replaces `chunk() -> list[str]`; `ChunkMetadata` gains `chunk_kind`, `table_id`, `section` | 2, 4a, 6 | [story-2 §1](phase-2/story-2-index-retrieve.md) |
+| **P2-C2** | `ChunkRecord` in `schema/chunk.py` as in story-2 §1: `chunk_id`, `document_id`, `kind` ∈ prose/table_full/table_row/table_summary, `text`, `body`, `context_prefix`, `page`, `section`, `table_id`, `ordinal`. Replaces `chunk() -> list[str]`; `ChunkMetadata` in `adapters/vector_store/__init__.py` gains `chunk_kind`, `table_id`, `section` | 2, 4a, 6 | [story-2 §1](phase-2/story-2-index-retrieve.md) |
 | **P2-C3** | `LexicalSearchPort` — a seventh Protocol beside the six, with `search_lexical(query, *, limit, filters..., allowed_document_ids)`; in-memory reference + capability row; `allowed_document_ids=None` returns nothing, same rule as `VectorStorePort` | 2 | [story-2 §3](phase-2/story-2-index-retrieve.md) |
 | **P2-C4** | `WebSearchPort` — eighth Protocol: `search(query, *, limit) -> list[WebHit]` where `WebHit` is `url`, `title`, `retrieved_at`, `provider`; no snippet, no rank persisted (D-20); in-memory reference | 3 | [story-3 §2](phase-2/story-3-web-enrichment.md) |
-| **P2-C5** | `PrincipalContext(subject: str, cleared_for_restricted: bool, denied_suppliers: frozenset[str])` and the rule that every store connection is opened **through** a principal; `SET LOCAL app.allow_restricted` is set from it and nowhere else | 2, 3, 4a, 4b, 5, 7 | [story-4 §A.1](phase-2/story-4-persistence-runner.md) |
-| **P2-C6** | Claim persistence of D-16: `sql/10_claim_resolution_link.sql` adds `claim.resolution_id` (nullable FK) with `CHECK ((extractor_version LIKE 'human:%') = (resolution_id IS NOT NULL))`; insert order resolution → human claim | 4a, 5 | [story-4 §A.3](phase-2/story-4-persistence-runner.md) |
-| **P2-C7** | `audit.run_event` (`sql/11`) per D-13 and the taxonomy amendment (`sql/12`) removing `web_search` from `audit.event` and dropping `recorded_at`'s DEFAULT; `audit.append_run_event()` | 3, 4b, 5 | [story-4 §A.4](phase-2/story-4-persistence-runner.md) |
-| **P2-C8** | `extractor_version` naming: `"<pipeline>@<semver-or-hash>"` for machines, `"human:<oidc-sub>"` per D-16, `"web:<provider>@<version>"` for Story 3, `"gold:<annotator>"` for labels that are never committed to a claim store | 1c, 3, 1d, 5 | [story-1 §C.5](phase-2/story-1-ingest-extract.md) |
+| **P2-C5** | `PrincipalContext` in `schema/principal.py`: `(subject: str, cleared_for_restricted: bool, denied_suppliers: frozenset[str])`. Every store connection is opened **through** a principal. `SET LOCAL app.allow_restricted` is set from it in `services/store/principal.py` and nowhere else | 2, 3, 4a, 4b, 5, 7 | type: this table; GUC: [story-4 §A.1](phase-2/story-4-persistence-runner.md) |
+| **P2-C6** | Claim persistence of D-16: `sql/10_claim_resolution_link.sql` adds `claim.resolution_id` (nullable FK) with `CHECK ((extractor_version LIKE 'human:%') = (resolution_id IS NOT NULL))`; insert order resolution → human claim. Track 0 freezes the CHECK text and the apply glob; 4a writes the file | 4a, 5 | [story-4 §A.3](phase-2/story-4-persistence-runner.md) |
+| **P2-C7** | `audit.run_event` (`sql/11`) per D-13 and the taxonomy amendment (`sql/12`) removing `web_search` from `audit.event` and dropping `recorded_at`'s DEFAULT; `audit.append_run_event()`. Track 0 freezes the shape and glob; 4a writes the files and the function | 3, 4b, 5 | [story-4 §A.4](phase-2/story-4-persistence-runner.md) |
+| **P2-C8** | `extractor_version` naming: `"<pipeline>@<semver-or-hash>"` for machines, `"human:<oidc-sub>"` per D-16, `"web:<provider>@<version>"` for Story 3, `"gold:<annotator>"` for labels that are never committed to a claim store | 1c, 3, 1d, 5 | [story-1 §C.5](phase-2/story-1-ingest-extract.md) (all four prefixes) |
 | **P2-C9** | `FieldSpec.web_query_template: str \| None = None` — silence is the default; Story 3 fills templates for fields worth searching; no parallel query-key on another type | 3 | [story-3 §1](phase-2/story-3-web-enrichment.md) |
+
+### Track 0 Verify
+
+Track 0 has no story file; **this list is its acceptance tests** (dispatch step 2). Adding tests is
+fine; removing one is a spec change. Named:
+
+- **P2-C1** `test_parsed_element_annotations_include_optional_bbox_table_page_quality_role` — pin equals `{kind, text, page, bbox, table, page_quality, role}`; `TextElement` in `adapters/parsed_element.py` conforms in the same PR
+- **P2-C2** `test_chunk_record_fields` — `ChunkRecord` imported from `procurement_agent.schema`; fields as story-2 §1. `test_chunk_metadata_gains_chunk_kind_table_id_section`. `test_chunk_returns_list_of_chunk_record` — signature pin; still raises
+- **P2-C3** `test_lexical_search_port_none_allowlist_returns_nothing` — seventh Protocol; in-memory reference + capability row; `allowed_document_ids=None` → `[]`
+- **P2-C4** `test_web_hit_has_no_snippet_or_rank` — eighth Protocol; in-memory reference; fields `url`, `title`, `retrieved_at`, `provider` only
+- **P2-C5** `test_principal_context_is_the_schema_type` — imported from `procurement_agent.schema`; a grep pin asserts the class body is not duplicated under `services/`
+- **P2-C6 / P2-C7** `test_sql_readme_reserves_10_through_14`; `test_sql_apply_glob_is_two_digit` — `[0-9][0-9]_*.sql` (or equivalent matching `10_`…`14_`) in `sql/README.md` and the three test globs. `test_the_expected_files_are_all_present` still lists `00`–`09` until 4a/7 add files. Track 0 does **not** write `sql/10`–`12`
+- **P2-C8** `test_extractor_version_prefixes` — the four prefixes are pinned (constant or docstring test); no claim writes
+- **P2-C9** `test_fieldspec_has_optional_web_query_template` — annotation `str | None`, default `None`; no second query-key type
+- **P2-A-8** `docs/current-state.md` baseline is the post-#36 count (1039 passed / 42 skipped / 4 xfailed)
+- **P2-A-18** `plan.md` Decision 4 names pypdfium2, not PyMuPDF; the Word path names LibreOffice conversion (D-19)
+- **P2-A-24** grep pin: Decision 10's port count reads **eight** in the files that register listed; historical Phase 1 narrative may quote "six" as what landed then, but `ports/__init__.py`, the conformance suite, ADR-001's current count, and `docs/current-state.md` must not
+
+Fixtures in the hand-off table (parsed + chunks) are committed in this PR.
+
+**Gates at merge:** four local gates; existing `sql` job still green (glob change is a no-op until `10` exists).
 
 **Why these are frozen now and not discovered in-track.** Three of them (`P2-C1`, `P2-C2`,
 `P2-C3`) are expressibility gaps the Phase 1 inventory found in the ports: `ParsedElement` cannot
@@ -166,8 +206,9 @@ editing** — measured in this project's history to produce untrustworthy signal
 
 1. Read the story spec and every D-/A-/Q- ID it cites. If a cited ID contradicts the spec, stop
    and file a `P2-A-n` in [analysis.md](phase-2/analysis.md) rather than picking one.
-2. Write the failing tests named in the story's **Verify** section first (TDD red). A story's
-   Verify list is its acceptance test list; adding tests is fine, removing one is a spec change.
+2. Write the failing tests named in the story's **Verify** section first (TDD red). Track 0's
+   Verify is [this file](#track-0-verify). A story's Verify list is its acceptance test list;
+   adding tests is fine; removing one is a spec change.
 3. Implement to green. Run all four gates locally: `uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`, `uv run mypy --strict`. If `sql/` was touched, run the live
    suites against a disposable PostgreSQL with `PROCUREMENT_TEST_DSN` set and confirm the
@@ -242,10 +283,18 @@ that shape this plan:
 
 ### Path collisions
 
-- **Track 0 and Tracks 1a/1b/2 on `adapters/`** — 0 owns `parsed_element.py`, `capabilities.py`,
-  `registry.py`; the others add backend files only. Registering a new backend edits
-  `registry.py`, which is 0's file: **1a, 1b, 2 and 3 append entries to `registry.py` in their own
-  PRs after 0 merges**, one `AdapterEntry` block each, no other edits.
+- **Track 0 and Tracks 1a/1b/2/3 on `adapters/`** — 0 owns `parsed_element.py`, `capabilities.py`,
+  `registry.py`, and `vector_store/__init__.py` (`ChunkMetadata` keys only); the others add backend
+  files only. Registering a new backend edits `registry.py`, which is 0's file: **1a, 1b, 2 and 3
+  append entries to `registry.py` in their own PRs after 0 merges**, one `AdapterEntry` block each,
+  no other edits.
+- **Track 0 and Track 2 on `services/indexing/__init__.py`** — 0 changes `chunk()`'s return type to
+  `list[ChunkRecord]` (still raises); 2 implements the body and the rest of the package.
+- **Track 0 and Track 2 on `services/indexing/__init__.py`** — 0 changes `chunk()`'s return type to
+  `list[ChunkRecord]` (still raises); 2 implements the body and the rest of the package.
+- **Track 0 and Track 4a on `sql/README.md` and the apply globs** — 0 lands the two-digit glob and
+  reservation rows `10`–`14`; 4a adds the `10`–`12` file-description rows when it writes the SQL
+  and extends `test_the_expected_files_are_all_present`. 7 adds the `13` row the same way.
 - **Tracks 4a and 6 on `.github/workflows/ci.yml`** — 4a edits the `sql` job; 6 adds a `workbook`
   job. Disjoint hunks; merge 4a first.
 - **Tracks 1c and 3 on `services/claims/`** — neither owns it. Both produce claims through the

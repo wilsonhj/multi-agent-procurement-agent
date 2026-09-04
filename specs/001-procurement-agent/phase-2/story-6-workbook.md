@@ -110,7 +110,9 @@ both halves are recorded.
 in days, candidate count, explanation, **deep link** `=HYPERLINK("<ui_base>/conflicts/<entry_id>",
 "Review")` (D-10 mitigation; `ui_base` from settings, blank → no formula), and a `=HYPERLINK(
 "#'<Tab>'!<cell>", "Go to cell")` computed with `MATCH` over the tab's Parameter column so the
-link survives a sort. Three trailing annotation columns (Status / Owner / Note) are unlocked;
+link survives a sort. **Which column `MATCH` searches depends on orientation** (see §6):
+Parameter (`A`) only for `suppliers_as_rows=False`; Field for the default `True` long-form.
+Three trailing annotation columns (Status / Owner / Note) are unlocked;
 the sheet is protected with the D-10 note in row 1.
 
 **Sources & Provenance**: one row per `SourceDocument` (id, type, URI, vintage, ingested,

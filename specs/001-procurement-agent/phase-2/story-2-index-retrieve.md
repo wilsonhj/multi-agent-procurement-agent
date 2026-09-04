@@ -42,7 +42,7 @@ recorded responses and have run once against real services (recorded in `docs/cu
 
 ---
 
-## 1 · P2-C2 — `ChunkRecord` (Track 0 writes; this story consumes)
+## 1 · P2-C2 — `ChunkRecord` (Track 0 writes `schema/chunk.py`; this story consumes)
 
 ```python
 @dataclass(frozen=True)
@@ -149,10 +149,12 @@ def retrieve(query, *, embedder, store, lexical, reranker, principal, limit=10, 
 ```
 
 Dense top-50 and lexical top-50 → RRF k=60 → rerank → `limit`. **`allowed_document_ids` is
-required at the service.** `None` (and omitting it) returns `[]` — the port rule, unchanged.
-Callers that want the principal's entitlement pass `DocumentRepository.visible_ids(principal)`
-explicitly. There is no default-to-visible: that would make a forgotten argument return
-restricted-and-cleared documents and break AC-8's "omit nothing" reading.
+required at the service (no default).** Pass a `set` or explicit `None`. `None` returns `[]` —
+the port rule, unchanged. Omitting the keyword is a `TypeError`; there is no omitted-argument
+path. Callers that want the principal's entitlement pass
+`DocumentRepository.visible_ids(principal)` explicitly. There is no default-to-visible: that
+would make a forgotten argument return restricted-and-cleared documents and break AC-8's
+"omit nothing" reading.
 
 ## 6 · Access control (Decision 3c, D-15, AC-8) — the live tests
 

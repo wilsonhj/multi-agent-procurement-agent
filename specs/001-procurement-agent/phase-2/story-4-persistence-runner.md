@@ -1,7 +1,7 @@
 # Story 4 — General persistence and the runner (C8, WP-I, WP-H remainder)
 
 **Tracks:** 4a repository layer and `sql/10`–`12` · 4b runner and CLI · **Team:** 6
-**Needs:** Track 0 (P2-C5, P2-C6, P2-C7) · 4b needs 4a · **Status:** proposed 2026-09-03
+**Needs:** Track 0 (P2-C5 type in `schema/`; P2-C6/C7 shapes and apply-glob only — this track writes `sql/10`–`12` and `append_run_event`) · 4b needs 4a · **Status:** proposed 2026-09-03
 
 **Story.** Every stage of the pipeline — ingest, extract, index, enrich, detect conflicts,
 compose — runs as a job a worker claims with `FOR UPDATE SKIP LOCKED`, is idempotent under
@@ -45,26 +45,29 @@ stage refuses above the gate and proceeds with a recorded `--accept-incomplete` 
 
 ## A — Track 4a: repository layer and DDL additions
 
-### A.1 · P2-C5 — `PrincipalContext` and connections (`services/store/principal.py`, `connection.py`)
+### A.1 · P2-C5 — connections (`services/store/principal.py`, `connection.py`)
+
+Track 0 freezes `PrincipalContext` in `schema/principal.py` and re-exports it from
+`procurement_agent.schema`. This story **imports that type**; it does not define a second class.
 
 ```python
-@dataclass(frozen=True)
-class PrincipalContext:
-    subject: str                          # OIDC `sub` (D-12a); "system:<worker-id>" for workers
-    cleared_for_restricted: bool
-    denied_suppliers: frozenset[str] = frozenset()   # Story 7 outcome 2 hook; empty today
+from procurement_agent.schema import PrincipalContext
 
 @contextmanager
-def open_transaction(settings, principal) -> Iterator[psycopg.Connection]:
+def open_transaction(settings, principal: PrincipalContext) -> Iterator[psycopg.Connection]:
     # connect as procurement_app (or procurement_ingest for the ingest stage), autocommit off,
     # SET LOCAL app.allow_restricted = 'true' iff principal.cleared_for_restricted,
     # yield; commit on success; rollback on any exception.
 ```
 
+`denied_suppliers` is the Story 7 **outcome C** recusal hook (the deny-list); empty until that
+story. Outcome B is `restricted_group` / `sql/14`, not this field.
+
 **The GUC is set here and nowhere else.** A grep test asserts `app.allow_restricted` appears in
-exactly one Python module. Workers run as `system:` principals with `cleared_for_restricted=True`
-— they must see restricted documents to process them; RLS protects *readers*, and workers are not
-readers. Reviewer and UI connections come from Story 5 with the reviewer's clearance.
+exactly one Python module (`services/store/principal.py`). Workers run as `system:` principals with
+`cleared_for_restricted=True` — they must see restricted documents to process them; RLS protects
+*readers*, and workers are not readers. Reviewer and UI connections come from Story 5 with the
+reviewer's clearance.
 
 ### A.2 · Repositories (`services/store/*.py`) — thin, SQL-explicit, no ORM
 
@@ -112,7 +115,8 @@ verifies both stream kinds. The stream CHECK on `audit.event` is **not** widened
 - `test_expired_lease_is_reclaimable` · `test_reopen_refused_at_three`.
 - `test_run_event_chain_verifies` · `test_event_table_refuses_web_search_after_12`.
 - `test_recorded_at_has_no_default_after_12`.
-- CI `sql` job applies `00`–`12` and fails on silent skip exactly as today.
+- CI `sql` job applies `00`–`12` via the two-digit glob Track 0 froze, and fails on silent skip
+  exactly as today.
 
 ---
 

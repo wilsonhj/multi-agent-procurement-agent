@@ -11,7 +11,7 @@ this plan covers it) · **Ratified → D-n** (folded into `clarifications.md` on
 **Recorded** (a fact to know, no action).
 
 **Re-analysed 2026-09-03 after the Q-5 – Q-16 ratification.** P2-A-24 – P2-A-27 were added by that pass.
-P2-A-28 and the P2-A-20 / P2-A-24 evidence corrections were added 2026-09-04 after review of PR #40.
+P2-A-28 – P2-A-30 were added 2026-09-04 after review of PR #40 (`8be7c4b` and follow-ups).
 
 | ID | Finding | Evidence | Owner | Status |
 |---|---|---|---|---|
@@ -35,7 +35,7 @@ P2-A-28 and the P2-A-20 / P2-A-24 evidence corrections were added 2026-09-04 aft
 | **P2-A-18** | `plan.md` Decision 4's per-page audit compares against "the raw PyMuPDF text count"; PyMuPDF is AGPL and was removed from `pyproject` with pypdfium2 named as the fallback | `plan.md` Decision 4; `pyproject.toml` parse extra comment | Story 1a | Decided — pypdfium2; Track 0's docs sweep corrects the plan's sentence |
 | **P2-A-19** | CI runs `pgvector/pgvector:0.8.6-pg16`; `plan.md`'s technical context says PostgreSQL 18 + pgvector 0.8.5. Nothing in `sql/` needs 17+ features today | `.github/workflows/ci.yml`; `plan.md` L18 | Recorded | Recorded — the first PG18-only feature must bump the CI image in the same PR |
 | **P2-A-20** | Phase 1's stub `ingest()` returns `tuple[SourceDocument, list[ComponentInstance]]`; C8 says components are projections over claims, and agent-topology's `extract` fan-out unit is document × category, not document | `services/ingestion/__init__.py` L35–52; `tasks.md` C8 invariant | Story 1a | Decided — `ingest()` returns `IngestResult(document, elements, parse_events)`; extraction is its own stage |
-| **P2-A-21** | Story 7 applies `sql/13_access_denylist.sql` (outcome C, empty) and keeps `restricted_group` in `sql/proposals/`. Adopting outcome B must not reuse 13 | phase-2-execution.md tracks table; story-7 §2 | Track 0 | Decided — Track 0 reserves `10`–`12` Story 4, `13` deny-list, `14` outcome B, `15+` unassigned; `sql/proposals/` is outside the apply order |
+| **P2-A-21** | Story 7 applies `sql/13_access_denylist.sql` (outcome C, empty) and keeps `restricted_group` in `sql/proposals/`. Adopting outcome B must not reuse 13 | phase-2-execution.md tracks table; story-7 §2 | Track 0 | Decided — Track 0 reserves `10`–`12` Story 4, `13` deny-list, `14` outcome B, `15+` unassigned, **and** changes the apply glob from `0*.sql` to two-digit (`[0-9][0-9]_*.sql`) so `10_`+ is not a silent no-op; `sql/proposals/` is outside the apply order |
 | **P2-A-22** | `Settings.compose_gate_threshold` is `le=HIGH` so `CRITICAL` cannot disable the gate; Story 4's compose handler must not add an env override that bypasses it, and `--accept-incomplete` is a **recorded** decision, not a threshold change | `config.py`; Decision 2 | Story 4b | Recorded — asserted by the existing `test_settings_bounds` and Story 4's `test_accept_incomplete_records_override_run_event` |
 | **P2-A-23** | The verification pass of 2026-09-03 found the vertical slice's `persist_vertical_slice` appends events in a loop over `audit.append_event`, not via `write_and_append_event`. Both are correct; Story 4's repositories follow the slice's multi-event pattern, and `write_and_append_event` stays as the single-event primitive | `services/vertical_slice.py` L355–366 | Recorded | Recorded — no change |
 | **P2-A-24** | **"Six ports" is stated in more than eleven places** — `plan.md` Decision 10 heading, ADR-001 (two section hits), `docs/current-state.md` (twice), `docs/requirements-traceability.md` NFR-04, `adapters/registry.py`, `adapters/__init__.py`, both `tests/port_contracts/*` module docstrings, **`ports/__init__.py` ("Six interfaces")**, **`phase-1-execution.md`**, **`analysis.md` A-20**. D-25 and D-26 make it **eight**. Phase 1 Track 0's lesson: sweep for meaning, not filenames | grep `six port\|six Protocol\|Six Protocol\|Six interface` on 2026-09-04 | Track 0 | Open — the sweep is part of the P2-C3/P2-C4 PR; a grep test pins the count at zero afterwards |
@@ -43,6 +43,8 @@ P2-A-28 and the P2-A-20 / P2-A-24 evidence corrections were added 2026-09-04 aft
 | **P2-A-26** | D-16's cost note still read "WP-H/WP-F own that migration" after D-27 assigned it to Story 4a | D-16 "What it costs" | Done | Recorded — D-16 now names Story 4a only |
 | **P2-A-27** | `.env.example` has `PROCUREMENT_LLM_MODEL=` blank; D-22 names a default. Same for every setting the ratified decisions introduce (`ocr_*`, `reranker_*`, `web_search_provider`, `oidc_*`, `classification_threshold`, `access_review_max_age_days`, `PROCUREMENT_GOLD_CORPUS_DIR`) | `.env.example`; D-19..D-30 | each story | Open — folded into P2-A-7; each story's PR adds its lines with the ratified default as the example value |
 | **P2-A-28** | Story 3 required Track 0 to add `FieldSpec.web_query_template`, but the original eight contracts and Track 0's path list omitted `schema/registry.py`. Two teams would have invented two keys | story-3 §1 vs phase-2-execution.md contracts table (pre-P2-C9) | Track 0 | **Decided (P2-C9)** — optional field, default `None`; Story 3 fills templates |
+| **P2-A-29** | `PrincipalContext` was specified in two homes: Track 0 `schema/` vs story-4 §A.1 `services/store/principal.py` | phase-2-execution.md Track 0 owns; story-4 A.1 at 8be7c4b | Track 0 + 4a | **Decided** — type in `schema/principal.py`; 4a imports it and owns only `open_transaction` / the GUC |
+| **P2-A-30** | `sql/0*.sql` (README + three test globs) does not match `10_*.sql`–`14_*.sql`, so reserved Phase 2 files would never apply | `sql/README.md` apply loop; `tests/test_sql_schema.py` `ALL_FILES`; live apply loops | Track 0 | **Decided** — two-digit glob in the Track 0 PR; 4a/7 add files against it |
 
 ## Coverage check against the seven stories
 
@@ -69,4 +71,5 @@ team); D-4 threshold tuning (needs the gold set); `sql/` migration tooling.
   an enum `repr()` in hashed order, a hand-rolled JCS, or pvlib's bundled CEC data.
 - No story edits `tests/fixtures/workbooks/two-supplier-pv-store.json` except Story 6's single
   structural re-baseline (Q-15), which the story requires to be reviewed as "one added key".
-- No story writes `app.allow_restricted` outside `services/store/principal.py`.
+- No story writes `app.allow_restricted` outside `services/store/principal.py` (the type
+  `PrincipalContext` lives in `schema/`; only the GUC call lives in `store/`).

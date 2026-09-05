@@ -1,8 +1,7 @@
 """`OCRPort` implementations — FR-ING-04.
 
-The fallback for scanned PDFs and images. Note that one clause of FR-ING-04
-cannot be met through this port as `ports` currently declares it: see
-`adapters.UNEXPRESSIBLE_BOUNDING_BOXES`.
+The fallback for scanned PDFs and images. `ParsedElement.bbox` is the FR-ING-04
+bounding-box member; a recogniser that retains boxes declares them there.
 """
 
 from __future__ import annotations

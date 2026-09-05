@@ -27,7 +27,16 @@ from ...schema import ComponentCategory, SourceTier
 __all__ = ["ChunkMetadata", "VectorStoreSamples"]
 
 
-class ChunkMetadata(TypedDict):
+class _RequiredChunkMetadata(TypedDict):
+    document_id: str
+    text: str
+    page: int | None
+    source_tier: SourceTier
+    category: ComponentCategory
+    supplier: str
+
+
+class ChunkMetadata(_RequiredChunkMetadata, total=False):
     """The metadata keys `upsert` carries and `search` reads.
 
     A `TypedDict` rather than a model: it has to remain an ordinary `dict` at the
@@ -40,14 +49,14 @@ class ChunkMetadata(TypedDict):
     `source_tier` in particular is FR-RAG-03's hard requirement that a
     system-of-record chunk stay distinguishable from a web supplement at all
     times - it travels with the row rather than being looked up later.
+    `chunk_kind`, `table_id` and `section` are optional (P2-C2): `from __future__
+    import annotations` would make `NotRequired[...]` a string and treat them as
+    required, so they live on a `total=False` layer instead.
     """
 
-    document_id: str
-    text: str
-    page: int | None
-    source_tier: SourceTier
-    category: ComponentCategory
-    supplier: str
+    chunk_kind: str
+    table_id: str | None
+    section: str | None
 
 
 @dataclass(frozen=True)

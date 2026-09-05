@@ -37,7 +37,7 @@ The gaps, verified against the working tree:
   word's single occurrence in application code and specs is a fixture checklist item at
   `docs/development.md:152` (CI configuration separately uses `--health-timeout` for a
   container health check, a different concern). No module in `src/` imports `logging`.
-- **Ports with no adapters and no tests.** The six port Protocols in
+- **Ports with no adapters and no tests.** The NFR-04 port Protocols in
   `src/procurement_agent/ports/__init__.py` have zero adapters, and no test imports `ports`
   at all (`docs/current-state.md:333`). `docs/development.md:157-163` records the hazard in
   its own words: no adapter layout convention exists, so the first adapter "decides the
@@ -98,7 +98,12 @@ a stronger one under a new name.
 The existing escape hatch stands as written (plan.md, Decision 1 closing paragraph): a
 workflow library may later be adopted *inside* the extract stage, never as pipeline owner.
 
-### 2 — A capability-declaring conformance matrix for the six ports, before the first adapter lands
+### 2 — A capability-declaring conformance matrix for the ports, before the first adapter lands
+
+Decision 10's current count is **eight** Protocols (`Parser`, `OCR`, `Embedder`,
+`VectorStore`, `Reranker`, `LLM`, plus `LexicalSearch` and `WebSearch`). The
+original NFR-04 set was the first six; D-25 and P2-C4 added the last two without
+changing this decision's pattern.
 
 **Chosen:** adopt predict-rlm's runtime-contract pattern (`predict-rlm`
 `tests/runtime_contracts/`) for `ports` before any adapter exists. **Confidence: high.**

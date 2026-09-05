@@ -3,12 +3,13 @@
     "Parsers, OCR, embedders, vector store, reranker, and LLM must be swappable
     behind stable interfaces."
 
-Six interfaces, one per named swap point. They are structural Protocols rather
-than base classes so that adapters can wrap third-party clients without
-inheriting from anything here, and so no concrete dependency leaks into the core
-package. No concrete adapter exists yet; when one does it will depend on an
-optional extra declared in pyproject.toml, never on the core - the extras
-there currently declare dependency groups only.
+Eight interfaces: the six NFR-04 named, plus `LexicalSearchPort` (D-25) and
+`WebSearchPort` (P2-C4). Decision 10's current count is eight. They are
+structural Protocols rather than base classes so that adapters can wrap
+third-party clients without inheriting from anything here, and so no concrete
+dependency leaks into the core package. When a real adapter lands it will
+depend on an optional extra declared in pyproject.toml, never on the core - the
+extras there currently declare dependency groups only.
 
 **These Protocols are synchronous, deliberately.** Concurrency in this system is
 per-process, not per-coroutine: the runner is a Postgres job table with a
@@ -28,29 +29,41 @@ implementations selected by content signature (FR-ING-01), not one.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Literal, Protocol, runtime_checkable
 
-from ..schema import ComponentCategory, SourceTier
+from ..schema import ComponentCategory, SourceTier, TableData
 
 __all__ = [
     "EmbedderPort",
     "LLMPort",
+    "LexicalSearchPort",
     "OCRPort",
     "ParsedElement",
     "ParserPort",
     "RerankerPort",
     "RetrievedChunk",
     "VectorStorePort",
+    "WebHit",
+    "WebSearchPort",
 ]
 
 
 class ParsedElement(Protocol):
-    """A layout-aware unit of a parsed document (FR-ING-03/05)."""
+    """A layout-aware unit of a parsed document (FR-ING-03/04/05, D-23)."""
 
     kind: str
     """heading, body, table or figure."""
     text: str
     page: int | None
+    bbox: tuple[float, float, float, float] | None
+    """Axis-aligned envelope in page points, origin top-left."""
+    table: TableData | None
+    """Present iff `kind == "table"`."""
+    page_quality: float | None
+    """0–1 OCR/parser confidence for the page region."""
+    role: Literal["body", "furniture", "footnote", "caption"]
 
 
 class RetrievedChunk(Protocol):
@@ -188,3 +201,42 @@ class LLMPort(Protocol):
         context: list[RetrievedChunk],
         json_schema: dict[str, Any],
     ) -> dict[str, Any] | None: ...
+
+
+@runtime_checkable
+class LexicalSearchPort(Protocol):
+    """Lexical retrieval over chunks (D-25).
+
+    A seventh Protocol beside VectorStorePort so a vector adapter is not forced
+    to implement tsvector/trigram search. `allowed_document_ids=None` returns
+    nothing: an omitted allow-list is a forgotten entitlement, same rule as
+    VectorStorePort.
+    """
+
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        limit: int,
+        category: ComponentCategory | None = None,
+        supplier: str | None = None,
+        source_tier: SourceTier | None = None,
+        allowed_document_ids: set[str] | None = None,
+    ) -> list[RetrievedChunk]: ...
+
+
+@dataclass(frozen=True)
+class WebHit:
+    """One provider result. The list is transient; only the URL is kept (D-20)."""
+
+    url: str
+    title: str | None
+    retrieved_at: datetime
+    provider: str
+
+
+@runtime_checkable
+class WebSearchPort(Protocol):
+    """Gap-triggered web search (P2-C4). Returns hits, not snippets or ranks."""
+
+    def search(self, query: str, *, limit: int) -> list[WebHit]: ...

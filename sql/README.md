@@ -36,6 +36,18 @@ gets the dependency order right automatically:
 | `08_job.sql` | `job` (stage state machine) + RLS | `02` |
 | `09_claim_natural_key_condition.sql` | fold `condition` into `claim_natural_key` | `04` |
 
+Reserved numbers (files are **not** in this directory yet; 4a and 7 write them):
+
+| File | Reserved for |
+|---|---|
+| `10_claim_resolution_link.sql` | Story 4 / P2-C6 — `claim.resolution_id` |
+| `11_audit_run_event.sql` | Story 4 / P2-C7 — `audit.run_event` |
+| `12_audit_event_taxonomy.sql` | Story 4 / P2-C7 — drop `web_search` from `audit.event`, drop `recorded_at` DEFAULT |
+| `13_access_denylist.sql` | Story 7 — deny-list (applied empty until facts land) |
+| `14_restricted_group.sql` | Story 7 outcome B — `restricted_group`; stay in `sql/proposals/` until adopted |
+
+`15+` is unassigned. Track 0 does not write `sql/10`–`sql/14`.
+
 Two shared helpers cross file boundaries: `02_document.sql` defines
 `public.document_is_restricted(text)`, the confidentiality derivation every table
 carrying a `document_id` keys on, and `05_conflict.sql` defines
@@ -45,7 +57,7 @@ Both are `SECURITY DEFINER`; decision 10 below says why.
 Apply with, e.g.:
 
 ```sh
-for f in sql/0*.sql; do
+for f in sql/[0-9][0-9]_*.sql; do
   psql -v ON_ERROR_STOP=1 -f "$f" "$DATABASE_URL"
 done
 ```

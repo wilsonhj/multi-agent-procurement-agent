@@ -1,12 +1,12 @@
-"""The six ports' behavioural contracts — NFR-04, ADR-001 decision 2.
+"""The ports' behavioural contracts — NFR-04, ADR-001 decision 2.
 
 > **What a green run here proves, and what it does not.** Every adapter these
 > contracts run against is an in-memory reference that was written to satisfy
 > them. Green means the contract is **expressible and self-consistent** — some
 > object can satisfy it. It is not evidence that Docling, vLLM, pgvector or any
 > other real backend can, because none of them exist in this repository and none
-> has ever been run against this file. NFR-04 asks that the six swap points be
-> *swappable*; nothing has yet been swapped. The executable form of this
+> has ever been run against this file. Decision 10's current count is eight
+> swap points; nothing has yet been swapped. The executable form of this
 > paragraph is `test_every_registered_adapter_is_an_in_memory_reference` in
 > `test_conformance_matrix.py`, which goes red the day the sentence stops being
 > true.
@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -67,7 +67,7 @@ from procurement_agent.ports import (
     RetrievedChunk,
     VectorStorePort,
 )
-from procurement_agent.schema import ComponentCategory, SourceTier
+from procurement_agent.schema import ComponentCategory, SourceTier, TableData
 
 # --------------------------------------------------------------------------
 # Parametrisation, and the capability gate
@@ -147,6 +147,10 @@ class _Element:
     kind: str
     text: str
     page: int | None
+    bbox: tuple[float, float, float, float] | None = None
+    table: TableData | None = None
+    page_quality: float | None = None
+    role: Literal["body", "furniture", "footnote", "caption"] = "body"
 
 
 @dataclass
@@ -167,7 +171,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 def _assert_element_shape(element: ParsedElement) -> None:
-    """The three members `ParsedElement` declares, plus the vocabulary it names.
+    """The members `ParsedElement` declares, plus the kind vocabulary it names.
 
     `kind` is typed `str` and documented as "heading, body, table or figure". A
     Protocol cannot express that, so it is checked here: an adapter emitting

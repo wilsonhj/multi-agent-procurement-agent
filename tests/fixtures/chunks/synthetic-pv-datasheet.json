@@ -1,0 +1,110 @@
+[
+  {
+    "body": "N-type TOPCon bifacial module. Rated maximum power 610 W at STC.",
+    "chunk_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "prose",
+    "ordinal": 0,
+    "page": 1,
+    "section": "Introduction",
+    "table_id": null,
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. N-type TOPCon bifacial module. Rated maximum power 610 W at STC."
+  },
+  {
+    "body": "Parameter | Value | Unit\nPmax | 610 | W\nVoc | 55.12 | V\nIsc | 14.01 | A\nVmp | 45.51 | V\nImp | 13.41 | A\nModule Efficiency | 22.53 | %",
+    "chunk_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_full",
+    "ordinal": 1,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter | Value | Unit\nPmax | 610 | W\nVoc | 55.12 | V\nIsc | 14.01 | A\nVmp | 45.51 | V\nImp | 13.41 | A\nModule Efficiency | 22.53 | %"
+  },
+  {
+    "body": "Parameter: Pmax | Value: 610 | Unit: W",
+    "chunk_id": "00000000000000000000000000000000",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 2,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Pmax | Value: 610 | Unit: W"
+  },
+  {
+    "body": "Parameter: Voc | Value: 55.12 | Unit: V",
+    "chunk_id": "00000000000000000000000000000001",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 3,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Voc | Value: 55.12 | Unit: V"
+  },
+  {
+    "body": "Parameter: Isc | Value: 14.01 | Unit: A",
+    "chunk_id": "00000000000000000000000000000002",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 4,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Isc | Value: 14.01 | Unit: A"
+  },
+  {
+    "body": "Parameter: Vmp | Value: 45.51 | Unit: V",
+    "chunk_id": "00000000000000000000000000000003",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 5,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Vmp | Value: 45.51 | Unit: V"
+  },
+  {
+    "body": "Parameter: Imp | Value: 13.41 | Unit: A",
+    "chunk_id": "00000000000000000000000000000004",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 6,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Imp | Value: 13.41 | Unit: A"
+  },
+  {
+    "body": "Parameter: Module Efficiency | Value: 22.53 | Unit: %",
+    "chunk_id": "00000000000000000000000000000005",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_row",
+    "ordinal": 7,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Parameter: Module Efficiency | Value: 22.53 | Unit: %"
+  },
+  {
+    "body": "Electrical Characteristics (STC). Pmax 610 W, Voc 55.12 V, Isc 14.01 A.",
+    "chunk_id": "cccccccccccccccccccccccccccccccc",
+    "context_prefix": "JKM610N-66HL4M-V › Electrical Characteristics. ",
+    "document_id": "synthetic-pv-datasheet",
+    "kind": "table_summary",
+    "ordinal": 8,
+    "page": 2,
+    "section": "Electrical Characteristics",
+    "table_id": "table-electrical",
+    "text": "JKM610N-66HL4M-V › Electrical Characteristics. Electrical Characteristics (STC). Pmax 610 W, Voc 55.12 V, Isc 14.01 A."
+  }
+]

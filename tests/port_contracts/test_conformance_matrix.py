@@ -2,12 +2,12 @@
 
 > **What a green run here proves, and what it does not.** Every adapter in
 > `REGISTERED_ADAPTERS` today is an in-memory reference written *against these
-> tests*. A green suite therefore proves that the six port Protocols are
+> tests*. A green suite therefore proves that the eight port Protocols are
 > **expressible** — that some object can satisfy each of them, and that the
 > contracts are self-consistent enough to be satisfied at all. It proves
 > **nothing whatsoever** about Docling, vLLM, pgvector or any other real
-> backend, none of which exist in this repository. NFR-04 says the six swap
-> points must be *swappable*; nothing has ever been swapped.
+> backend, none of which exist in this repository. Decision 10's current count
+> is eight swap points; nothing has ever been swapped.
 > `test_every_registered_adapter_is_an_in_memory_reference` is the executable
 > form of that sentence, so the claim goes red rather than stale on the day a
 > real backend is registered.
@@ -26,6 +26,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
+from typing import get_type_hints
 
 import pytest
 
@@ -33,7 +34,6 @@ from procurement_agent import ports
 from procurement_agent.adapters import (
     CAPABILITIES_BY_PORT,
     REGISTERED_ADAPTERS,
-    UNEXPRESSIBLE_BOUNDING_BOXES,
     UNXFAILABLE,
     AbsenceKind,
     AdapterEntry,
@@ -41,33 +41,36 @@ from procurement_agent.adapters import (
     adapters_for,
 )
 
-THE_SIX_PORTS = (
+THE_PORTS = (
     ports.ParserPort,
     ports.OCRPort,
     ports.EmbedderPort,
     ports.VectorStorePort,
     ports.RerankerPort,
     ports.LLMPort,
+    ports.LexicalSearchPort,
+    ports.WebSearchPort,
 )
 
 
 def test_the_matrix_covers_every_swap_point_ports_declares() -> None:
-    """NFR-04 names six swap points, and a seventh must not arrive uncovered.
+    """Decision 10's current count is eight swap points, and a ninth must not
+    arrive uncovered.
 
-    The literal tuple above pins the count the requirement states. The derived
-    set below is what makes the test bite in the direction that matters: a new
-    `@runtime_checkable` Protocol added to `ports` with no row in
-    `CAPABILITIES_BY_PORT` fails here, rather than being discovered when someone
-    writes its first adapter and finds no contract to write it against.
+    The literal tuple above pins the count. The derived set below is what makes
+    the test bite in the direction that matters: a new `@runtime_checkable`
+    Protocol added to `ports` with no row in `CAPABILITIES_BY_PORT` fails here,
+    rather than being discovered when someone writes its first adapter and finds
+    no contract to write it against.
 
     `_is_runtime_protocol` is private, and is used because 3.12 ships no public
     equivalent — `typing.is_protocol` landed in 3.13 and `pyproject.toml` still
     supports 3.12. The discriminator is the right one on the merits, not merely
-    the available one: `ParsedElement` and `RetrievedChunk` are data shapes that
-    travel *through* the ports, not swap points, and the decorator is precisely
-    what separates the two groups in `ports/__init__.py`.
+    the available one: `ParsedElement`, `RetrievedChunk` and `WebHit` are data
+    shapes that travel *through* the ports, not swap points, and the decorator
+    is precisely what separates the two groups in `ports/__init__.py`.
     """
-    assert set(CAPABILITIES_BY_PORT) == set(THE_SIX_PORTS)
+    assert set(CAPABILITIES_BY_PORT) == set(THE_PORTS)
 
     exported_swap_points = {
         obj
@@ -84,7 +87,7 @@ def test_every_port_has_at_least_one_adapter_under_test() -> None:
     Every contract test in the companion file is parametrized over
     `adapters_for(port)`. An empty list there is not a failure in pytest — it is
     a *collected nothing*, which reads as green. This is the guard against that,
-    and it is the reason the six-port assertion above cannot be the only check.
+    and it is the reason the eight-port assertion above cannot be the only check.
     """
     for port in CAPABILITIES_BY_PORT:
         assert adapters_for(port), f"{port.__name__} has no registered adapter"
@@ -290,21 +293,12 @@ def test_no_reference_derives_a_value_from_a_salted_or_moving_source() -> None:
                 )
 
 
-def test_fr_ing_04s_bounding_box_clause_is_not_expressible_through_parsedelement() -> None:
-    """A named gap in `ports`, pinned so that closing it cannot be silent.
+def test_parsed_element_expresses_fr_ing_04s_bounding_box_clause() -> None:
+    """P2-C1 closed the FR-ING-04 gap: `bbox` is a Protocol member.
 
-    `OCRPort.recognize`'s own docstring promises to "retain bounding boxes" and
-    FR-ING-04 requires them, but `ParsedElement` declares `kind`, `text` and
-    `page` and nothing else. Structural typing means an adapter *may* return
-    elements carrying a box; it means no consumer may rely on one, so no contract
-    test can assert it, so no capability can honestly cover it. The gap is in the
-    Protocol, not in the adapters — see `UNEXPRESSIBLE_BOUNDING_BOXES`.
-
-    This asserts the exact member set rather than the box's absence, so that
-    *any* change to `ParsedElement` lands here and gets a deliberate answer about
-    whether it is a new capability. `ports/` is out of this track's file
-    boundary, so the defect is reported rather than fixed; the test is what stops
-    it from being reported and then forgotten.
+    The previous pin asserted the opposite — that a box could not be stated
+    through `ParsedElement`. That is no longer true; a silent revert of `bbox`
+    would make OCR's "retain bounding boxes" promise inexpressible again.
     """
-    assert set(ports.ParsedElement.__annotations__) == {"kind", "text", "page"}
-    assert "FR-ING-04" in UNEXPRESSIBLE_BOUNDING_BOXES
+    assert "bbox" in ports.ParsedElement.__annotations__
+    assert get_type_hints(ports.ParsedElement)["bbox"] == tuple[float, float, float, float] | None

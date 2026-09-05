@@ -16,10 +16,12 @@ asserted the TRS side of each:
 from __future__ import annotations
 
 from ...ports import EmbedderPort, ParsedElement, VectorStorePort
-from ...schema import SourceDocument
+from ...schema import ChunkRecord, SourceDocument
 
 
-def chunk(elements: list[ParsedElement], *, size_tokens: int, overlap_ratio: float) -> list[str]:
+def chunk(
+    elements: list[ParsedElement], *, size_tokens: int, overlap_ratio: float
+) -> list[ChunkRecord]:
     """Structure-aware chunking (FR-RAG-01), as revised by plan Decision 6.
 
     512-token prose chunks split on structure first, with **0-10% overlap** -

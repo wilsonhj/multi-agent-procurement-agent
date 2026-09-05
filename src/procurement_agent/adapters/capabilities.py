@@ -40,11 +40,13 @@ from typing import Any
 
 from ..ports import (
     EmbedderPort,
+    LexicalSearchPort,
     LLMPort,
     OCRPort,
     ParserPort,
     RerankerPort,
     VectorStorePort,
+    WebSearchPort,
 )
 
 __all__ = [
@@ -65,9 +67,8 @@ class Capability(StrEnum):
     A member earns its place by being (a) something real backends actually vary
     on, (b) traceable to a requirement or a recorded decision, and (c) observable
     through the Protocol alone. The third rules more out than it looks:
-    FR-ING-04's bounding boxes fail it, and are recorded as
-    `UNEXPRESSIBLE_BOUNDING_BOXES` instead of becoming a capability nothing could
-    test.
+    FR-ING-04's bounding boxes used to fail it; they now sit on `ParsedElement.bbox`
+    (P2-C1) and are an ordinary Protocol member rather than a capability.
 
     * `DETERMINISTIC_OUTPUT` - the same input yields the same output, across
       instances. AC-7's byte-identical regeneration is downstream of every stage
@@ -96,6 +97,11 @@ class Capability(StrEnum):
       instead of a fabricated value. Unxfailable.
     * `SCHEMA_CONSTRAINED` - FR-ING-07 and plan Decision 7. Output conforms to
       the requested JSON schema, keys and types.
+    * `TRIGRAM_TOLERANCE` - Decision 3b / D-25. A lexical search matches
+      hyphen/space variants of the same part number (`JKM610N-66HL4M-V` ~
+      `JKM610N 66HL4M V`).
+    * `RATE_LIMITED` - a networked search backend honours a producer-side
+      quota. An in-memory fixture map has no quota to honour.
     """
 
     DETERMINISTIC_OUTPUT = "deterministic_output"
@@ -108,6 +114,8 @@ class Capability(StrEnum):
     EXHAUSTIVE_RECALL = "exhaustive_recall"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     SCHEMA_CONSTRAINED = "schema_constrained"
+    TRIGRAM_TOLERANCE = "trigram_tolerance"
+    RATE_LIMITED = "rate_limited"
 
 
 class AbsenceKind(StrEnum):
@@ -235,6 +243,20 @@ CAPABILITIES_BY_PORT: Mapping[type[Any], frozenset[Capability]] = {
             Capability.DETERMINISTIC_OUTPUT,
             Capability.INSUFFICIENT_EVIDENCE,
             Capability.SCHEMA_CONSTRAINED,
+        }
+    ),
+    LexicalSearchPort: frozenset(
+        {
+            Capability.DETERMINISTIC_OUTPUT,
+            Capability.METADATA_FILTERING,
+            Capability.ACCESS_FILTERING,
+            Capability.TRIGRAM_TOLERANCE,
+        }
+    ),
+    WebSearchPort: frozenset(
+        {
+            Capability.DETERMINISTIC_OUTPUT,
+            Capability.RATE_LIMITED,
         }
     ),
 }

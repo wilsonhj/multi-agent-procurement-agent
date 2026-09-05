@@ -1058,26 +1058,32 @@ def test_hyphenated_and_spaced_part_numbers_match(entry: AdapterEntry) -> None:
     """Decision 3b / D-25: token overlap alone is not enough.
 
     `JKM610N-66HL4M-V` is one whitespace token; `JKM610N 66HL4M V` is three. A
-    store that only intersects tokens cannot hit, which is why the memory
-    adapter scores trigram Jaccard as well.
+    store that only intersects tokens scores both the decoy and the part-number
+    at 0.0, and id-sort then returns chunk-0. Trigram Jaccard is what ranks
+    chunk-1 first.
     """
     hyphenated = "JKM610N-66HL4M-V"
     spaced = "JKM610N 66HL4M V"
-    allowed = {"doc-0"}
+    decoy = "cooling method forced air"
+    allowed = {"doc-0", "doc-1"}
 
     hyphenated_store = _stock_lexical(
-        entry, texts=[hyphenated], chunk_ids=["chunk-0"], document_ids=["doc-0"]
+        entry,
+        texts=[decoy, hyphenated],
+        chunk_ids=["chunk-0", "chunk-1"],
+        document_ids=["doc-0", "doc-1"],
     )
-    hyphenated_hits = hyphenated_store.search_lexical(spaced, limit=6, allowed_document_ids=allowed)
-    assert hyphenated_hits
-    assert hyphenated_hits[0].chunk_id == "chunk-0"
+    hyphenated_hits = hyphenated_store.search_lexical(spaced, limit=1, allowed_document_ids=allowed)
+    assert [hit.chunk_id for hit in hyphenated_hits] == ["chunk-1"]
 
     spaced_store = _stock_lexical(
-        entry, texts=[spaced], chunk_ids=["chunk-0"], document_ids=["doc-0"]
+        entry,
+        texts=[decoy, spaced],
+        chunk_ids=["chunk-0", "chunk-1"],
+        document_ids=["doc-0", "doc-1"],
     )
-    spaced_hits = spaced_store.search_lexical(hyphenated, limit=6, allowed_document_ids=allowed)
-    assert spaced_hits
-    assert spaced_hits[0].chunk_id == "chunk-0"
+    spaced_hits = spaced_store.search_lexical(hyphenated, limit=1, allowed_document_ids=allowed)
+    assert [hit.chunk_id for hit in spaced_hits] == ["chunk-1"]
 
 
 # --------------------------------------------------------------------------

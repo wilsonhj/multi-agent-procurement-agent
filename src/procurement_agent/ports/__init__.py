@@ -234,6 +234,19 @@ class WebHit:
     retrieved_at: datetime
     provider: str
 
+    def __post_init__(self) -> None:
+        """Reject a naive `retrieved_at`, matching `SourceRef`'s rule.
+
+        This is the first boundary that produces the timestamp. A naive value
+        names no instant, so FR-WEB-04's temporal comparisons would be fiction.
+        """
+        value = self.retrieved_at
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError(
+                "retrieved_at must be timezone-aware; a naive datetime names no "
+                "instant. Attach the zone at the boundary that produced it."
+            )
+
 
 @runtime_checkable
 class WebSearchPort(Protocol):

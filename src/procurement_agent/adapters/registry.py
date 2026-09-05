@@ -33,6 +33,7 @@ from ..ports import (
 )
 from .capabilities import AdapterEntry, Capability, not_applicable, unimplemented
 from .embedder.memory import InMemoryEmbedder
+from .lexical_store import LexicalStoreSamples
 from .lexical_store.memory import InMemoryLexicalStore
 from .llm.memory import InMemoryLLM
 from .ocr import OCRSamples
@@ -42,6 +43,7 @@ from .parser.memory import InMemoryParser
 from .reranker.memory import InMemoryReranker
 from .vector_store import VectorStoreSamples
 from .vector_store.memory import InMemoryVectorStore
+from .web_search import WebSearchSamples
 from .web_search.memory import InMemoryWebSearch
 
 __all__ = ["REGISTERED_ADAPTERS", "adapters_for"]
@@ -70,6 +72,41 @@ _NO_TABLE_RECOVERY = (
     "does have tables, so this is a gap rather than an inapplicable contract - the "
     "capability is meaningful here and someone could close it."
 )
+
+_WEB_SEARCH_QUERY = "JKM610N-66HL4M-V"
+
+
+def _memory_web_search() -> InMemoryWebSearch:
+    """Seed a fixture map. `datetime` stays here, not in the reference module."""
+    from datetime import UTC, datetime
+
+    from ..ports import WebHit
+
+    when = datetime(2020, 1, 1, tzinfo=UTC)
+    return InMemoryWebSearch(
+        {
+            _WEB_SEARCH_QUERY: [
+                WebHit(
+                    url="https://example.invalid/jinko/jkm610n",
+                    title="JKM610N-66HL4M-V",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+                WebHit(
+                    url="https://example.invalid/cec/jkm610n",
+                    title="CEC listing",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+                WebHit(
+                    url="https://example.invalid/datasheet/jkm610n",
+                    title="Datasheet",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+            ]
+        }
+    )
 
 
 REGISTERED_ADAPTERS: tuple[AdapterEntry, ...] = (
@@ -171,11 +208,12 @@ REGISTERED_ADAPTERS: tuple[AdapterEntry, ...] = (
             }
         ),
         is_reference=True,
+        samples=LexicalStoreSamples(),
     ),
     AdapterEntry(
         name="web_search:memory",
         port=WebSearchPort,
-        factory=InMemoryWebSearch,
+        factory=_memory_web_search,
         capabilities=frozenset({Capability.DETERMINISTIC_OUTPUT}),
         absences={
             Capability.RATE_LIMITED: not_applicable(
@@ -184,6 +222,7 @@ REGISTERED_ADAPTERS: tuple[AdapterEntry, ...] = (
             )
         },
         is_reference=True,
+        samples=WebSearchSamples(query=_WEB_SEARCH_QUERY),
     ),
 )
 

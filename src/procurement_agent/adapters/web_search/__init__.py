@@ -7,4 +7,13 @@ the type (D-20).
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from dataclasses import dataclass
+
+__all__ = ["WebSearchSamples"]
+
+
+@dataclass(frozen=True)
+class WebSearchSamples:
+    """The query the shared contracts send against this adapter's fixture map."""
+
+    query: str

@@ -111,6 +111,30 @@ def test_web_hit_has_no_snippet_or_rank() -> None:
     assert "rank" not in WebHit.__annotations__
 
 
+def test_web_hit_retrieved_at_rejects_naive_datetimes() -> None:
+    """WebHit is the first boundary that produces the timestamp; naive is refused."""
+    from datetime import UTC, datetime
+
+    from procurement_agent.ports import WebHit
+
+    aware = datetime(2020, 1, 1, tzinfo=UTC)
+    hit = WebHit(
+        url="https://example.invalid/jinko",
+        title="JKM610N",
+        retrieved_at=aware,
+        provider="memory",
+    )
+    assert hit.retrieved_at is aware
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        WebHit(
+            url="https://example.invalid/jinko",
+            title="JKM610N",
+            retrieved_at=datetime(2020, 1, 1),  # noqa: DTZ001 - the point of the test
+            provider="memory",
+        )
+
+
 def test_principal_context_is_the_schema_type() -> None:
     """P2-C5: one class, in schema/. 4a must not mint a second under services/."""
     from procurement_agent.schema import PrincipalContext

@@ -1,0 +1,79 @@
+[
+  {
+    "bbox": null,
+    "kind": "heading",
+    "page": 1,
+    "page_quality": null,
+    "role": "body",
+    "table": null,
+    "text": "JKM610N-66HL4M-V"
+  },
+  {
+    "bbox": null,
+    "kind": "body",
+    "page": 1,
+    "page_quality": null,
+    "role": "body",
+    "table": null,
+    "text": "N-type TOPCon bifacial module. Rated maximum power 610 W at STC."
+  },
+  {
+    "bbox": null,
+    "kind": "table",
+    "page": 2,
+    "page_quality": null,
+    "role": "body",
+    "table": {
+      "caption": "Electrical Characteristics (STC)",
+      "header_rows": 1,
+      "merged": [],
+      "rows": [
+        [
+          "Parameter",
+          "Value",
+          "Unit"
+        ],
+        [
+          "Pmax",
+          "610",
+          "W"
+        ],
+        [
+          "Voc",
+          "55.12",
+          "V"
+        ],
+        [
+          "Isc",
+          "14.01",
+          "A"
+        ],
+        [
+          "Vmp",
+          "45.51",
+          "V"
+        ],
+        [
+          "Imp",
+          "13.41",
+          "A"
+        ],
+        [
+          "Module Efficiency",
+          "22.53",
+          "%"
+        ]
+      ]
+    },
+    "text": "Electrical Characteristics (STC)\nParameter | Value | Unit\nPmax | 610 | W\nVoc | 55.12 | V\nIsc | 14.01 | A\nVmp | 45.51 | V\nImp | 13.41 | A\nModule Efficiency | 22.53 | %"
+  },
+  {
+    "bbox": null,
+    "kind": "body",
+    "page": 2,
+    "page_quality": null,
+    "role": "furniture",
+    "table": null,
+    "text": "Jinko Solar Co., Ltd.  •  www.jinkosolar.com  •  Page 2 of 2"
+  }
+]

@@ -3,7 +3,7 @@
 This audit reflects the `claude/phase-1-integration` branch as verified on 2026-08-29. It
 answers the practical question a new contributor has first: what can the repository do today?
 
-The local verification baseline is **1000 passing, 42 skipped, and 4 expected failures**, plus a
+The local verification baseline is **1039 passed, 42 skipped, and 4 xfailed**, plus a
 clean Ruff check, a clean `ruff format --check`, and a clean strict-mypy check across `src/` and
 `tests/`. The skips are intentionally DSN-gated live tests: 32 in
 `tests/test_sql_behaviour.py` and 10 in `tests/test_audit_live.py`. With
@@ -146,8 +146,8 @@ the contracts, not a production ingestion route.
 
 ### Integration ports
 
-Six Protocol interfaces define the intended parser, OCR, embedder, vector-store, reranker,
-and LLM boundaries. Each has an **in-memory reference adapter** under `adapters/<port>/memory.py`
+Eight Protocol interfaces define the intended parser, OCR, embedder, vector-store, reranker,
+LLM, lexical-search, and web-search boundaries. Each has an **in-memory reference adapter** under `adapters/<port>/memory.py`
 and a capability-declaring conformance suite in `tests/port_contracts/`. No *vendor* adapter
 exists and no production path consumes a port, which is why NFR-04 is `partial` rather than
 `enforced`: a suite passing against a reference proves the contract is expressible, not that any
@@ -375,7 +375,7 @@ contracts.
 
 Changes that are useful without depending on unfinished storage contracts include:
 
-- a *vendor* adapter behind any of the six ports — the conformance suite and in-memory
+- a *vendor* adapter behind any of the eight ports — the conformance suite and in-memory
   references now exist to write one against;
 - table-driven tests that close remaining schema and traceability gaps;
 - sanitized golden fixtures for the existing conflict policy;

@@ -62,7 +62,7 @@ def _statements(text: str) -> list[str]:
     return [s.strip() for s in without_comments.split(";") if s.strip()]
 
 
-ALL_FILES = sorted(p.name for p in SQL_DIR.glob("0*.sql"))
+ALL_FILES = sorted(p.name for p in SQL_DIR.glob("[0-9][0-9]_*.sql"))
 
 
 def test_the_expected_files_are_all_present() -> None:

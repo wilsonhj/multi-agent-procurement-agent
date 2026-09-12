@@ -156,6 +156,7 @@ class FieldSpec(BaseModel):
             "`Condition.comparable_with` for what consumes it."
         ),
     )
+    web_query_template: str | None = None
 
     @property
     def contract_type(self) -> str:

@@ -1,20 +1,20 @@
 """What the adapter side has to supply about `ports.ParsedElement`.
 
-`ParsedElement` is the unit both `ParserPort` and `OCRPort` return, and it is
-declared as three annotated attributes. Two of the things a consumer needs from
-it are stated in its docstring and absent from its type, and one clause of
-FR-ING-04 cannot be stated at all. All three live here, on the adapter side of
-the boundary, because `ports/` is the frozen interface and this track does not
-amend it - they are reported as findings instead.
+`ParsedElement` is the unit both `ParserPort` and `OCRPort` return. Track 0
+amends the Protocol with optional `bbox`, `table`, `page_quality` and `role`
+(D-23 / P2-C1), so a consumer may rely on those members. `TextElement` is the
+concrete shape the in-memory references return and must stay a structural match.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from ..ports import ParsedElement
+from ..schema import TableData
 
-__all__ = ["PARSED_ELEMENT_KINDS", "UNEXPRESSIBLE_BOUNDING_BOXES", "TextElement"]
+__all__ = ["PARSED_ELEMENT_KINDS", "TextElement"]
 
 
 PARSED_ELEMENT_KINDS: frozenset[str] = frozenset({"heading", "body", "table", "figure"})
@@ -25,25 +25,6 @@ Protocol cannot express a closed vocabulary over a `str`, so an adapter emitting
 `"paragraph"` or `"Table"` is correct under the type and unusable to every
 consumer that switches on the value. `_assert_element_shape` in the contract
 suite is what holds adapters to it meanwhile.
-"""
-
-
-UNEXPRESSIBLE_BOUNDING_BOXES = (
-    "FR-ING-04 requires OCR to retain bounding boxes, and OCRPort.recognize's own "
-    "docstring promises them, but ParsedElement declares kind, text and page and "
-    "nothing else. Structural typing means an adapter may return elements that "
-    "carry a box; it means no consumer may rely on one, so no contract test can "
-    "assert it and no capability can honestly cover it. The gap is in the Protocol. "
-    "Closing it means adding the member to ParsedElement - a ports/ change, out of "
-    "this track's scope - after which BOUNDING_BOXES becomes an ordinary capability "
-    "and OCR adapters declare it. Pinned by "
-    "test_fr_ing_04s_bounding_box_clause_is_not_expressible_through_parsedelement."
-)
-"""A requirement clause the interface cannot carry, named so it is not forgotten.
-
-The house precedent is `confidence.UNIMPLEMENTED_REVIEW_ROUTING`: a gap with a
-constant and a test naming it is a gap someone can find; one with only a comment
-is a gap that gets rediscovered.
 """
 
 
@@ -63,6 +44,10 @@ class TextElement:
     kind: str
     text: str
     page: int | None
+    bbox: tuple[float, float, float, float] | None = None
+    table: TableData | None = None
+    page_quality: float | None = None
+    role: Literal["body", "furniture", "footnote", "caption"] = "body"
 
 
 def _conforms(element: TextElement) -> ParsedElement:

@@ -26,7 +26,7 @@ from . import ChunkMetadata
 
 __all__ = ["InMemoryVectorStore", "StoredChunk"]
 
-_REQUIRED_KEYS = frozenset(ChunkMetadata.__annotations__)
+_REQUIRED_KEYS = frozenset(ChunkMetadata.__required_keys__)
 
 
 @dataclass

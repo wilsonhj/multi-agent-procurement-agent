@@ -109,7 +109,7 @@ def audit_schema() -> None:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
         conn.execute("GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC")
-        for path in sorted(SQL_DIR.glob("0*.sql")):
+        for path in sorted(SQL_DIR.glob("[0-9][0-9]_*.sql")):
             conn.execute(path.read_text(encoding="utf-8"))
         conn.execute(
             """

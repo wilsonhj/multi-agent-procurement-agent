@@ -1,11 +1,12 @@
 """Which adapters the conformance suite runs, and what each of them claims.
 
 **Everything in here today is a reference.** A green conformance run therefore
-proves the six Protocols are *expressible* - that some object satisfies each of
+proves the eight Protocols are *expressible* - that some object satisfies each of
 them, and that the contracts are consistent enough to be satisfied at all. It is
 not evidence about Docling, vLLM, pgvector or any other backend, none of which
-exist in this repository. NFR-04 asks that the six swap points be swappable;
-nothing has been swapped. `test_every_registered_adapter_is_an_in_memory_reference`
+exist in this repository. NFR-04 plus D-25/P2-C4 ask that the eight swap points
+be swappable; nothing has been swapped.
+`test_every_registered_adapter_is_an_in_memory_reference`
 is that sentence in executable form, so it goes red rather than stale when the
 first real adapter lands.
 
@@ -22,14 +23,18 @@ from typing import Any
 
 from ..ports import (
     EmbedderPort,
+    LexicalSearchPort,
     LLMPort,
     OCRPort,
     ParserPort,
     RerankerPort,
     VectorStorePort,
+    WebSearchPort,
 )
 from .capabilities import AdapterEntry, Capability, not_applicable, unimplemented
 from .embedder.memory import InMemoryEmbedder
+from .lexical_store import LexicalStoreSamples
+from .lexical_store.memory import InMemoryLexicalStore
 from .llm.memory import InMemoryLLM
 from .ocr import OCRSamples
 from .ocr.memory import InMemoryOCR
@@ -38,6 +43,8 @@ from .parser.memory import InMemoryParser
 from .reranker.memory import InMemoryReranker
 from .vector_store import VectorStoreSamples
 from .vector_store.memory import InMemoryVectorStore
+from .web_search import WebSearchSamples
+from .web_search.memory import InMemoryWebSearch
 
 __all__ = ["REGISTERED_ADAPTERS", "adapters_for"]
 
@@ -65,6 +72,41 @@ _NO_TABLE_RECOVERY = (
     "does have tables, so this is a gap rather than an inapplicable contract - the "
     "capability is meaningful here and someone could close it."
 )
+
+_WEB_SEARCH_QUERY = "JKM610N-66HL4M-V"
+
+
+def _memory_web_search() -> InMemoryWebSearch:
+    """Seed a fixture map. `datetime` stays here, not in the reference module."""
+    from datetime import UTC, datetime
+
+    from ..ports import WebHit
+
+    when = datetime(2020, 1, 1, tzinfo=UTC)
+    return InMemoryWebSearch(
+        {
+            _WEB_SEARCH_QUERY: [
+                WebHit(
+                    url="https://example.invalid/jinko/jkm610n",
+                    title="JKM610N-66HL4M-V",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+                WebHit(
+                    url="https://example.invalid/cec/jkm610n",
+                    title="CEC listing",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+                WebHit(
+                    url="https://example.invalid/datasheet/jkm610n",
+                    title="Datasheet",
+                    retrieved_at=when,
+                    provider="memory",
+                ),
+            ]
+        }
+    )
 
 
 REGISTERED_ADAPTERS: tuple[AdapterEntry, ...] = (
@@ -152,6 +194,35 @@ REGISTERED_ADAPTERS: tuple[AdapterEntry, ...] = (
             }
         ),
         is_reference=True,
+    ),
+    AdapterEntry(
+        name="lexical_store:memory",
+        port=LexicalSearchPort,
+        factory=InMemoryLexicalStore,
+        capabilities=frozenset(
+            {
+                Capability.DETERMINISTIC_OUTPUT,
+                Capability.METADATA_FILTERING,
+                Capability.ACCESS_FILTERING,
+                Capability.TRIGRAM_TOLERANCE,
+            }
+        ),
+        is_reference=True,
+        samples=LexicalStoreSamples(),
+    ),
+    AdapterEntry(
+        name="web_search:memory",
+        port=WebSearchPort,
+        factory=_memory_web_search,
+        capabilities=frozenset({Capability.DETERMINISTIC_OUTPUT}),
+        absences={
+            Capability.RATE_LIMITED: not_applicable(
+                "a fixture map has no provider quota; rate limits belong to a "
+                "networked backend such as Brave"
+            )
+        },
+        is_reference=True,
+        samples=WebSearchSamples(query=_WEB_SEARCH_QUERY),
     ),
 )
 

@@ -1,5 +1,6 @@
 """Canonical data model. TRS sections 5 and 7."""
 
+from .chunk import ChunkRecord
 from .component import ComponentInstance, SourceDocument
 from .encoding import UnencodableValueError, encode_value
 from .enums import (
@@ -23,6 +24,7 @@ from .enums import (
     UnresolvedStatus,
     WorkbookTab,
 )
+from .extractor import EXTRACTOR_VERSION_PREFIXES
 from .field import (
     CONDITION_DIMENSION_NAMES,
     CanonicalField,
@@ -36,12 +38,17 @@ from .field import (
     SourceRef,
     VocabularyError,
 )
+from .principal import PrincipalContext
+from .table import CellSpan, TableData
 
 __all__ = [
     "CATEGORY_TO_TAB",
     "CONDITION_DIMENSION_NAMES",
+    "EXTRACTOR_VERSION_PREFIXES",
     "CanonicalField",
     "CellFlag",
+    "CellSpan",
+    "ChunkRecord",
     "ComponentCategory",
     "ComponentInstance",
     "Condition",
@@ -56,6 +63,7 @@ __all__ = [
     "EfficiencyWeighting",
     "MeasurementBasis",
     "PowerSide",
+    "PrincipalContext",
     "Resolution",
     "ResolutionAction",
     "RteBoundary",
@@ -64,6 +72,7 @@ __all__ = [
     "SourceRef",
     "SourceTier",
     "StandardsRegime",
+    "TableData",
     "ToleranceCondition",
     "ToleranceKind",
     "ToleranceRule",

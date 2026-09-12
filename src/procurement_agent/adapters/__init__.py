@@ -1,4 +1,4 @@
-"""Concrete implementations of the six `ports` Protocols — and the layout call.
+"""Concrete implementations of the eight `ports` Protocols — and the layout call.
 
 `docs/development.md` records the hazard this package resolves: there was no
 adapter layout convention, so "the first one decides the layout for everyone
@@ -28,7 +28,7 @@ are two separate classes with two separate contracts, and both guard the same
 extra, so the cost is a duplicated import guard rather than duplicated logic.
 
 **Why not beside the owning service**, which `docs/development.md` floats as "the
-obvious candidate". Three of the six ports have no single owning service:
+obvious candidate". Three of the eight ports have no single owning service:
 `VectorStorePort` is written by `services.indexing` and read by
 `services.retrieval`, `EmbedderPort` likewise, and `RerankerPort` belongs to a
 stage `services.retrieval` only coordinates. Placing an adapter under one of them
@@ -69,10 +69,8 @@ having no dependencies at all.
 
 `PARSED_ELEMENT_KINDS` and `ChunkMetadata` (in `vector_store/`) are stated in
 Protocol docstrings and absent from the Protocol types. They live here, on the
-adapter side of the boundary, because `ports/` is the frozen interface and this
-track does not amend it. Both are reported as findings rather than fixed here;
-`UNEXPRESSIBLE_BOUNDING_BOXES` names a third that cannot be fixed on this side at
-all.
+adapter side of the boundary. `ParsedElement` itself is no longer the three-field
+shape: Track 0 added `bbox`, `table`, `page_quality` and `role` (P2-C1).
 """
 
 from __future__ import annotations
@@ -87,18 +85,13 @@ from .capabilities import (
     not_applicable,
     unimplemented,
 )
-from .parsed_element import (
-    PARSED_ELEMENT_KINDS,
-    UNEXPRESSIBLE_BOUNDING_BOXES,
-    TextElement,
-)
+from .parsed_element import PARSED_ELEMENT_KINDS, TextElement
 from .registry import REGISTERED_ADAPTERS, adapters_for
 
 __all__ = [
     "CAPABILITIES_BY_PORT",
     "PARSED_ELEMENT_KINDS",
     "REGISTERED_ADAPTERS",
-    "UNEXPRESSIBLE_BOUNDING_BOXES",
     "UNXFAILABLE",
     "AbsenceKind",
     "AdapterEntry",

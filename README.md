@@ -248,7 +248,7 @@ src/procurement_agent/
 ├── config.py                Settings, PROCUREMENT_ prefix, bounds enforced
 ├── audit/                   RFC 8785 envelope, hash-chain append and verification
 ├── schema/                  canonical domain objects and vocabularies
-├── ports/                   six swappable integration interfaces
+├── ports/                   eight swappable integration interfaces
 ├── services/
 │   ├── ingestion/           content routing and extraction entry points
 │   ├── indexing/            chunking and index entry points

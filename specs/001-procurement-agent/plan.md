@@ -229,7 +229,7 @@ This satisfies NFR-03 and AC-8.
 | Input | Engine | Licence |
 |---|---|---|
 | `.xlsx`, `.csv` | **openpyxl / pandas directly** | permissive |
-| `.docx` | **Docling 2.115.0** MSWord backend | MIT |
+| `.docx` | **LibreOffice** headless `.docx`→PDF, then the PDF path (D-19) | MPL-2.0 |
 | `.pdf`, text-layer page | **Docling 2.115.0** + TableFormer ACCURATE | MIT |
 | `.pdf`, scanned page | **PaddleOCR-VL-1.6** on vLLM | Apache-2.0 |
 | images | **PaddleOCR-VL-1.6** | Apache-2.0 |
@@ -249,7 +249,7 @@ that destroys numeric spec extraction. Use the text layer for *content*, TableFo
 **Three-tier fallback:**
 
 1. **Per-page audit, always.** Flag pages with zero extracted characters, character count under
-   10% of the raw PyMuPDF text count, or zero table cells where the layout model detected a
+   10% of the pypdfium2 text count, or zero table cells where the layout model detected a
    table. Re-run those pages on the next engine.
 2. **Dual-parse reconciliation on table-critical pages.** Run Docling/TableFormer *and*
    PaddleOCR-VL on the same table region, align cells, diff. Agreement raises confidence;

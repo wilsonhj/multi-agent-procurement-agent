@@ -43,11 +43,15 @@ from typing import Any
 
 import pytest
 
+from procurement_agent.adapters.parsed_element import TextElement
 from procurement_agent.schema import (
+    CellSpan,
+    ChunkRecord,
     ConflictClass,
     ConflictQueueEntry,
     Severity,
     SourceTier,
+    TableData,
 )
 from procurement_agent.services.claims import FieldClaim
 from procurement_agent.services.conflict_hitl import (
@@ -109,10 +113,114 @@ def _load_workbook_projection(raw: Any) -> Any:
 #: labels because the previous version fell through to `ConflictQueueEntry` for
 #: any unrecognised kind: adding `workbooks/` here would have validated a golden
 #: projection as a queue entry and reported coverage it did not have.
+def _table_from_json(raw: Any) -> TableData:
+    assert isinstance(raw, dict)
+    return TableData(
+        rows=tuple(tuple(str(cell) for cell in row) for row in raw["rows"]),
+        header_rows=int(raw["header_rows"]),
+        caption=raw["caption"],
+        merged=tuple(
+            CellSpan(
+                row=int(span["row"]),
+                column=int(span["column"]),
+                rowspan=int(span["rowspan"]),
+                colspan=int(span["colspan"]),
+            )
+            for span in raw["merged"]
+        ),
+    )
+
+
+def _table_to_json(table: TableData) -> dict[str, Any]:
+    return {
+        "caption": table.caption,
+        "header_rows": table.header_rows,
+        "merged": [
+            {
+                "column": span.column,
+                "colspan": span.colspan,
+                "row": span.row,
+                "rowspan": span.rowspan,
+            }
+            for span in table.merged
+        ],
+        "rows": [list(row) for row in table.rows],
+    }
+
+
+def _element_from_json(raw: Any) -> TextElement:
+    assert isinstance(raw, dict)
+    bbox = raw["bbox"]
+    return TextElement(
+        kind=raw["kind"],
+        text=raw["text"],
+        page=raw["page"],
+        bbox=tuple(bbox) if bbox is not None else None,
+        table=_table_from_json(raw["table"]) if raw["table"] is not None else None,
+        page_quality=raw["page_quality"],
+        role=raw["role"],
+    )
+
+
+def _element_to_json(element: TextElement) -> dict[str, Any]:
+    return {
+        "bbox": list(element.bbox) if element.bbox is not None else None,
+        "kind": element.kind,
+        "page": element.page,
+        "page_quality": element.page_quality,
+        "role": element.role,
+        "table": _table_to_json(element.table) if element.table is not None else None,
+        "text": element.text,
+    }
+
+
+def _load_parsed(raw: Any) -> Any:
+    assert isinstance(raw, list), "a parsed fixture is a list of ParsedElement"
+    return [_element_to_json(_element_from_json(item)) for item in raw]
+
+
+def _chunk_from_json(raw: Any) -> ChunkRecord:
+    assert isinstance(raw, dict)
+    return ChunkRecord(
+        chunk_id=raw["chunk_id"],
+        document_id=raw["document_id"],
+        kind=raw["kind"],
+        text=raw["text"],
+        body=raw["body"],
+        context_prefix=raw["context_prefix"],
+        page=raw["page"],
+        section=raw["section"],
+        table_id=raw["table_id"],
+        ordinal=raw["ordinal"],
+    )
+
+
+def _chunk_to_json(record: ChunkRecord) -> dict[str, Any]:
+    return {
+        "body": record.body,
+        "chunk_id": record.chunk_id,
+        "context_prefix": record.context_prefix,
+        "document_id": record.document_id,
+        "kind": record.kind,
+        "ordinal": record.ordinal,
+        "page": record.page,
+        "section": record.section,
+        "table_id": record.table_id,
+        "text": record.text,
+    }
+
+
+def _load_chunks(raw: Any) -> Any:
+    assert isinstance(raw, list), "a chunks fixture is a list of ChunkRecord"
+    return [_chunk_to_json(_chunk_from_json(item)) for item in raw]
+
+
 FIXTURE_LOADERS: dict[str, Callable[[Any], Any]] = {
     "claims": _load_claims,
     "conflicts": _load_conflict,
     "workbooks": _load_workbook_projection,
+    "parsed": _load_parsed,
+    "chunks": _load_chunks,
 }
 
 
@@ -251,6 +359,56 @@ def test_the_conflict_fixtures_severity_is_what_the_policy_computes_today() -> N
     recomputed = assign_severity(entry.field_name, entry.conflict_class, candidates, candidates)
     assert entry.severity is recomputed
     assert entry.severity is Severity.MEDIUM
+
+
+def _parsed(name: str) -> list[TextElement]:
+    path = FIXTURE_ROOT / "parsed" / name
+    return [_element_from_json(item) for item in json.loads(path.read_text())]
+
+
+def _chunks(name: str) -> list[ChunkRecord]:
+    path = FIXTURE_ROOT / "chunks" / name
+    return [_chunk_from_json(item) for item in json.loads(path.read_text())]
+
+
+def test_synthetic_pv_datasheet_table_round_trips_and_every_element_has_page() -> None:
+    """The ingest fixture later tracks compile against: a 6-row table and pages."""
+    elements = _parsed("synthetic-pv-datasheet.json")
+    assert all(element.page is not None for element in elements)
+    assert any(element.role == "furniture" for element in elements)
+    tables = [element.table for element in elements if element.table is not None]
+    assert len(tables) == 1
+    table = tables[0]
+    assert isinstance(table, TableData)
+    assert table.header_rows == 1
+    assert len(table.rows) == 7
+    assert len(table.rows) - table.header_rows == 6
+    assert table.rows[0] == ("Parameter", "Value", "Unit")
+    rebuilt = _table_from_json(_table_to_json(table))
+    assert rebuilt == table
+
+
+def test_synthetic_scan_carries_bbox_and_low_page_quality() -> None:
+    """The OCR fixture: same content, a box, and D-3's low-quality-scan signal."""
+    clean = _parsed("synthetic-pv-datasheet.json")
+    scan = _parsed("synthetic-scan.json")
+    assert [element.text for element in scan] == [element.text for element in clean]
+    assert all(element.bbox is not None for element in scan)
+    assert all(element.page_quality is not None and element.page_quality < 0.5 for element in scan)
+    assert all(len(element.bbox) == 4 for element in scan if element.bbox is not None)
+
+
+def test_synthetic_pv_datasheet_chunks_are_the_triple_index() -> None:
+    """Decision 6's kinds: one prose, one full table, one row per data row, one summary."""
+    records = _chunks("synthetic-pv-datasheet.json")
+    kinds = [record.kind for record in records]
+    assert kinds.count("prose") == 1
+    assert kinds.count("table_full") == 1
+    assert kinds.count("table_row") == 6
+    assert kinds.count("table_summary") == 1
+    table_ids = {record.table_id for record in records if record.kind != "prose"}
+    assert table_ids == {"table-electrical"}
+    assert all(record.document_id == "synthetic-pv-datasheet" for record in records)
 
 
 def test_no_fixture_carries_a_resolution() -> None:

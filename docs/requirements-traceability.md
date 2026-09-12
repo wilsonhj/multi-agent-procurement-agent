@@ -123,7 +123,7 @@ does.
 | FR-ING-01 | Accept 10 formats, route by content signature | `services/ingestion.detect_content_signature`, `ports.ParserPort.supports` | declared |
 | FR-ING-02 | Spreadsheets: sheets, headers, merged cells, typing | `ports.ParserPort` | open |
 | FR-ING-03 | Text-layer PDFs: layout-aware, page numbers | `ports.ParsedElement` | declared |
-| FR-ING-04 | Scanned PDFs/images: OCR, bounding boxes | `ports.OCRPort` has a tested in-memory reference for routing, recognition, page numbers, determinism, and declared table recovery. The bounding-box half remains only a `SourceRef` field: `ParsedElement` cannot express it, and `test_fr_ing_04s_bounding_box_clause_is_not_expressible_through_parsedelement` pins that gap | partial |
+| FR-ING-04 | Scanned PDFs/images: OCR, bounding boxes | `ports.OCRPort` has a tested in-memory reference for routing, recognition, page numbers, determinism, and declared table recovery. `ParsedElement.bbox` now carries the envelope (P2-C1); `test_parsed_element_expresses_fr_ing_04s_bounding_box_clause` pins that the member is on the Protocol. A vendor OCR adapter that retains boxes is still outstanding | partial |
 | FR-ING-05 | Word: paragraphs, tables, footnotes | `ports.ParserPort` | open |
 | FR-ING-06 | Classify into eight document types | `schema.DocumentType`; `classify_document` raises NotImplementedError | declared |
 | FR-ING-07 | Schema-constrained extraction with confidence + source pointer | `ports.LLMPort.extract` and `schema.CanonicalField` declare the general contract. The sanitized CSV adapter enforces the closed PV field registry and carries confidence plus provenance into claims, but it is not a model-backed extractor | partial |

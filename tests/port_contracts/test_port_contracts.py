@@ -1,12 +1,12 @@
-"""The six ports' behavioural contracts — NFR-04, ADR-001 decision 2.
+"""The ports' behavioural contracts — NFR-04, ADR-001 decision 2.
 
 > **What a green run here proves, and what it does not.** Every adapter these
 > contracts run against is an in-memory reference that was written to satisfy
 > them. Green means the contract is **expressible and self-consistent** — some
 > object can satisfy it. It is not evidence that Docling, vLLM, pgvector or any
 > other real backend can, because none of them exist in this repository and none
-> has ever been run against this file. NFR-04 asks that the six swap points be
-> *swappable*; nothing has yet been swapped. The executable form of this
+> has ever been run against this file. Decision 10's current count is eight
+> swap points; nothing has yet been swapped. The executable form of this
 > paragraph is `test_every_registered_adapter_is_an_in_memory_reference` in
 > `test_conformance_matrix.py`, which goes red the day the sentence stops being
 > true.
@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -54,11 +54,14 @@ from procurement_agent.adapters import (
     Capability,
     adapters_for,
 )
+from procurement_agent.adapters.lexical_store import LexicalStoreSamples
 from procurement_agent.adapters.ocr import OCRSamples
 from procurement_agent.adapters.parser import ParserSamples
 from procurement_agent.adapters.vector_store import ChunkMetadata, VectorStoreSamples
+from procurement_agent.adapters.web_search import WebSearchSamples
 from procurement_agent.ports import (
     EmbedderPort,
+    LexicalSearchPort,
     LLMPort,
     OCRPort,
     ParsedElement,
@@ -66,8 +69,10 @@ from procurement_agent.ports import (
     RerankerPort,
     RetrievedChunk,
     VectorStorePort,
+    WebHit,
+    WebSearchPort,
 )
-from procurement_agent.schema import ComponentCategory, SourceTier
+from procurement_agent.schema import ComponentCategory, SourceTier, TableData
 
 # --------------------------------------------------------------------------
 # Parametrisation, and the capability gate
@@ -134,6 +139,14 @@ def _llm(entry: AdapterEntry) -> LLMPort:
     return cast("LLMPort", entry.factory())
 
 
+def _lexical(entry: AdapterEntry) -> LexicalSearchPort:
+    return cast("LexicalSearchPort", entry.factory())
+
+
+def _web(entry: AdapterEntry) -> WebSearchPort:
+    return cast("WebSearchPort", entry.factory())
+
+
 @dataclass
 class _Element:
     """A `ParsedElement` the suite builds itself, to feed `OCRPort.needs_ocr`.
@@ -147,6 +160,10 @@ class _Element:
     kind: str
     text: str
     page: int | None
+    bbox: tuple[float, float, float, float] | None = None
+    table: TableData | None = None
+    page_quality: float | None = None
+    role: Literal["body", "furniture", "footnote", "caption"] = "body"
 
 
 @dataclass
@@ -167,7 +184,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 def _assert_element_shape(element: ParsedElement) -> None:
-    """The three members `ParsedElement` declares, plus the vocabulary it names.
+    """The members `ParsedElement` declares, plus the kind vocabulary it names.
 
     `kind` is typed `str` and documented as "heading, body, table or figure". A
     Protocol cannot express that, so it is checked here: an adapter emitting
@@ -278,7 +295,9 @@ def test_a_table_survives_as_a_table_element(entry: AdapterEntry) -> None:
     """FR-ING-02/05. A table flattened into prose loses the row/column relation
     that every canonical parameter in the contract is read out of."""
     elements = _parser(entry).parse(cast("ParserSamples", entry.samples).document)
-    assert any(element.kind == "table" for element in elements)
+    tables = [element for element in elements if element.kind == "table"]
+    assert tables, "TABLE_STRUCTURE requires a table element"
+    assert all(element.table is not None for element in tables)
 
 
 @pytest.mark.parametrize("entry", cases(ParserPort, Capability.PAGE_NUMBERS))
@@ -346,7 +365,9 @@ def test_every_recognized_element_carries_a_page_number(entry: AdapterEntry) -> 
 def test_a_scanned_table_survives_recognition(entry: AdapterEntry) -> None:
     """FR-ING-04 asks for tables, not just text, out of a scan."""
     elements = _ocr(entry).recognize(cast("OCRSamples", entry.samples).scan)
-    assert any(element.kind == "table" for element in elements)
+    tables = [element for element in elements if element.kind == "table"]
+    assert tables, "TABLE_STRUCTURE requires a table element"
+    assert all(element.table is not None for element in tables)
 
 
 # --------------------------------------------------------------------------
@@ -911,3 +932,198 @@ def test_extraction_is_deterministic_across_instances(entry: AdapterEntry) -> No
     first = _llm(entry).extract(prompt=_PROMPT, context=context, json_schema=_SCHEMA)
     second = _llm(entry).extract(prompt=_PROMPT, context=context, json_schema=_SCHEMA)
     assert first == second
+
+
+# --------------------------------------------------------------------------
+# LexicalSearchPort — D-25 / P2-C3
+# --------------------------------------------------------------------------
+
+_LEXICAL_QUERY = "rated AC power"
+_LEXICAL_TEXT = "rated AC power and cooling method"
+
+
+def _stock_lexical(
+    entry: AdapterEntry,
+    *,
+    texts: list[str] | None = None,
+    chunk_ids: list[str] | None = None,
+    document_ids: list[str] | None = None,
+) -> LexicalSearchPort:
+    """Stock via `LexicalStoreSamples.load`, never by naming the memory adapter.
+
+    Six equal-scoring chunks so unfiltered top-1 is `chunk-0` (tie-break by id)
+    and an allow-list of docs 3–5 plus `limit=1` yields `chunk-3`. That is the
+    same inside-search probe as `VectorStorePort`, expressed without vectors.
+    """
+    store = _lexical(entry)
+    samples = cast("LexicalStoreSamples", entry.samples)
+    count = len(texts) if texts is not None else 6
+    samples.load(
+        store,
+        chunk_ids=chunk_ids or [f"chunk-{index}" for index in range(count)],
+        texts=texts or [_LEXICAL_TEXT] * count,
+        document_ids=document_ids or [f"doc-{index}" for index in range(count)],
+        pages=[index + 1 for index in range(count)],
+        source_tiers=[
+            SourceTier.SYSTEM_OF_RECORD if index % 2 == 0 else SourceTier.WEB_SUPPLEMENT
+            for index in range(count)
+        ],
+        categories=[
+            ComponentCategory.INVERTERS_PCS if index < 3 else ComponentCategory.PV_MODULES
+            for index in range(count)
+        ],
+        suppliers=["sungrow" if index < 3 else "trina" for index in range(count)],
+    )
+    return store
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.ACCESS_FILTERING))
+def test_lexical_omitting_the_allow_list_returns_nothing(entry: AdapterEntry) -> None:
+    """NFR-03 / AC-8 on the seventh port. `None` is not authorised-for-all."""
+    store = _stock_lexical(entry)
+    omitted = store.search_lexical(_LEXICAL_QUERY, limit=6, allowed_document_ids=None)
+    empty = store.search_lexical(_LEXICAL_QUERY, limit=6, allowed_document_ids=set())
+    assert omitted == []
+    assert empty == []
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.ACCESS_FILTERING))
+def test_lexical_a_document_outside_the_allowed_set_is_never_returned(
+    entry: AdapterEntry,
+) -> None:
+    """NFR-03 and AC-8. The leak direction."""
+    store = _stock_lexical(entry)
+    allowed = {"doc-3", "doc-4", "doc-5"}
+    hits = store.search_lexical(_LEXICAL_QUERY, limit=6, allowed_document_ids=allowed)
+    assert {hit.document_id for hit in hits} <= allowed
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.ACCESS_FILTERING))
+def test_lexical_access_control_is_applied_inside_the_search_not_after_it(
+    entry: AdapterEntry,
+) -> None:
+    """Unfiltered top-1 is chunk-0; the allowed set's best permitted row is chunk-3."""
+    store = _stock_lexical(entry)
+    unfiltered = store.search_lexical(
+        _LEXICAL_QUERY, limit=1, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+    )
+    assert [hit.chunk_id for hit in unfiltered] == ["chunk-0"]
+    hits = store.search_lexical(
+        _LEXICAL_QUERY, limit=1, allowed_document_ids={"doc-3", "doc-4", "doc-5"}
+    )
+    assert [hit.chunk_id for hit in hits] == ["chunk-3"]
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.METADATA_FILTERING))
+def test_lexical_a_metadata_filter_is_applied_inside_the_search(entry: AdapterEntry) -> None:
+    """FR-RAG-02's filters, under the same limit=1 probe as the access filter."""
+    store = _stock_lexical(entry)
+    hits = store.search_lexical(
+        _LEXICAL_QUERY,
+        limit=1,
+        category=ComponentCategory.PV_MODULES,
+        allowed_document_ids=_STOCKED_DOCUMENT_IDS,
+    )
+    assert [hit.chunk_id for hit in hits] == ["chunk-3"]
+
+    supplied = store.search_lexical(
+        _LEXICAL_QUERY,
+        limit=1,
+        supplier="trina",
+        allowed_document_ids=_STOCKED_DOCUMENT_IDS,
+    )
+    assert [hit.chunk_id for hit in supplied] == ["chunk-3"]
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.DETERMINISTIC_OUTPUT))
+def test_lexical_search_is_deterministic_for_an_unchanged_store(entry: AdapterEntry) -> None:
+    store = _stock_lexical(entry)
+    first = [
+        hit.chunk_id
+        for hit in store.search_lexical(
+            _LEXICAL_QUERY, limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    ]
+    second = [
+        hit.chunk_id
+        for hit in store.search_lexical(
+            _LEXICAL_QUERY, limit=6, allowed_document_ids=_STOCKED_DOCUMENT_IDS
+        )
+    ]
+    assert first == second
+
+
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.TRIGRAM_TOLERANCE))
+def test_hyphenated_and_spaced_part_numbers_match(entry: AdapterEntry) -> None:
+    """Decision 3b / D-25: token overlap alone is not enough.
+
+    `JKM610N-66HL4M-V` is one whitespace token; `JKM610N 66HL4M V` is three. A
+    store that only intersects tokens scores both the decoy and the part-number
+    at 0.0, and id-sort then returns chunk-0. Trigram Jaccard is what ranks
+    chunk-1 first.
+    """
+    hyphenated = "JKM610N-66HL4M-V"
+    spaced = "JKM610N 66HL4M V"
+    decoy = "cooling method forced air"
+    allowed = {"doc-0", "doc-1"}
+
+    hyphenated_store = _stock_lexical(
+        entry,
+        texts=[decoy, hyphenated],
+        chunk_ids=["chunk-0", "chunk-1"],
+        document_ids=["doc-0", "doc-1"],
+    )
+    hyphenated_hits = hyphenated_store.search_lexical(spaced, limit=1, allowed_document_ids=allowed)
+    assert [hit.chunk_id for hit in hyphenated_hits] == ["chunk-1"]
+
+    spaced_store = _stock_lexical(
+        entry,
+        texts=[decoy, spaced],
+        chunk_ids=["chunk-0", "chunk-1"],
+        document_ids=["doc-0", "doc-1"],
+    )
+    spaced_hits = spaced_store.search_lexical(hyphenated, limit=1, allowed_document_ids=allowed)
+    assert [hit.chunk_id for hit in spaced_hits] == ["chunk-1"]
+
+
+# --------------------------------------------------------------------------
+# WebSearchPort — P2-C4 / D-20
+# --------------------------------------------------------------------------
+
+
+def _web_query(entry: AdapterEntry) -> str:
+    return cast("WebSearchSamples", entry.samples).query
+
+
+@pytest.mark.parametrize("entry", cases(WebSearchPort, Capability.DETERMINISTIC_OUTPUT))
+def test_web_search_is_deterministic(entry: AdapterEntry) -> None:
+    adapter = _web(entry)
+    query = _web_query(entry)
+    first = adapter.search(query, limit=3)
+    second = adapter.search(query, limit=3)
+    assert first
+    assert first == second
+
+
+@pytest.mark.parametrize("entry", cases(WebSearchPort))
+def test_web_search_respects_limit(entry: AdapterEntry) -> None:
+    adapter = _web(entry)
+    query = _web_query(entry)
+    full = adapter.search(query, limit=10)
+    assert len(full) >= 2, "the fixture map must have enough hits for limit to bite"
+    assert len(adapter.search(query, limit=1)) == 1
+
+
+@pytest.mark.parametrize("entry", cases(WebSearchPort))
+def test_web_hits_carry_only_webhit_fields(entry: AdapterEntry) -> None:
+    """D-20: the provider list is transient; snippet and rank are not persisted."""
+    hits = _web(entry).search(_web_query(entry), limit=3)
+    assert hits
+    expected = set(WebHit.__annotations__)
+    for hit in hits:
+        fields = set(getattr(type(hit), "__annotations__", {}))
+        assert "snippet" not in fields
+        assert "rank" not in fields
+        assert expected <= fields
+        assert not hasattr(hit, "snippet")
+        assert not hasattr(hit, "rank")

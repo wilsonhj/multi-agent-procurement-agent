@@ -17,6 +17,7 @@ suite's skip path exercised by an honest example instead of a contrived one.
 from __future__ import annotations
 
 from ...ports import ParsedElement, ParserPort
+from ...schema import TableData
 from ..parsed_element import TextElement
 
 __all__ = ["InMemoryParser"]
@@ -67,6 +68,12 @@ class InMemoryParser:
                 kind="table",
                 text="\n".join(" | ".join(row) for row in rows),
                 page=None,
+                table=TableData(
+                    rows=tuple(tuple(row) for row in rows),
+                    header_rows=1,
+                    caption=None,
+                    merged=(),
+                ),
             ),
         ]
         elements.extend(TextElement(kind="body", text=" | ".join(row), page=None) for row in body)

@@ -32,6 +32,9 @@ structures and passed over exactly that mutation, so the check now compares byte
 | `conflicts/trina-tsm-neg21c-nameplate.json` | C5, C3 | The `ConflictQueueEntry` the pair above projects to, at the severity `assign_severity` computes today (`MEDIUM`). |
 | `workbooks/two-supplier-pv-store.json` | C6 | T0.5's golden projection — a synthetic two-supplier PV store (a Sungrow inverter carrying D-1's trio, a Trina module carrying the disagreement), under a pinned policy. **All four `CellFlag` states occur.** |
 | `workbooks/two-supplier-pv-store.canonical-bytes.sha256` | C6 | `sha256(projection)` — the artifact of record. See *Two serialisations* below. |
+| `parsed/synthetic-pv-datasheet.json` | P2-C1 | A layout-aware parse of a synthetic Jinko-style PV sheet: heading, body, a 6-row electrical `TableData`, and one furniture element. Every element has `page`. |
+| `parsed/synthetic-scan.json` | P2-C1 | The same elements with `bbox` and `page_quality < 0.5` — D-3's low-quality-scan signal. |
+| `chunks/synthetic-pv-datasheet.json` | P2-C2 | `ChunkRecord` list: one `prose`, one `table_full`, six `table_row`, one `table_summary`. |
 
 The two claim fixtures are deliberately a matched pair. A fixture set containing
 only the no-conflict case would let a change that suppresses *every* conflict pass

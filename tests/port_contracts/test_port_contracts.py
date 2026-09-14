@@ -43,7 +43,7 @@ fails, whichever kind is claimed.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 import pytest
@@ -72,6 +72,7 @@ from procurement_agent.ports import (
     VectorStorePort,
     WebHit,
     WebSearchPort,
+    WebSearchRateLimitExceeded,
 )
 from procurement_agent.schema import ComponentCategory, SourceTier, TableData
 
@@ -1229,7 +1230,9 @@ def test_a_burst_beyond_quota_is_refused(entry: AdapterEntry) -> None:
     """Observable through search() alone: a fixture map answers every call.
 
     A networked backend that declares RATE_LIMITED must refuse some call in a
-    no-delay burst. The memory reference is NOT_APPLICABLE and xfails this.
+    no-delay burst with WebSearchRateLimitExceeded. Empty results and unrelated
+    errors do not prove throttling. The memory reference is NOT_APPLICABLE and
+    xfails this.
     """
     adapter = _web(entry)
     query = _web_query(entry)
@@ -1238,10 +1241,36 @@ def test_a_burst_beyond_quota_is_refused(entry: AdapterEntry) -> None:
     refusals = 0
     for _ in range(60):
         try:
-            hits = adapter.search(query, limit=1)
-        except Exception:
-            refusals += 1
-            continue
-        if not hits:
+            adapter.search(query, limit=1)
+        except WebSearchRateLimitExceeded:
             refusals += 1
     assert refusals >= 1, "RATE_LIMITED requires a burst to be refused"
+
+
+@pytest.mark.parametrize("outcome", ["error", "empty", "quota"])
+def test_rate_limit_contract_requires_explicit_quota_exhaustion(outcome: str) -> None:
+    """Neither an adapter crash nor a search miss demonstrates quota enforcement."""
+    reference = adapters_for(WebSearchPort)[0]
+
+    class SearchWithOutcome:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.source = _web(reference)
+
+        def search(self, query: str, *, limit: int) -> list[WebHit]:
+            self.calls += 1
+            if self.calls == 2:
+                if outcome == "quota":
+                    raise WebSearchRateLimitExceeded("quota exhausted")
+                if outcome == "error":
+                    raise RuntimeError("unrelated deserialization failure")
+                return []
+            return self.source.search(query, limit=limit)
+
+    entry = replace(reference, factory=SearchWithOutcome)
+    if outcome == "quota":
+        test_a_burst_beyond_quota_is_refused(entry)
+    else:
+        expected = RuntimeError if outcome == "error" else AssertionError
+        with pytest.raises(expected):
+            test_a_burst_beyond_quota_is_refused(entry)

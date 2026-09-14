@@ -10,14 +10,42 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
-from typing import get_type_hints
+from datetime import UTC, datetime
+from typing import Literal, get_args, get_origin, get_type_hints
 
 import pytest
+from pydantic import ValidationError
 
+from procurement_agent.adapters.lexical_store.memory import InMemoryLexicalStore
+from procurement_agent.adapters.parsed_element import TextElement
 from procurement_agent.adapters.vector_store import ChunkMetadata
-from procurement_agent.ports import ParsedElement
-from procurement_agent.schema.registry import FIELD_SPECS, FieldSpec
+from procurement_agent.ports import ParsedElement, WebHit
+from procurement_agent.schema import (
+    EXTRACTOR_VERSION_PREFIXES,
+    GOLD_EXTRACTOR_PREFIX,
+    HUMAN_EXTRACTOR_PREFIX,
+    WEB_EXTRACTOR_PREFIX,
+    ChunkRecord,
+    PrincipalContext,
+    SourceTier,
+    TableData,
+)
+from procurement_agent.schema.enums import ComponentCategory
+from procurement_agent.schema.registry import (
+    FIELD_SPECS,
+    FieldScope,
+    FieldSpec,
+    Shape,
+    ValueType,
+)
+from procurement_agent.schema.sql_freeze import (
+    CLAIM_HUMAN_RESOLUTION_CHECK,
+    CLAIM_HUMAN_RESOLUTION_CONSTRAINT,
+    RUN_EVENT_TYPES,
+    SQL_RESERVED_FILES,
+)
 from procurement_agent.services import indexing
+from procurement_agent.services.claims import HUMAN_PREFIX
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -33,12 +61,15 @@ def test_parsed_element_annotations_include_optional_bbox_table_page_quality_rol
         "page_quality",
         "role",
     }
+    hints = get_type_hints(ParsedElement)
+    assert hints["bbox"] == tuple[float, float, float, float] | None
+    assert hints["table"] == TableData | None
+    assert hints["page_quality"] == float | None
+    assert hints["role"] == Literal["body", "furniture", "footnote", "caption"]
 
 
 def test_chunk_record_fields() -> None:
     """P2-C2: story-2 §1, imported from the schema package, not a second home."""
-    from procurement_agent.schema import ChunkRecord
-
     assert ChunkRecord.__module__ == "procurement_agent.schema.chunk"
     assert set(ChunkRecord.__annotations__) == {
         "chunk_id",
@@ -52,6 +83,9 @@ def test_chunk_record_fields() -> None:
         "table_id",
         "ordinal",
     }
+    kind = get_type_hints(ChunkRecord)["kind"]
+    assert get_origin(kind) is Literal
+    assert set(get_args(kind)) == {"prose", "table_full", "table_row", "table_summary"}
 
 
 def test_chunk_metadata_gains_chunk_kind_table_id_section() -> None:
@@ -68,12 +102,14 @@ def test_chunk_metadata_gains_chunk_kind_table_id_section() -> None:
         "table_id",
         "section",
     } == keys
+    assert ChunkMetadata.__required_keys__ == frozenset(
+        {"document_id", "text", "page", "source_tier", "category", "supplier"}
+    )
+    assert ChunkMetadata.__optional_keys__ == frozenset({"chunk_kind", "table_id", "section"})
 
 
 def test_chunk_returns_list_of_chunk_record() -> None:
     """P2-C2: return type only. The body is still Track 2's."""
-    from procurement_agent.schema import ChunkRecord
-
     assert get_type_hints(indexing.chunk)["return"] == list[ChunkRecord]
     with pytest.raises(NotImplementedError):
         indexing.chunk([], size_tokens=512, overlap_ratio=0.05)
@@ -81,9 +117,6 @@ def test_chunk_returns_list_of_chunk_record() -> None:
 
 def test_lexical_search_port_none_allowlist_returns_nothing() -> None:
     """P2-C3: the VectorStorePort rule, on the seventh Protocol."""
-    from procurement_agent.adapters.lexical_store.memory import InMemoryLexicalStore
-    from procurement_agent.schema import ComponentCategory, SourceTier
-
     store = InMemoryLexicalStore()
     store.upsert(
         chunk_ids=["chunk-0"],
@@ -104,8 +137,6 @@ def test_lexical_search_port_none_allowlist_returns_nothing() -> None:
 
 def test_web_hit_has_no_snippet_or_rank() -> None:
     """P2-C4 / D-20: the provider list is transient; only the URL is kept."""
-    from procurement_agent.ports import WebHit
-
     assert set(WebHit.__annotations__) == {"url", "title", "retrieved_at", "provider"}
     assert "snippet" not in WebHit.__annotations__
     assert "rank" not in WebHit.__annotations__
@@ -113,10 +144,6 @@ def test_web_hit_has_no_snippet_or_rank() -> None:
 
 def test_web_hit_retrieved_at_rejects_naive_datetimes() -> None:
     """WebHit is the first boundary that produces the timestamp; naive is refused."""
-    from datetime import UTC, datetime
-
-    from procurement_agent.ports import WebHit
-
     aware = datetime(2020, 1, 1, tzinfo=UTC)
     hit = WebHit(
         url="https://example.invalid/jinko",
@@ -137,8 +164,6 @@ def test_web_hit_retrieved_at_rejects_naive_datetimes() -> None:
 
 def test_principal_context_is_the_schema_type() -> None:
     """P2-C5: one class, in schema/. 4a must not mint a second under services/."""
-    from procurement_agent.schema import PrincipalContext
-
     assert PrincipalContext.__module__ == "procurement_agent.schema.principal"
     hints = get_type_hints(PrincipalContext)
     assert hints["subject"] is str
@@ -157,13 +182,26 @@ def test_principal_context_is_the_schema_type() -> None:
 
 
 def test_sql_readme_reserves_10_through_14() -> None:
-    """P2-C6/C7: reservation rows, not the DDL files. 4a/7 write those."""
+    """P2-C6/C7: reservation rows, not the DDL files. 4a/7 write those.
+
+    The freeze strings live in a dedicated section so ``"10" in readme`` and
+    ``"web_search" in readme`` cannot pass on "PostgreSQL 17.10" or the v1
+    ``audit.event`` taxonomy.
+    """
     readme = (REPO / "sql" / "README.md").read_text(encoding="utf-8")
-    for number in ("10", "11", "12", "13", "14"):
-        assert number in readme, f"sql/README.md does not reserve {number}_"
+    parts = readme.split("## Track 0 freeze", 1)
+    assert len(parts) == 2, "sql/README.md must have a Track 0 freeze section"
+    freeze = parts[1]
+    for name in SQL_RESERVED_FILES:
+        assert name in freeze, f"sql/README.md does not reserve {name}"
     sql_dir = REPO / "sql"
     leaked = sorted(p.name for p in sql_dir.glob("[0-9][0-9]_*.sql") if p.name >= "10_")
     assert leaked == [], f"Track 0 must not write sql/10–14; found {leaked}"
+    assert CLAIM_HUMAN_RESOLUTION_CONSTRAINT in freeze
+    assert CLAIM_HUMAN_RESOLUTION_CHECK in freeze
+    for event_type in RUN_EVENT_TYPES:
+        assert event_type in freeze, f"sql/README.md does not freeze run_event type {event_type}"
+    assert "drops `recorded_at`'s DEFAULT" in freeze or "drops recorded_at's DEFAULT" in freeze
 
 
 def test_sql_apply_glob_is_two_digit() -> None:
@@ -186,14 +224,19 @@ def test_sql_apply_glob_is_two_digit() -> None:
 
 def test_extractor_version_prefixes() -> None:
     """P2-C8: the four prefixes, pinned. No claim is written here."""
-    from procurement_agent.schema import EXTRACTOR_VERSION_PREFIXES
-
+    assert HUMAN_EXTRACTOR_PREFIX == "human:"
+    assert WEB_EXTRACTOR_PREFIX == "web:"
+    assert GOLD_EXTRACTOR_PREFIX == "gold:"
+    assert HUMAN_PREFIX == HUMAN_EXTRACTOR_PREFIX
     assert EXTRACTOR_VERSION_PREFIXES == (
         "<pipeline>@<semver-or-hash>",
-        "human:<oidc-sub>",
-        "web:<provider>@<version>",
-        "gold:<annotator>",
+        f"{HUMAN_EXTRACTOR_PREFIX}<oidc-sub>",
+        f"{WEB_EXTRACTOR_PREFIX}<provider>@<version>",
+        f"{GOLD_EXTRACTOR_PREFIX}<annotator>",
     )
+    assert EXTRACTOR_VERSION_PREFIXES[1].startswith(HUMAN_EXTRACTOR_PREFIX)
+    assert EXTRACTOR_VERSION_PREFIXES[2].startswith(WEB_EXTRACTOR_PREFIX)
+    assert EXTRACTOR_VERSION_PREFIXES[3].startswith(GOLD_EXTRACTOR_PREFIX)
 
 
 def test_fieldspec_has_optional_web_query_template() -> None:
@@ -202,6 +245,32 @@ def test_fieldspec_has_optional_web_query_template() -> None:
     assert field.annotation == str | None
     assert field.default is None
     assert all(spec.web_query_template is None for spec in FIELD_SPECS)
+    assert FieldSpec.model_config.get("extra") == "forbid"
+    with pytest.raises(ValidationError):
+        FieldSpec(
+            key="nameplate_power_w",
+            shape=Shape.SCALAR,
+            value_type=ValueType.FLOAT,
+            categories=frozenset({ComponentCategory.PV_MODULES}),
+            scope=FieldScope.CATEGORY,
+            web_query_key="{manufacturer} {model}",
+        )
+
+
+def test_no_parallel_web_query_key_on_another_schema_type() -> None:
+    """P2-C9: FieldSpec is the only home for a web query template."""
+    schema = REPO / "src" / "procurement_agent" / "schema"
+    offenders: list[str] = []
+    for path in schema.rglob("*.py"):
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "web_query" not in line:
+                continue
+            if path.name == "registry.py" and "web_query_template" in line:
+                continue
+            offenders.append(f"{path.relative_to(REPO)}:{line_no}:{line.strip()}")
+    assert offenders == [], "a second web-query key leaked onto another type:\n" + "\n".join(
+        offenders
+    )
 
 
 def test_current_state_baseline_is_the_post_36_count() -> None:
@@ -235,6 +304,7 @@ def test_current_decision_10_count_files_do_not_claim_six() -> None:
         REPO / "docs" / "current-state.md",
         REPO / "src" / "procurement_agent" / "adapters" / "registry.py",
         REPO / "src" / "procurement_agent" / "adapters" / "__init__.py",
+        REPO / "specs" / "001-procurement-agent" / "plan.md",
     )
     phrases = (
         "six port",
@@ -267,3 +337,15 @@ def test_no_principal_context_class_body_under_services() -> None:
             if isinstance(node, ast.ClassDef) and node.name == "PrincipalContext":
                 hits.append(str(path.relative_to(REPO)))
     assert hits == []
+
+
+def test_text_element_rejects_an_unknown_role() -> None:
+    """P2-C1 role is a closed vocabulary; the reference must not accept 'header'."""
+    with pytest.raises(ValueError, match="role"):
+        TextElement(kind="body", text="x", page=1, role="header")  # type: ignore[arg-type]
+
+
+def test_text_element_table_kind_requires_table_data() -> None:
+    """Present iff kind == 'table' — a table element without TableData is a flatten."""
+    with pytest.raises(ValueError, match="table"):
+        TextElement(kind="table", text="Parameter | Value", page=1)

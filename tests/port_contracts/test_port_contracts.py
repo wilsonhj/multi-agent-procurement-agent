@@ -50,6 +50,7 @@ import pytest
 
 from procurement_agent.adapters import (
     PARSED_ELEMENT_KINDS,
+    PARSED_ELEMENT_ROLES,
     AdapterEntry,
     Capability,
     adapters_for,
@@ -184,16 +185,84 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 def _assert_element_shape(element: ParsedElement) -> None:
-    """The members `ParsedElement` declares, plus the kind vocabulary it names.
+    """The members `ParsedElement` declares, plus the vocabularies it names.
 
     `kind` is typed `str` and documented as "heading, body, table or figure". A
     Protocol cannot express that, so it is checked here: an adapter emitting
     `"paragraph"` or `"Table"` is not wrong under the type and is unusable to
-    every consumer that switches on the value.
+    every consumer that switches on the value. `role` is a `Literal` on the
+    Protocol, which is equally unenforced at runtime.
     """
+    for field in ("kind", "text", "page", "bbox", "table", "page_quality", "role"):
+        assert hasattr(element, field), (
+            f"P2-C1 TextElement members are not optional; parsed element is missing {field}"
+        )
     assert isinstance(element.text, str)
-    assert element.kind in PARSED_ELEMENT_KINDS, f"{element.kind!r} is outside the vocabulary"
+    kind = element.kind
+    assert kind in PARSED_ELEMENT_KINDS, f"{kind!r} is outside the vocabulary"
     assert element.page is None or (isinstance(element.page, int) and element.page >= 1)
+    bbox = element.bbox
+    assert bbox is None or (len(bbox) == 4 and all(isinstance(value, float) for value in bbox))
+    table = element.table
+    if kind == "table":
+        assert table is not None, "table-kind element must carry TableData"
+        assert isinstance(table, TableData)
+    else:
+        assert table is None, "non-table kind must not carry TableData"
+    quality = element.page_quality
+    assert quality is None or 0.0 <= quality <= 1.0
+    role = element.role
+    assert role in PARSED_ELEMENT_ROLES, (
+        f"unknown parsed role {role!r}; freeze PARSED_ELEMENT_ROLES"
+    )
+
+
+def _element_identity(element: ParsedElement) -> tuple[object, ...]:
+    """Every P2-C1 member, so DETERMINISTIC_OUTPUT cannot ignore TableData."""
+    return (
+        element.kind,
+        element.text,
+        element.page,
+        element.bbox,
+        element.table,
+        element.page_quality,
+        element.role,
+    )
+
+
+def test_assert_element_shape_rejects_a_three_field_element() -> None:
+    """P2-C1 is an adapter contract, not only a Protocol annotation pin."""
+
+    @dataclass
+    class Legacy:
+        kind: str
+        text: str
+        page: int | None
+
+    with pytest.raises(AssertionError, match="P2-C1"):
+        _assert_element_shape(Legacy(kind="body", text="hello", page=1))
+
+
+def test_assert_element_shape_rejects_an_unknown_role() -> None:
+    @dataclass
+    class Weird:
+        kind: str = "body"
+        text: str = "x"
+        page: int | None = 1
+        bbox: tuple[float, float, float, float] | None = None
+        table: TableData | None = None
+        page_quality: float | None = None
+        role: str = "header"
+
+    with pytest.raises(AssertionError, match="role"):
+        _assert_element_shape(Weird())
+
+
+def test_assert_element_shape_rejects_table_data_on_a_body_element() -> None:
+    table = TableData(rows=(("Parameter", "Value"),), header_rows=1, caption=None, merged=())
+    element = _Element(kind="body", text="Parameter | Value", page=1, table=table)
+    with pytest.raises(AssertionError, match="table"):
+        _assert_element_shape(element)
 
 
 # --------------------------------------------------------------------------
@@ -285,8 +354,8 @@ def test_parsing_is_deterministic_across_instances(entry: AdapterEntry) -> None:
     end of that.
     """
     document = cast("ParserSamples", entry.samples).document
-    first = [(e.kind, e.text, e.page) for e in _parser(entry).parse(document)]
-    second = [(e.kind, e.text, e.page) for e in _parser(entry).parse(document)]
+    first = [_element_identity(e) for e in _parser(entry).parse(document)]
+    second = [_element_identity(e) for e in _parser(entry).parse(document)]
     assert first == second
 
 
@@ -348,8 +417,8 @@ def test_recognition_yields_elements_of_the_declared_shape(entry: AdapterEntry) 
 @pytest.mark.parametrize("entry", cases(OCRPort, Capability.DETERMINISTIC_OUTPUT))
 def test_recognition_is_deterministic_across_instances(entry: AdapterEntry) -> None:
     scan = cast("OCRSamples", entry.samples).scan
-    first = [(e.kind, e.text, e.page) for e in _ocr(entry).recognize(scan)]
-    second = [(e.kind, e.text, e.page) for e in _ocr(entry).recognize(scan)]
+    first = [_element_identity(e) for e in _ocr(entry).recognize(scan)]
+    second = [_element_identity(e) for e in _ocr(entry).recognize(scan)]
     assert first == second
 
 
@@ -540,6 +609,14 @@ def test_search_returns_no_more_than_the_limit(entry: AdapterEntry) -> None:
         len(store.search(_query(dimensions), limit=2, allowed_document_ids=_STOCKED_DOCUMENT_IDS))
         == 2
     )
+
+
+@pytest.mark.parametrize("entry", cases(VectorStorePort))
+def test_search_rejects_a_negative_limit(entry: AdapterEntry) -> None:
+    """`hits[:limit]` with limit=-1 is a drop-last slice, not a cap."""
+    store, dimensions = _stocked(entry)
+    with pytest.raises(ValueError, match="limit"):
+        store.search(_query(dimensions), limit=-1, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
 
 
 @pytest.mark.parametrize("entry", cases(VectorStorePort))
@@ -1053,6 +1130,13 @@ def test_lexical_search_is_deterministic_for_an_unchanged_store(entry: AdapterEn
     assert first == second
 
 
+@pytest.mark.parametrize("entry", cases(LexicalSearchPort))
+def test_lexical_search_rejects_a_negative_limit(entry: AdapterEntry) -> None:
+    store = _stock_lexical(entry)
+    with pytest.raises(ValueError, match="limit"):
+        store.search_lexical(_LEXICAL_QUERY, limit=-1, allowed_document_ids=_STOCKED_DOCUMENT_IDS)
+
+
 @pytest.mark.parametrize("entry", cases(LexicalSearchPort, Capability.TRIGRAM_TOLERANCE))
 def test_hyphenated_and_spaced_part_numbers_match(entry: AdapterEntry) -> None:
     """Decision 3b / D-25: token overlap alone is not enough.
@@ -1097,10 +1181,9 @@ def _web_query(entry: AdapterEntry) -> str:
 
 @pytest.mark.parametrize("entry", cases(WebSearchPort, Capability.DETERMINISTIC_OUTPUT))
 def test_web_search_is_deterministic(entry: AdapterEntry) -> None:
-    adapter = _web(entry)
     query = _web_query(entry)
-    first = adapter.search(query, limit=3)
-    second = adapter.search(query, limit=3)
+    first = _web(entry).search(query, limit=3)
+    second = _web(entry).search(query, limit=3)
     assert first
     assert first == second
 
@@ -1112,6 +1195,12 @@ def test_web_search_respects_limit(entry: AdapterEntry) -> None:
     full = adapter.search(query, limit=10)
     assert len(full) >= 2, "the fixture map must have enough hits for limit to bite"
     assert len(adapter.search(query, limit=1)) == 1
+
+
+@pytest.mark.parametrize("entry", cases(WebSearchPort))
+def test_web_search_rejects_a_negative_limit(entry: AdapterEntry) -> None:
+    with pytest.raises(ValueError, match="limit"):
+        _web(entry).search(_web_query(entry), limit=-1)
 
 
 @pytest.mark.parametrize("entry", cases(WebSearchPort))
@@ -1127,3 +1216,29 @@ def test_web_hits_carry_only_webhit_fields(entry: AdapterEntry) -> None:
         assert expected <= fields
         assert not hasattr(hit, "snippet")
         assert not hasattr(hit, "rank")
+        retrieved = hit.retrieved_at
+        assert retrieved.tzinfo is not None
+        assert retrieved.tzinfo.utcoffset(retrieved) is not None
+
+
+@pytest.mark.parametrize("entry", cases(WebSearchPort, Capability.RATE_LIMITED))
+def test_a_burst_beyond_quota_is_refused(entry: AdapterEntry) -> None:
+    """Observable through search() alone: a fixture map answers every call.
+
+    A networked backend that declares RATE_LIMITED must refuse some call in a
+    no-delay burst. The memory reference is NOT_APPLICABLE and xfails this.
+    """
+    adapter = _web(entry)
+    query = _web_query(entry)
+    first = adapter.search(query, limit=1)
+    assert first, "the fixture map must have a hit so a miss is distinguishable from a refusal"
+    refusals = 0
+    for _ in range(60):
+        try:
+            hits = adapter.search(query, limit=1)
+        except Exception:
+            refusals += 1
+            continue
+        if not hits:
+            refusals += 1
+    assert refusals >= 1, "RATE_LIMITED requires a burst to be refused"

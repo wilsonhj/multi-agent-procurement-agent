@@ -247,13 +247,15 @@ def test_fieldspec_has_optional_web_query_template() -> None:
     assert all(spec.web_query_template is None for spec in FIELD_SPECS)
     assert FieldSpec.model_config.get("extra") == "forbid"
     with pytest.raises(ValidationError):
-        FieldSpec(
-            key="nameplate_power_w",
-            shape=Shape.SCALAR,
-            value_type=ValueType.FLOAT,
-            categories=frozenset({ComponentCategory.PV_MODULES}),
-            scope=FieldScope.CATEGORY,
-            web_query_key="{manufacturer} {model}",
+        FieldSpec.model_validate(
+            {
+                "key": "nameplate_power_w",
+                "shape": Shape.SCALAR,
+                "value_type": ValueType.FLOAT,
+                "categories": frozenset({ComponentCategory.PV_MODULES}),
+                "scope": FieldScope.CATEGORY,
+                "web_query_key": "{manufacturer} {model}",
+            }
         )
 
 

@@ -184,9 +184,11 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return sum(x * y for x, y in zip(left, right, strict=True)) / norm if norm else 0.0
 
 
-def _assert_element_shape(element: ParsedElement) -> None:
+def _assert_element_shape(element: object) -> None:
     """The members `ParsedElement` declares, plus the vocabularies it names.
 
+    Typed `object` on purpose: a `ParsedElement` annotation would make the
+    three-field stub below a type error instead of the runtime pin it is.
     `kind` is typed `str` and documented as "heading, body, table or figure". A
     Protocol cannot express that, so it is checked here: an adapter emitting
     `"paragraph"` or `"Table"` is not wrong under the type and is unusable to
@@ -197,21 +199,22 @@ def _assert_element_shape(element: ParsedElement) -> None:
         assert hasattr(element, field), (
             f"P2-C1 TextElement members are not optional; parsed element is missing {field}"
         )
-    assert isinstance(element.text, str)
-    kind = element.kind
+    parsed = cast("ParsedElement", element)
+    assert isinstance(parsed.text, str)
+    kind = parsed.kind
     assert kind in PARSED_ELEMENT_KINDS, f"{kind!r} is outside the vocabulary"
-    assert element.page is None or (isinstance(element.page, int) and element.page >= 1)
-    bbox = element.bbox
+    assert parsed.page is None or (isinstance(parsed.page, int) and parsed.page >= 1)
+    bbox = parsed.bbox
     assert bbox is None or (len(bbox) == 4 and all(isinstance(value, float) for value in bbox))
-    table = element.table
+    table = parsed.table
     if kind == "table":
         assert table is not None, "table-kind element must carry TableData"
         assert isinstance(table, TableData)
     else:
         assert table is None, "non-table kind must not carry TableData"
-    quality = element.page_quality
+    quality = parsed.page_quality
     assert quality is None or 0.0 <= quality <= 1.0
-    role = element.role
+    role = parsed.role
     assert role in PARSED_ELEMENT_ROLES, (
         f"unknown parsed role {role!r}; freeze PARSED_ELEMENT_ROLES"
     )
